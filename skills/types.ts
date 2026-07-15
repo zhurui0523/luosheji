@@ -23,4 +23,5 @@ export interface AiSkill {
   status?: 'pending' | 'approved' | 'rejected';
   promptLabel?: string;
   promptPlaceholder?: string;
+  code?: string;
 }

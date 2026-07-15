@@ -29,6 +29,7 @@ import { SYSTEM_SKILLS } from '../skills/definitions';
 import { WorkflowPage } from './WorkflowPage';
 import { PluginPage } from './PluginPage';
 import { GlobalApiConfigTab } from './GlobalApiConfigTab';
+import { UserAgentManager } from './UserAgentManager';
 import { safeJson } from '../lib/fetch';
 
 interface SkillsPageProps {
@@ -37,7 +38,7 @@ interface SkillsPageProps {
 }
 
 export const SkillsPage: React.FC<SkillsPageProps> = ({ user, onUserUpdate }) => {
-  const [category, setCategory] = useState<'skill' | 'workflow' | 'ai-studio' | 'api'>('skill');
+  const [category, setCategory] = useState<'skill' | 'agent' | 'workflow' | 'ai-studio' | 'api'>('skill');
   const [customSkills, setCustomSkills] = useState<AiSkill[]>([]);
   const [activeTab, setActiveTab] = useState<'my' | 'ai-studio' | 'explore' | 'create'>('my');
   const [searchQuery, setSearchQuery] = useState('');
@@ -393,6 +394,25 @@ export const SkillsPage: React.FC<SkillsPageProps> = ({ user, onUserUpdate }) =>
               )}
               <Cpu className={`w-4 h-4 relative z-10 transition-transform duration-300 ${category === 'skill' ? 'scale-110 text-indigo-600' : 'text-slate-400'}`} />
               <span className="relative z-10 tracking-wider">SKILL</span>
+            </button>
+
+            <button
+              onClick={() => setCategory('agent')}
+              className={`relative px-5 py-2.5 text-xs font-black rounded-xl transition-all duration-300 flex items-center space-x-2 cursor-pointer z-10 ${
+                category === 'agent'
+                  ? 'text-indigo-600 font-extrabold'
+                  : 'text-slate-500 hover:text-slate-800'
+              }`}
+            >
+              {category === 'agent' && (
+                <motion.div
+                  layoutId="activeCategoryBg"
+                  className="absolute inset-0 bg-white rounded-xl shadow-xs border border-slate-100"
+                  transition={{ type: 'spring', stiffness: 380, damping: 30 }}
+                />
+              )}
+              <UserIcon className={`w-4 h-4 relative z-10 transition-transform duration-300 ${category === 'agent' ? 'scale-110 text-indigo-600' : 'text-slate-400'}`} />
+              <span className="relative z-10 tracking-wider">AGENT</span>
             </button>
 
             <button
@@ -1243,6 +1263,10 @@ export const SkillsPage: React.FC<SkillsPageProps> = ({ user, onUserUpdate }) =>
               </div>
             )}
           </div>
+        )}
+
+        {category === 'agent' && (
+          <UserAgentManager user={user} />
         )}
 
         {category === 'workflow' && (

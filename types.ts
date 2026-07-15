@@ -168,6 +168,20 @@ export interface ApiConfig {
   accessKeyId?: string; // Volcengine AK
   secretKey?: string; // Volcengine SK
   modelType?: 'text' | 'image' | 'video';
+  capabilityKinds?: string[];
+  enabled?: boolean;
+  defaultGenerationSettings?: {
+    image?: {
+      aspectRatio?: string;
+      imageSize?: string;
+    };
+    video?: {
+      videoMode?: string;
+      duration?: string;
+      aspectRatio?: string;
+      resolution?: string;
+    };
+  };
 }
 
 export interface Config {
@@ -179,11 +193,12 @@ export interface Config {
   videoSeedanceMini: ApiConfig;
   gptImage: ApiConfig;
   claudeSonnet: ApiConfig;
+  gptText: ApiConfig;
   customInterfaces?: Record<string, ApiConfig & { title: string; isCustom?: boolean }>;
   [key: string]: any;
 }
 
-export type ApiConfigKey = 'script' | 'image' | 'video' | 'videoVeoFast' | 'videoSeedance' | 'videoSeedanceMini' | 'gptImage' | 'claudeSonnet';
+export type ApiConfigKey = 'script' | 'image' | 'video' | 'videoVeoFast' | 'videoSeedance' | 'videoSeedanceMini' | 'gptImage' | 'claudeSonnet' | 'gptText';
 
 export interface TeamMember {
   id: number;

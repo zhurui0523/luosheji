@@ -1,27 +1,61 @@
-XiaoLuo AI Intent OS 是一个帮你把想法自动变成作品的 AI 创作工作台。
+# XiaoLuo AI Intent OS
 
-你只需要像聊天一样说出你想做什么，比如：
+XiaoLuo AI Intent OS is an AI intent operating system. Users describe what they want in conversation, and the system turns that intent into an executable node workflow on a canvas.
 
-“帮我做一个 15 秒科幻短片。”
-“根据这个产品生成一套广告脚本和分镜图。”
-“把这个故事扩展成视频生成流程。”
+The product is built around one core idea: AI capabilities should work like sockets. Users can add, remove, enable, disable, and combine Agents, Skills, Plugins, model API connections, and open-source tool adapters without changing the OS kernel.
 
-小逻会自动理解你的目标，并把它拆成一步步任务：写脚本、做分镜、生成图片、生成视频、整理素材等。每一步都会变成无限画布上的节点或卡片，你可以查看、修改、重新生成，也可以继续往下执行。
+## Core Flow
 
-它不只是一个聊天 AI，而是一个可以组织 AI 工作流程的系统。你可以接入不同模型，也可以使用各种技能、插件和智能体，让它完成文本、图片、视频、文档、PPT、资产设计等多种创作任务。
+1. User enters an intent in chat.
+2. BrainAgent parses the intent and plans a node workflow.
+3. IntentRuntime registers the Goal and RuntimeTasks.
+4. WorkflowExecutionController executes the DAG with pause, resume, cancel, rerun, and rerun-from-node support.
+5. CapabilityBus dispatches each node to the right Skill, Agent, model provider, plugin, or adapter.
+6. ArtifactFactory creates canvas artifacts from execution results.
 
-简单来说：
+## Plug-And-Play Scope
 
-你负责表达想法，小逻负责理解、拆解、执行，并把结果呈现在无限画布上。
+- Skill: reusable instruction or executor capability.
+- Agent: user-defined professional role with model and skill preferences.
+- Plugin: package that can contribute skills, agents, models, adapters, tools, UI panels, templates, and workflow presets.
+- Model Provider: user-owned API connection with custom endpoint, model, key, protocol, and request/response mapping.
+- Open Source Adapter: wrapper around external programs or services such as ComfyUI, FFmpeg, local tools, or HTTP APIs.
+- Workflow Preset: reusable node graph template.
 
+## Important Kernel Modules
 
-## Run Locally
+- `lib/os/IntentRuntime.ts`: intent, goal, and runtime coordination.
+- `lib/os/WorkflowExecutionController.ts`: controllable workflow execution.
+- `lib/os/CapabilityBus.ts`: unified capability dispatch.
+- `lib/os/registries/*`: registries for skills, agents, plugins, models, extensions, and adapters.
+- `lib/os/extension/*`: extension manifest validation, store, and adapter runner.
+- `lib/os/security/PermissionGuard.ts`: execution permission checks.
+- `lib/os/artifacts/ArtifactFactory.ts`: unified artifact creation.
+- `kernel/protocol/*`: shared OS protocol definitions.
 
-**Prerequisites:**  Node.js
+## Local Development
 
+Install dependencies:
 
-1. Install dependencies:
-   `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
-   `npm run dev`
+```bash
+npm install
+```
+
+Run locally:
+
+```bash
+npm run dev
+```
+
+The default local URL is:
+
+```text
+http://localhost:3000/
+```
+
+## Extension Safety
+
+External extensions must declare permissions in their manifest. High-risk capabilities such as network access, code execution, file access, and plugin management are checked by the OS permission guard before execution.
+
+HTTP adapters are validated before requests are sent, and direct CLI, Node, and Python execution is blocked in the client runtime until a secure host sandbox is available.
+

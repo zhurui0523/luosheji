@@ -6,22 +6,25 @@ import { videoAgent } from "./videoAgent.ts";
 import { CapabilityBus } from "../../lib/os/CapabilityBus";
 
 // Import all system skills and plugins to directly utilize their instructions
-import { createScriptSkill } from "../../skills/definitions/createScript.ts";
-import { analyzeScriptSkill } from "../../skills/definitions/analyzeScript.ts";
-import { rewriteScriptSkill } from "../../skills/definitions/rewriteScript.ts";
-import { videoDissectSkill } from "../../skills/definitions/videoDissect.ts";
-import { assetPromptSkill } from "../../skills/definitions/assetPromptSkill.ts";
-import { shotPromptSkill } from "../../skills/definitions/shotPromptSkill.ts";
-import { sixViewSkill } from "../../skills/definitions/sixView.ts";
-import { scenePlanSkill } from "../../skills/definitions/scenePlan.ts";
-import { gridStoryboardSkill } from "../../skills/definitions/gridStoryboard.ts";
+import {
+  createScriptSkill,
+  analyzeScriptSkill,
+  rewriteScriptSkill,
+  videoDissectSkill,
+  assetPromptSkill,
+  shotPromptSkill,
+  sixViewSkill,
+  scenePlanSkill,
+  gridStoryboardSkill,
+  officePitchDeckSkill,
+  officeAdScriptSkill,
+  officeBriefProposalSkill,
+  dnaSkill,
+  assetLibrarySkill
+} from "../../skills/definitions/index.ts";
 import { panoramaSkill } from "../../plugin/definitions/panorama.ts";
 import { cameraControlSkill } from "../../plugin/definitions/cameraControl.ts";
-import { officePitchDeckSkill } from "../../skills/definitions/officePitchDeck.ts";
-import { officeAdScriptSkill } from "../../skills/definitions/officeAdScript.ts";
-import { officeBriefProposalSkill } from "../../skills/definitions/officeBriefProposal.ts";
-import { dnaSkill } from "../../skills/definitions/dnaSkill.ts";
-import { assetLibrarySkill } from "../../skills/definitions/assetLibrarySkill.ts";
+import { AgentRegistry } from "../../lib/os/registries/AgentRegistry";
 
 export interface IntentStep {
   id: string;
@@ -34,6 +37,8 @@ export interface IntentStep {
   aspectRatio?: string;
   duration?: string;
   skillId?: string; // Links directly to a specific system skill
+  agentId?: string; // Custom user agent ID
+  assignedActorId?: string; // Assigned actor/agent ID
   enabled?: boolean;
   companyId?: string;    // Virtual Company/Agent Studio e.g., 'miracle-pictures'
   companyName?: string;  // Virtual Company Name e.g., '奇迹影业'
@@ -116,7 +121,9 @@ const SKILL_INSTRUCTIONS: Record<string, { name: string; instruction: string }> 
 };
 
 const BRAIN_AGENT_SYSTEM_INSTRUCTION = `
-你是 **小逻-多模态AI意图操作系统 (AI Intent OS)** 的核心调度与执行链规划大脑 (BrainAgent)。
+你是 **小逻-多模态AI意图操作系统 (AI Intent OS)** 的核心调度、执行链规划大脑与智能意图引导者 (BrainAgent)。
+你精通协同、项目、创意和规划。你作为操作系统的大脑，能协助团队进行分析、解答疑问、整理创意概念，并统筹管理所有的专业智能体与底层 SKILL 技能。请尽量用亲切、靠谱、专业的语气回答用户。
+
 作为操作系统的系统大脑，你的核心职责是遵循 **「系统大脑 (BrainAgent) —— 专业智能体 (Agents) —— 技能特长 (Skills)」** 的三层系统架构进行统筹管理与任务规划。
 
 你掌管着以下 4 个顶尖的专业智能体空间（虚拟专业工作室）：
@@ -230,6 +237,49 @@ const BRAIN_AGENT_SYSTEM_INSTRUCTION = `
 
 export class BrainAgent extends BaseAgent {
   public async analyzeUserIntent(prompt: string, config?: Config): Promise<IntentPlan> {
+    // 🚀 Ensure custom user agents are fully loaded from config or localStorage
+    AgentRegistry.loadUserAgents(config);
+
+    const plan = await this.innerAnalyzeUserIntent(prompt, config);
+
+    this.applyMentionedAgents(prompt, plan);
+
+    return plan;
+  }
+
+  private applyMentionedAgents(prompt: string, plan: IntentPlan) {
+    const mentionedAgents = AgentRegistry.listUserAgents()
+      .filter(a => a.enabled !== false)
+      .filter(a => prompt.includes(`@${a.id}`) || prompt.includes(`@${a.name}`));
+
+    if (mentionedAgents.length === 0 || !plan?.steps || !Array.isArray(plan.steps)) {
+      return;
+    }
+
+    const fallbackAgent = mentionedAgents[0];
+    plan.steps = plan.steps.map((step: any) => {
+      const matchingAgent = mentionedAgents.find(agent => {
+        const kinds = agent.capabilityKinds || ['text'];
+        const stepKind = step.type === 'script' ? 'text' : step.type;
+        return kinds.includes(stepKind as any);
+      }) || fallbackAgent;
+
+      return {
+        ...step,
+        agentId: matchingAgent.id,
+        assignedActorId: matchingAgent.id,
+        employeeRole: step.employeeRole || matchingAgent.role,
+        companyName: step.companyName || '自定义角色工作室'
+      };
+    });
+
+    const names = mentionedAgents.map(agent => `@${agent.name}`).join(', ');
+    if (plan.rationale && !plan.rationale.includes(names)) {
+      plan.rationale += ` (已指定专业智能体 ${names} 参与任务)`;
+    }
+  }
+
+  public async innerAnalyzeUserIntent(prompt: string, config?: Config): Promise<IntentPlan> {
     const globalConfig = (config || {}) as any;
     const scriptModel = globalConfig.script?.model || "gemini-3.5-flash";
 
@@ -278,6 +328,19 @@ export class BrainAgent extends BaseAgent {
     const hashRegex = /#([^\s#\d_：:；;，,。！!?？\(\)（）]+)/g;
     const hashMatches = Array.from(prompt.matchAll(hashRegex)).map(m => m[1].trim());
     
+    // Read custom plugins from localStorage
+    let userPlugins: any[] = [];
+    if (typeof window !== "undefined" && window.localStorage) {
+      try {
+        const userPluginsStr = window.localStorage.getItem('user_plugins');
+        if (userPluginsStr) {
+          userPlugins = JSON.parse(userPluginsStr);
+        }
+      } catch (e) {
+        console.error("Failed to read user plugins in analyzeUserIntent:", e);
+      }
+    }
+
     // Match them against available skill names or IDs
     const matchedSkillIds: string[] = [];
     const matchedSkillNames: string[] = [];
@@ -293,9 +356,50 @@ export class BrainAgent extends BaseAgent {
           }
         }
       }
+      for (const p of userPlugins) {
+        const cleanName = p.name.toLowerCase().replace(/[\uD800-\uDBFF][\uDC00-\uDFFF]|\s/g, '');
+        const pId = p.id;
+        if (cleanName.includes(query) || pId.includes(query) || query.includes(cleanName) || query.includes(pId)) {
+          if (!matchedSkillIds.includes(pId)) {
+            matchedSkillIds.push(pId);
+            matchedSkillNames.push(p.name);
+          }
+        }
+      }
     }
 
     let modifiedSystemInstruction = BRAIN_AGENT_SYSTEM_INSTRUCTION;
+    if (userPlugins.length > 0) {
+      let customPluginsDesc = "\n\n四、用户贡献及已启用的自定义即插即用插件（Plugins）列表：\n";
+      userPlugins.forEach((p: any, idx: number) => {
+        customPluginsDesc += `${idx + 1}. **${p.name} (id: "${p.id}")**: ${p.desc || '自定义功能插件'}\n   - **指令/作用规范**: ${p.instruction || ''}\n`;
+      });
+      customPluginsDesc += `\n当用户的需求与这些自定义插件的作用或主题紧密契合，或用户显式通过 # 提及或隐式期望调用这些定制功能时，你【必须】优先在步骤规划中将该步骤的 \`skillId\` 设为对应的插件 ID (如 "${userPlugins[0]?.id || ''}")，将 \`type\` 设置为该插件最适合的类型（文本处理设为 "script"，绘图渲染设为 "image"，视频动作设为 "video"）。\n`;
+      
+      modifiedSystemInstruction += customPluginsDesc;
+    }
+
+    // 🚀 Load and inject enabled Custom User Agents
+    const enabledUserAgents = AgentRegistry.listUserAgents().filter(a => a.enabled !== false);
+    if (enabledUserAgents.length > 0) {
+      let customAgentsDesc = "\n\n五、用户自定义专业 Agent 系统（Custom Agents）列表：\n";
+      enabledUserAgents.forEach((a: any, idx: number) => {
+        customAgentsDesc += `${idx + 1}. **${a.name} (id: "${a.id}")**: 角色是 ${a.role}。描述: ${a.description || ''}\n`;
+        customAgentsDesc += `   - 能力类型: ${a.capabilityKinds ? a.capabilityKinds.join(", ") : "text"}\n`;
+        customAgentsDesc += `   - 系统设定提示词 (System Instruction): ${a.systemInstruction}\n`;
+        if (a.skillIds && a.skillIds.length > 0) {
+          customAgentsDesc += `   - 可调用的专属 Skills: ${a.skillIds.join(", ")}\n`;
+        }
+      });
+      customAgentsDesc += `\n当用户的意图、特定身份设定或创意需求与上述自定义专业 Agent 的角色/能力深度契合时，你【必须】在规划工作流（isPipeline: true）时，将该 Agent 担任对应步骤的执行者：
+1. 相应步骤的 \`agentId\` 字段（或 \`assignedActorId\` 字段）中，必须填入该 Custom Agent 的 ID (例如: "${enabledUserAgents[0]?.id}")。
+2. 相应步骤的 \`type\` 必须与该 Agent 的能力类型匹配（通常文本处理设为 "script"，生图设为 "image"，视频动作设为 "video"）。
+3. 分配给该步骤的 \`employeeRole\` 可以是该 Agent 的 role，\`companyName\` 设为 "自定义角色工作室"。
+4. 你还可以在 \`rationale\` 中向用户指出，本创意编排已成功指派专业 Agent [${enabledUserAgents[0]?.name}] 上岗执行相关节点任务！\n`;
+
+      modifiedSystemInstruction += customAgentsDesc;
+    }
+
     if (matchedSkillIds.length > 0) {
       modifiedSystemInstruction += `\n\n【🚨 CRITICAL USER SPECIFICATION】:
 用户在指令中通过 # 显式指定了必须调用的专业 SKILL：[${matchedSkillNames.join(", ")}] (ID: [${matchedSkillIds.join(", ")}])。
@@ -337,21 +441,26 @@ export class BrainAgent extends BaseAgent {
             const hasSkill = parsed.steps.some((st: any) => st.skillId === sId);
             if (!hasSkill) {
               const sInfo = SKILL_INSTRUCTIONS[sId];
-              const isImageOrVideo = ["six-view", "scene-plan", "grid-storyboard", "panorama", "camera-control"].includes(sId);
-              parsed.steps.push({
-                id: `step_forced_${idx + 1}_${sId.replace('-', '_')}`,
-                type: isImageOrVideo ? "image" : "script",
-                skillId: sId,
-                label: `${sInfo.name}`,
-                prompt: `根据用户的创意主题与要求：“${prompt}”，分析并执行该专业技能规范。`,
-                aspectRatio: "16:9",
-                status: "pending"
-              });
+              const uInfo = userPlugins.find((p: any) => p.id === sId);
+              
+              if (sInfo || uInfo) {
+                const name = sInfo ? sInfo.name : (uInfo.name || "自定义插件");
+                const isImageOrVideo = ["six-view", "scene-plan", "grid-storyboard", "panorama", "camera-control"].includes(sId) || (uInfo && uInfo.category === 'image');
+                parsed.steps.push({
+                  id: `step_forced_${idx + 1}_${sId.replace('-', '_')}`,
+                  type: isImageOrVideo ? "image" : "script",
+                  skillId: sId,
+                  label: name,
+                  prompt: `根据用户的创意主题与要求：“${prompt}”，分析并执行该专业技能/插件规范。`,
+                  aspectRatio: "16:9",
+                  status: "pending"
+                });
+              }
             }
           });
           
           if (!parsed.rationale) {
-            parsed.rationale = `🎯 已为您精确调度您指定的系统预置SKILL：**${matchedSkillNames.join(" 和 ")}**！`;
+            parsed.rationale = `🎯 已为您精确调度您指定的技能/插件：**${matchedSkillNames.join(" 和 ")}**！`;
           }
         }
 
@@ -854,12 +963,12 @@ export class BrainAgent extends BaseAgent {
       isPipeline: false,
       response: `#### 🚀 小逻·操作系统大模型与SKILL画像
 - ⚡ **底层动力模型**: \`${scriptModel}\` (创意剧本/大模型，当前会话的核心理解引擎)
-- 🛠 **推荐就绪SKILL**: \`通用意图引导专家 (general-intent)\` - 自动分析自然语言并智选最佳的生成式微观模型
+- 🧠 **核心调度大脑**: \`小逻智能意图引导 (BrainAgent)\` - 自动分析并调度微观生成模型及场景技能
 - 💡 **小逻建议**: 您好！我是小逻。我已经为您加载并准备好了系统的多模态大模型动力舱以及全部 SKILL 技能（包括：**相机调整**、**角色设定图**、**场景方案**、**九宫格分镜**、**VR全景世界**、**编剧专家**、**剧本分析** 等）。
 
 如果您需要我执行具体的专业任务，请直接下达指令，例如：
 * “*帮我设计一个太空战士的**角色设定图**，需要竖屏*” (直接匹配角色三视图SKILL)
-* “*做一个极简中式茶室的**场景方案**设计*” (直接匹配场景四视角和透视SKILL)
+* “*做一个极简中式茶室的**场景方案**设计*” (直接匹配场景四视角 and 透视SKILL)
 * “*用九宫格形式，拍一拍黄昏时的海滩*” (直接匹配九宫格分镜SKILL)
 * “*分析以下短片剧本...*” (调用剧本拉片审计SKILL)
 
@@ -882,10 +991,28 @@ export class BrainAgent extends BaseAgent {
       let systemInstruction = `你是一位顶级创意编剧，请根据用户大纲写出具有电影画面感的极简微剧本。格式包含镜头序号、画面描写、对白。字数限制在 300 字以内。`;
       let stepProgressLabel = "🤖 正在为您撰写创意脚本正文...";
 
+      let isUserPlugin = false;
+      if (step.skillId && !SKILL_INSTRUCTIONS[step.skillId] && typeof window !== "undefined" && window.localStorage) {
+        try {
+          const userPluginsStr = window.localStorage.getItem('user_plugins');
+          if (userPluginsStr) {
+            const userPlugins = JSON.parse(userPluginsStr);
+            const found = userPlugins.find((p: any) => p.id === step.skillId);
+            if (found) {
+              systemInstruction = found.instruction;
+              stepProgressLabel = `🤖 正在调用自定义插件 [${found.name}] 进行创意处理与内容生成...`;
+              isUserPlugin = true;
+            }
+          }
+        } catch (e) {
+          console.error("Failed to parse user plugins in executeStep script handling:", e);
+        }
+      }
+
       if (step.skillId && SKILL_INSTRUCTIONS[step.skillId]) {
         systemInstruction = SKILL_INSTRUCTIONS[step.skillId].instruction;
         stepProgressLabel = `🤖 正在调用系统内置SKILL [${SKILL_INSTRUCTIONS[step.skillId].name}]，分析并设计高精视觉资产提示词...`;
-      } else {
+      } else if (!isUserPlugin) {
         if (stepId.includes("strategy")) {
           systemInstruction = `你是一位顶尖广告品牌策略总监。请基于客户的需求Brief，进行精细化的目标受众画像分析（Audience）、提炼3大产品核心卖点（Selling Points），并设定与之匹配的、极具商业感染力的品牌视觉与语言调性风格（Tone & Style）。字数限制在 300 字以内。`;
           stepProgressLabel = "📊 正在调用品牌策略大脑，深入分析受众、卖点与品牌调性...";
@@ -933,7 +1060,29 @@ export class BrainAgent extends BaseAgent {
 
     if (step.type === "image") {
       const selectedImageModel = globalConfig.image?.model || "gemini-3.1-flash-image-preview";
-      const skillName = (step.skillId && SKILL_INSTRUCTIONS[step.skillId]) ? SKILL_INSTRUCTIONS[step.skillId].name : "灵境原画";
+      let skillName = "灵境原画";
+      let userPluginInstruction = "";
+      let isUserPlugin = false;
+      if (step.skillId) {
+        if (SKILL_INSTRUCTIONS[step.skillId]) {
+          skillName = SKILL_INSTRUCTIONS[step.skillId].name;
+        } else if (typeof window !== "undefined" && window.localStorage) {
+          try {
+            const userPluginsStr = window.localStorage.getItem('user_plugins');
+            if (userPluginsStr) {
+              const userPlugins = JSON.parse(userPluginsStr);
+              const found = userPlugins.find((p: any) => p.id === step.skillId);
+              if (found) {
+                skillName = found.name;
+                userPluginInstruction = found.instruction;
+                isUserPlugin = true;
+              }
+            }
+          } catch (e) {
+            console.error("Failed to parse user plugins in executeStep image handling:", e);
+          }
+        }
+      }
       if (onProgress) onProgress(`🎨 正在提取特征并调用大模型生成原画 [${selectedImageModel === "gemini-3.1-flash-image-preview" ? "nano banana 2" : "GPT-Image-2"}] - 当前技能: [${skillName}]...`);
       
       let enrichedPrompt = step.prompt;
@@ -994,8 +1143,12 @@ export class BrainAgent extends BaseAgent {
       }
 
       // If a custom image skill is specified, apply its strict instructions to the generation prompt
-      if (step.skillId && SKILL_INSTRUCTIONS[step.skillId]) {
-        enrichedPrompt = `【正在应用SKILL规范: ${SKILL_INSTRUCTIONS[step.skillId].name}】\n${SKILL_INSTRUCTIONS[step.skillId].instruction}\n\n需求指令: ${enrichedPrompt}`;
+      if (step.skillId) {
+        if (SKILL_INSTRUCTIONS[step.skillId]) {
+          enrichedPrompt = `【正在应用SKILL规范: ${SKILL_INSTRUCTIONS[step.skillId].name}】\n${SKILL_INSTRUCTIONS[step.skillId].instruction}\n\n需求指令: ${enrichedPrompt}`;
+        } else if (isUserPlugin && userPluginInstruction) {
+          enrichedPrompt = `【正在应用自定义插件规范: ${skillName}】\n${userPluginInstruction}\n\n需求指令: ${enrichedPrompt}`;
+        }
       }
 
       const capResult = await CapabilityBus.execute('cap_action', {

@@ -1,3 +1,16 @@
 node_modules
 .env
 .DS_Store
+dist
+uploads
+data
+*.log
+*.sqlite
+db_connection_error.log
+startup_debug.log
+dev-server*.log
+patch.txt
+fix_*.cjs
+rewrite_*.cjs
+update_script*.cjs
+_snapshots

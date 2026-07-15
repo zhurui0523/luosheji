@@ -1,0 +1,22 @@
+{
+  "id": "point-and-shoot",
+  "name": "指哪打哪",
+  "version": "1.0.0",
+  "description": "在场景中标记人物位置",
+  "type": "plugin",
+  "author": "XiaoLuo Team",
+  "category": "image",
+  "icon": "🎯",
+  "permissions": ["call_model"],
+  "sandbox": "none",
+  "runtime": {
+    "kind": "prompt",
+    "entry": "./skill.ts"
+  },
+  "metadata": {
+    "builtin": true,
+    "independentPackage": true,
+    "packagePath": "extensions/plugins/point-and-shoot",
+    "entry": "index.ts"
+  }
+}

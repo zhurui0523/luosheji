@@ -4,9 +4,10 @@ interface WebSandboxProps {
   code: string;
   className?: string;
   onMessage?: (message: any) => void;
+  context?: any;
 }
 
-export const WebSandbox: React.FC<WebSandboxProps> = ({ code, className, onMessage }) => {
+export const WebSandbox: React.FC<WebSandboxProps> = ({ code, className, onMessage, context }) => {
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -35,7 +36,12 @@ export const WebSandbox: React.FC<WebSandboxProps> = ({ code, className, onMessa
                 "react-dom": "https://esm.sh/react-dom@18.2.0",
                 "lucide-react": "https://esm.sh/lucide-react@0.263.1",
                 "framer-motion": "https://esm.sh/framer-motion@10.16.4",
-                "recharts": "https://esm.sh/recharts@2.8.0"
+                "recharts": "https://esm.sh/recharts@2.8.0",
+                "three": "https://esm.sh/three@0.150.0",
+                "three/addons/": "https://esm.sh/three@0.150.0/examples/jsm/",
+                "clsx": "https://esm.sh/clsx@2.0.0",
+                "tailwind-merge": "https://esm.sh/tailwind-merge@1.14.0",
+                "motion/react": "https://esm.sh/framer-motion@11.0.0"
               }
             }
           </script>
@@ -50,6 +56,7 @@ export const WebSandbox: React.FC<WebSandboxProps> = ({ code, className, onMessa
             window.React = React;
             window.ReactDOM = { ...ReactDOM, ...ReactDOMClient };
             window.LucideReact = LucideReact;
+            window.pluginContext = ${JSON.stringify(context || {})};
           </script>
           <style>
             body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }

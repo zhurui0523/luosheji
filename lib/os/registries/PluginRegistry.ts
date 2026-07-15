@@ -1,5 +1,7 @@
-import { PluginDefinition, SkillDefinition } from '../types';
-import { SkillRegistry } from './SkillRegistry';
+import { PluginDefinition, SkillDefinition, ExtensionManifest, ExtensionLifecycleState } from '../types';
+import { ExtensionRegistry } from './ExtensionRegistry';
+import { validateExtensionManifest } from '../extension/validateManifest';
+import { BUILTIN_PLUGIN_MANIFESTS, SYSTEM_PLUGINS } from '../../../plugin/definitions';
 
 class PluginRegistryService {
   private plugins: Map<string, PluginDefinition> = new Map();
@@ -15,87 +17,14 @@ class PluginRegistryService {
   }
 
   private registerDefaultPlugins() {
-    const defaultPlugins: PluginDefinition[] = [
-      {
-        id: 'panorama',
-        name: 'VR全景世界',
-        version: '1.0.0',
-        description: '生成专业级 720° 全景 VR 素材',
-        icon: '🧭',
-        category: 'image',
-        permissions: [],
-        contributes: {
-          skills: [SkillRegistry.get('panorama')!].filter(Boolean)
-        },
-        enabled: true
-      },
-      {
-        id: 'camera-control',
-        name: '相机调整',
-        version: '1.0.0',
-        description: '配置镜头焦段、光圈、色调等专业参数',
-        icon: '🎬',
-        category: 'image',
-        permissions: [],
-        contributes: {
-          skills: [SkillRegistry.get('camera-control')!].filter(Boolean)
-        },
-        enabled: true
-      },
-      {
-        id: 'perspective-sim',
-        name: '透视模拟',
-        version: '1.0.0',
-        description: '三维空间透视网格模拟',
-        icon: '📐',
-        category: 'image',
-        permissions: [],
-        contributes: {
-          skills: [SkillRegistry.get('perspective-sim')!].filter(Boolean)
-        },
-        enabled: true
-      },
-      {
-        id: 'point-and-shoot',
-        name: '指哪打哪',
-        version: '1.0.0',
-        description: '在场景中标记人物位置',
-        icon: '🎯',
-        category: 'image',
-        permissions: [],
-        contributes: {
-          skills: [SkillRegistry.get('point-and-shoot')!].filter(Boolean)
-        },
-        enabled: true
-      },
-      {
-        id: 'ai-creative-director',
-        name: 'AI 创意总监 (Creative Director)',
-        version: '1.0.0',
-        description: '全自研即插即用插件，负责自动剧本扩写与画风匹配',
-        icon: '🎨',
-        category: 'text',
-        permissions: [],
-        contributes: {
-          skills: [
-            {
-              id: 'creative-expand',
-              name: '🪄 剧本高阶扩写',
-              description: '自动对极简文本提示进行戏剧冲突扩写与多角色场景编排',
-              category: 'text',
-              instruction: '你是一位精通戏剧冲突的高级剧作总监，请对用户提供的主题，进行至少200字的生动场景描述与画风匹配建议。',
-              execute: async (task, context) => {
-                const prompt = typeof task === 'string' ? task : (task.prompt || '');
-                return { text: `【创意润色】${prompt}\n\n在光影斑驳的都市一角，戏剧冲突正悄然拉开序幕... (即插即用 Skill 创意总监执行成功！)` };
-              }
-            }
-          ]
-        },
-        enabled: true
+    BUILTIN_PLUGIN_MANIFESTS.forEach((manifest) => {
+      try {
+        this.registerManifest(manifest);
+        ExtensionRegistry.install(manifest);
+      } catch (err) {
+        console.warn(`[PluginRegistry] Failed to register builtin plugin package "${manifest.id}":`, err);
       }
-    ];
-
-    defaultPlugins.forEach(p => this.register(p));
+    });
   }
 
   private loadCustomAndUserPlugins() {
@@ -113,7 +42,9 @@ class PluginRegistryService {
       for (const [id, editedData] of Object.entries(editedPlugins)) {
         const existing = this.plugins.get(id);
         if (existing) {
-          this.plugins.set(id, { ...existing, ...(editedData as any) });
+          const updatedPlugin = { ...existing, ...(editedData as any) };
+          this.plugins.set(id, updatedPlugin);
+          
         }
       }
 
@@ -145,10 +76,6 @@ class PluginRegistryService {
             promptLabel: oldP.promptLabel,
             promptPlaceholder: oldP.promptPlaceholder
           };
-          
-          // Register the skill dynamically as well
-          SkillRegistry.register(skill);
-
           return {
             id: oldP.id,
             name: oldP.name,
@@ -171,11 +98,37 @@ class PluginRegistryService {
       // Register all v2 plugins
       v2Plugins.forEach((p: PluginDefinition) => {
         this.register(p);
-        // Also register any skills contributed by custom user plugins
-        if (p.contributes?.skills) {
-          p.contributes.skills.forEach(s => SkillRegistry.register(s));
-        }
       });
+
+      // 4. Read user_extension_manifests (manifest format)
+      const manifestsRaw = localStorage.getItem('user_extension_manifests');
+      if (manifestsRaw) {
+        try {
+          const manifests = JSON.parse(manifestsRaw);
+          if (Array.isArray(manifests)) {
+            manifests.forEach((m: any) => {
+              try {
+                const validation = validateExtensionManifest(m);
+                if (validation.ok && validation.manifest) {
+                  this.registerManifest(validation.manifest);
+                  // Also register into ExtensionRegistry
+                  try {
+                    ExtensionRegistry.install(validation.manifest);
+                  } catch (extErr) {
+                    console.warn(`[PluginRegistry] Failed to register manifest in ExtensionRegistry:`, extErr);
+                  }
+                } else {
+                  console.warn(`[PluginRegistry] Manifest validation failed for custom plugin "${m?.id || 'unknown'}":`, validation.errors);
+                }
+              } catch (singleManifestErr) {
+                console.warn(`[PluginRegistry] Error loading extension manifest:`, singleManifestErr);
+              }
+            });
+          }
+        } catch (manifestJsonErr) {
+          console.warn(`[PluginRegistry] Failed to parse user_extension_manifests:`, manifestJsonErr);
+        }
+      }
 
     } catch (e) {
       console.error('Failed to load user and custom plugins in PluginRegistry:', e);
@@ -183,17 +136,57 @@ class PluginRegistryService {
   }
 
   public register(plugin: PluginDefinition) {
-    this.plugins.set(plugin.id, plugin);
-    // Auto-register contributed skills
-    if (plugin.contributes?.skills) {
-      plugin.contributes.skills.forEach(s => SkillRegistry.register(s));
+    try {
+      this.plugins.set(plugin.id, plugin);
+    } catch (pluginErr) {
+      console.error(`[PluginRegistry] Error registering plugin "${plugin?.id}":`, pluginErr);
     }
+  }
+
+  public registerManifest(manifest: ExtensionManifest): PluginDefinition {
+    const plugin: PluginDefinition = {
+      id: manifest.id,
+      name: manifest.name,
+      version: manifest.version,
+      description: manifest.description,
+      icon: manifest.icon || '🔌',
+      category: manifest.category || 'tool',
+      enabled: true,
+      permissions: manifest.permissions || [],
+      contributes: manifest.contributes,
+      runtime: (manifest.runtime || manifest.sandbox) ? {
+        entry: manifest.runtime?.entry,
+        sandbox: manifest.sandbox || 'none'
+      } : undefined,
+      metadata: manifest.metadata,
+      manifest,
+      state: 'enabled'
+    };
+
+    // Avoid calling register(plugin) which would auto-register skills. Instead, directly save it.
+    this.plugins.set(plugin.id, plugin);
+    return plugin;
+  }
+
+  public loadFromManifestList(manifests: ExtensionManifest[]): PluginDefinition[] {
+    const loaded: PluginDefinition[] = [];
+    manifests.forEach(m => {
+      try {
+        const plugin = this.registerManifest(m);
+        loaded.push(plugin);
+      } catch (err) {
+        console.warn(`[PluginRegistry] Failed to register manifest "${m?.id}":`, err);
+      }
+    });
+    return loaded;
   }
 
   public unregister(id: string) {
     const plugin = this.plugins.get(id);
-    if (plugin && plugin.contributes?.skills) {
-      plugin.contributes.skills.forEach(s => SkillRegistry.unregister(s.id));
+    if (plugin?.manifest) {
+      this.plugins.delete(id);
+      this.saveUserPluginsV2();
+      return;
     }
     this.plugins.delete(id);
     this.saveUserPluginsV2();
@@ -215,7 +208,8 @@ class PluginRegistryService {
     if (typeof window === 'undefined') return;
     try {
       // Find all custom (non-system) plugins
-      const customPlugins = this.list().filter(p => !['panorama', 'camera-control', 'perspective-sim', 'point-and-shoot'].includes(p.id));
+      const systemIds = SYSTEM_PLUGINS.map(sp => sp.id);
+      const customPlugins = this.list().filter(p => !systemIds.includes(p.id));
       localStorage.setItem('user_plugins_v2', JSON.stringify(customPlugins));
     } catch (e) {
       console.error('Failed to save user_plugins_v2 to localStorage:', e);

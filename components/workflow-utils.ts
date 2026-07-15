@@ -278,8 +278,8 @@ export const getActualCanvasCardSizeAndPort = (item: HistoryItem) => {
     (item.config?.isPipelineNode &&
       (item.status === "error" || item.status === "failed"))
   ) {
-    const w = 360;
-    const h = 340;
+    const w = 380;
+    const h = 420;
     return {
       width: w,
       height: h,

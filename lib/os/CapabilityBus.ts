@@ -3,7 +3,12 @@ import { IntentRuntime } from './IntentRuntime';
 import { AgentRegistry } from './registries/AgentRegistry';
 import { ModelRegistry } from './registries/ModelRegistry';
 import { SkillRegistry } from './registries/SkillRegistry';
-import { Task, RuntimeTask, RuntimeContext, CapabilityResult, CanvasArtifact } from './types';
+import { ExtensionRegistry } from './registries/ExtensionRegistry';
+import { OpenSourceAdapterRegistry } from './registries/OpenSourceAdapterRegistry';
+import { ExtensionAdapterRunner } from './extension/ExtensionAdapterRunner';
+import { ArtifactFactory } from './artifacts/ArtifactFactory';
+import { PermissionGuard } from './security/PermissionGuard';
+import { Task, RuntimeTask, RuntimeContext, CapabilityResult } from './types';
 
 export interface CapabilityPayload {
   prompt?: string;
@@ -63,6 +68,13 @@ class CapabilityBusService {
       };
     }
 
+    // Ensure task reference inside systemContext for selectBest model routing
+    systemContext.task = task;
+
+    // Load custom interfaces / user-defined models into the registry for this execution cycle
+    ModelRegistry.loadUserConnections(systemContext.config || systemContext);
+    AgentRegistry.loadUserAgents(systemContext.config || systemContext);
+
     // Publish TASK_STARTED
     task.lifecycle = 'RUNNING';
     task.status = 'running';
@@ -78,45 +90,140 @@ class CapabilityBusService {
       if (task.skillId) {
         const skill = SkillRegistry.get(task.skillId);
         if (skill) {
-          if (skill.execute) {
-            resultOutput = await skill.execute(task, systemContext);
-            success = true;
-            providerUsed = 'SkillExecutor';
-          } else {
-            // skill has only instruction -> prompt skill. Run with the best text model
-            const modelProvider = ModelRegistry.selectBest('text', systemContext);
-            if (!modelProvider) throw new Error('No text model available in registry');
-            
-            const systemInstruction = skill.instruction || '';
-            const prompt = task.prompt || '';
-            
-            resultOutput = await modelProvider.call('generateContent', {
-              model: modelProvider.id,
-              contents: [{ role: 'user', parts: [{ text: prompt }] }],
-              config: { systemInstruction, temperature: 0.7 }
-            }, systemContext.config);
-            
-            success = true;
-            providerUsed = modelProvider.name;
+          const extId = skill.metadata?.extensionId;
+          let extensionPermissions: any[] = [];
+          if (extId) {
+            const extRecord = ExtensionRegistry.get(extId);
+            if (extRecord && extRecord.state !== 'enabled') {
+              throw new Error(`Extension "${extId}" is currently ${extRecord.state || 'disabled'}`);
+            }
+            extensionPermissions = extRecord?.manifest?.permissions || [];
+          }
+          PermissionGuard.assertCanExecute({
+            id: skill.id,
+            type: 'skill',
+            permissions: (skill as any).permissions || extensionPermissions
+          }, systemContext);
+
+          try {
+            if (skill.execute) {
+              resultOutput = await skill.execute(task, systemContext);
+              success = true;
+              providerUsed = 'SkillExecutor';
+            } else {
+              // skill has only instruction -> prompt skill. Run with the best text model
+              const modelProvider = ModelRegistry.selectBest('text', systemContext);
+              if (!modelProvider) throw new Error('No text model available in registry');
+              
+              const systemInstruction = skill.instruction || '';
+              const prompt = task.prompt || '';
+              
+              resultOutput = await modelProvider.call('generateContent', {
+                model: modelProvider.id,
+                contents: [{ role: 'user', parts: [{ text: prompt }] }],
+                config: { systemInstruction, temperature: 0.7 }
+              }, systemContext.config);
+              
+              success = true;
+              providerUsed = modelProvider.name;
+            }
+          } catch (skillErr: any) {
+            if (extId) {
+              ExtensionRegistry.markError(extId, skillErr.message || String(skillErr));
+            }
+            throw skillErr;
           }
         } else {
           throw new Error(`Skill ${task.skillId} not found in SkillRegistry`);
         }
       }
       // 2. If task.agentId exists, use AgentRegistry
-      else if (task.agentId && AgentRegistry.has(task.agentId)) {
-        const agent = AgentRegistry.get(task.agentId)!;
-        resultOutput = await agent.execute(task, systemContext);
-        success = true;
-        providerUsed = agent.name;
+      else if (task.agentId) {
+        const agent = AgentRegistry.get(task.agentId);
+        if (!agent || agent.enabled === false) {
+          throw new Error(`Agent "${task.agentId}" is not installed or is disabled.`);
+        }
+        const extId = agent.metadata?.extensionId;
+        let extensionPermissions: any[] = [];
+        if (extId) {
+          const extRecord = ExtensionRegistry.get(extId);
+          if (extRecord && extRecord.state !== 'enabled') {
+            throw new Error(`Extension "${extId}" is currently ${extRecord.state || 'disabled'}`);
+          }
+          extensionPermissions = extRecord?.manifest?.permissions || [];
+        }
+        PermissionGuard.assertCanExecute({
+          id: agent.id,
+          type: 'agent',
+          permissions: (agent as any).permissions || extensionPermissions
+        }, systemContext);
+
+        try {
+          resultOutput = await agent.execute(task, systemContext);
+          success = true;
+          providerUsed = agent.name;
+        } catch (agentErr: any) {
+          if (extId) {
+            ExtensionRegistry.markError(extId, agentErr.message || String(agentErr));
+          }
+          throw agentErr;
+        }
       }
-      // 3. Find best agent by task.type (CapabilityKind)
+      // 3. If task.adapterId or task.toolId exists, use OpenSourceAdapterRegistry
+      else if ((task as any).adapterId || (task as any).toolId) {
+        const adapterId = (task as any).adapterId || (task as any).toolId;
+        const adapter = OpenSourceAdapterRegistry.get(adapterId);
+        if (!adapter) {
+          throw new Error(`Adapter/Tool "${adapterId}" is not installed or is disabled.`);
+        }
+
+        const extId = adapter.metadata?.extensionId;
+        if (extId) {
+          const extRecord = ExtensionRegistry.get(extId);
+          if (extRecord && extRecord.state !== 'enabled') {
+            throw new Error(`Extension "${extId}" is currently ${extRecord.state || 'disabled'}`);
+          }
+        }
+
+        PermissionGuard.assertCanExecute({
+          id: adapter.id,
+          type: 'adapter',
+          permissions: adapter.permissions
+        }, systemContext);
+
+        resultOutput = await ExtensionAdapterRunner.run(adapter, task.input || task, systemContext);
+        success = true;
+        providerUsed = adapter.name;
+      }
+      // 4. Find best agent by task.type (CapabilityKind)
       else {
         const bestAgent = AgentRegistry.findBestAgent(task, systemContext);
         if (bestAgent) {
-          resultOutput = await bestAgent.execute(task, systemContext);
-          success = true;
-          providerUsed = bestAgent.name;
+          const extId = bestAgent.metadata?.extensionId;
+          let extensionPermissions: any[] = [];
+          if (extId) {
+            const extRecord = ExtensionRegistry.get(extId);
+            if (extRecord && extRecord.state !== 'enabled') {
+              throw new Error(`Extension "${extId}" is currently ${extRecord.state || 'disabled'}`);
+            }
+            extensionPermissions = extRecord?.manifest?.permissions || [];
+          }
+          PermissionGuard.assertCanExecute({
+            id: bestAgent.id,
+            type: 'agent',
+            permissions: (bestAgent as any).permissions || extensionPermissions
+          }, systemContext);
+
+          try {
+            resultOutput = await bestAgent.execute(task, systemContext);
+            success = true;
+            providerUsed = bestAgent.name;
+          } catch (agentErr: any) {
+            if (extId) {
+              ExtensionRegistry.markError(extId, agentErr.message || String(agentErr));
+            }
+            throw agentErr;
+          }
         } else {
           // Fallback to text model registry
           let taskType: any = task.type;
@@ -150,23 +257,7 @@ class CapabilityBusService {
       EventBus.publish('TASK_STATUS_CHANGED' as any, 'CapabilityBus', { ...task }, `[运行时] 任务 [${task.name || task.title}] 执行成功！`);
 
       // Create artifact and publish ARTIFACT_CREATED
-      const artifact: CanvasArtifact = {
-        id: `result_${task.id}`,
-        taskId: task.id,
-        goalId: task.goalId,
-        type: task.type === 'script' ? 'code' : (task.type === 'image' || task.type === 'video' ? task.type : 'text') as any,
-        status: 'success',
-        imageUrl: task.type === 'image' ? (resultOutput?.url || resultOutput?.imageUrl) : undefined,
-        videoUrl: task.type === 'video' ? (resultOutput?.url || resultOutput?.videoUrl) : undefined,
-        prompt: task.prompt,
-        revisedPrompt: resultOutput?.revisedPrompt,
-        config: {
-          title: task.name || task.title,
-          skillId: task.skillId
-        },
-        timestamp: Date.now(),
-        createdAt: Date.now()
-      };
+      const artifact = ArtifactFactory.createFromTask(task, resultOutput);
       
       EventBus.publish('ARTIFACT_CREATED' as any, 'ArtifactEngine', artifact, `[资产引擎] 生成新画布产物: ${task.name || task.title}`);
       

@@ -330,6 +330,85 @@ export class BaseAgent {
     return normalizedPath;
   }
 
+  private getPathValue(source: any, path?: string): any {
+    if (!path || !source) return undefined;
+    return path.split('.').reduce((current, segment) => {
+      if (current === undefined || current === null) return undefined;
+      const arrayMatch = segment.match(/^(.+?)\[(\d+)\]$/);
+      if (arrayMatch) {
+        return current[arrayMatch[1]]?.[Number(arrayMatch[2])];
+      }
+      return current[segment];
+    }, source);
+  }
+
+  private renderMappingTemplate(template: any, context: Record<string, any>): any {
+    if (Array.isArray(template)) {
+      return template.map(item => this.renderMappingTemplate(item, context));
+    }
+    if (template && typeof template === 'object') {
+      return Object.fromEntries(
+        Object.entries(template).map(([key, value]) => [key, this.renderMappingTemplate(value, context)])
+      );
+    }
+    if (typeof template !== 'string') {
+      return template;
+    }
+
+    const exactMatch = template.match(/^{{\s*([^}]+)\s*}}$/);
+    if (exactMatch) {
+      const value = this.getPathValue(context, exactMatch[1].trim());
+      return value === undefined ? template : value;
+    }
+
+    return template.replace(/{{\s*([^}]+)\s*}}/g, (_match, path) => {
+      const value = this.getPathValue(context, String(path).trim());
+      if (value === undefined || value === null) return '';
+      return typeof value === 'string' ? value : JSON.stringify(value);
+    });
+  }
+
+  private applyRequestMapping(body: any, requestMapping: any, context: Record<string, any>): any {
+    if (!requestMapping || typeof requestMapping !== 'object') {
+      return body;
+    }
+
+    const mappingBody = requestMapping.body || requestMapping.payload || requestMapping.json;
+    if (!mappingBody) {
+      return body;
+    }
+
+    return this.renderMappingTemplate(mappingBody, {
+      ...context,
+      body
+    });
+  }
+
+  private applyResponseMapping(result: any, responseMapping: any): any {
+    if (!responseMapping || typeof responseMapping !== 'object') {
+      return result;
+    }
+
+    if (responseMapping.root) {
+      const rootValue = this.getPathValue(result, responseMapping.root);
+      if (rootValue !== undefined) {
+        return rootValue;
+      }
+    }
+
+    const mapped = { ...result };
+    for (const key of ['text', 'url', 'image', 'images', 'videoUrl', 'operationId']) {
+      const path = responseMapping[key];
+      if (typeof path === 'string') {
+        const value = this.getPathValue(result, path);
+        if (value !== undefined) {
+          mapped[key] = value;
+        }
+      }
+    }
+    return mapped;
+  }
+
   public async callApiFormData(type: ApiConfigKey, formData: FormData, config?: Config): Promise<any> {
     const apiConfig = config ? config[type] : null;
     if (!apiConfig) throw new Error(`未找到 ${type} 的配置信息`);
@@ -387,6 +466,9 @@ export class BaseAgent {
     if (type === 'script' && (modelStr === 'claude-sonnet-5' || modelStr.includes('claude'))) {
       resolvedType = 'claudeSonnet';
     }
+    if (type === 'script' && (modelStr === 'gpt-4o' || modelStr.includes('gpt'))) {
+      resolvedType = 'gptText';
+    }
     let apiConfigRaw = config ? config[resolvedType] : null;
     if (!apiConfigRaw && config?.customInterfaces?.[resolvedType]) {
       apiConfigRaw = config.customInterfaces[resolvedType];
@@ -420,16 +502,17 @@ export class BaseAgent {
       endpoint.includes('/chat/completions') || 
       endpoint.includes('/v1/images/generations') || 
       endpoint.includes('/v1/chat/completions') ||
+      endpoint.includes('/v1/messages') ||
       endpoint.includes('/v1/video/create') ||
       endpoint.includes('/v1/videos')
     );
 
-    const isThirdParty = (apiConfig.provider === 'Third Party' || apiConfig.provider === 'OpenAI') || (resolvedType === 'gptImage') || (body?.model?.includes('gpt-image'));
+    const isThirdParty = (apiConfig.provider === 'Third Party' || apiConfig.provider === 'OpenAI') || (resolvedType === 'gptImage') || (resolvedType === 'gptText') || (body?.model?.includes('gpt-image')) || (body?.model?.includes('gpt'));
 
     if (!apiKey) {
       const isSeedance = apiConfig.provider === 'Seedance' || resolvedType === 'videoSeedance' || resolvedType === 'videoSeedanceMini';
       const targetType = isSeedance ? 'Seedance/Ark' : ((isThirdParty || forceOpenAI) ? 'OpenAI/GPT' : resolvedType);
-      const slotName = resolvedType === 'gptImage' ? 'GPT-IMAGE-2' : (resolvedType === 'script' ? '剧本生成' : (resolvedType === 'claudeSonnet' ? 'Claude-sonnet-5' : (resolvedType === 'videoSeedance' ? 'Seedance 2.0' : (resolvedType === 'videoSeedanceMini' ? 'SD2.0Mini' : resolvedType))));
+      const slotName = resolvedType === 'gptImage' ? 'GPT-IMAGE-2' : (resolvedType === 'gptText' ? 'GPT-4o (GPT TEXT)' : (resolvedType === 'script' ? '剧本生成' : (resolvedType === 'claudeSonnet' ? 'Claude-sonnet-5' : (resolvedType === 'videoSeedance' ? 'Seedance 2.0' : (resolvedType === 'videoSeedanceMini' ? 'SD2.0Mini' : resolvedType)))));
       throw new Error(`未找到 ${targetType} 的 API Key (配置槽: ${slotName})，请在大模型 API 设置中检查配置。`);
     }
 
@@ -442,7 +525,7 @@ export class BaseAgent {
                    body?.config?.image_config?.image_size || body?.generationConfig?.image_config?.image_size;
     const is4K = rawSize === '4K' || rawSize === 'ultra' || (typeof rawSize === 'string' && rawSize.includes('4096'));
     const isVideo = resolvedType === 'video' || resolvedType === 'videoSeedance' || resolvedType === 'videoSeedanceMini' || resolvedType === 'videoVeoFast';
-    let timeoutMs = isVideo ? 1800000 : (resolvedType === 'image' || resolvedType === 'script' || resolvedType === 'gptImage' ? 1800000 : 300000); 
+    let timeoutMs = isVideo ? 1800000 : (resolvedType === 'image' || resolvedType === 'script' || resolvedType === 'gptImage' || resolvedType === 'gptText' ? 1800000 : 300000); 
 
     const safetySettings = [
       { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_ONLY_HIGH" },
@@ -565,13 +648,18 @@ export class BaseAgent {
     const isGeminiMultimodal = normTarget.includes('image-preview') || normTarget.includes('imagen');
     const isExplicitGpt = normTarget.includes('gpt') || normTarget.includes('dall-e') || normTarget.includes('claude');
     
-    // SMART PROTOCOL DETECTION: If it's a full URL, trust the URL tokens over the toggle
+    // Protocol selection must respect the user's explicit API type first.
+    // Endpoint/model heuristics are only fallbacks for old configs without protocolType.
     const isGoogleEndpoint = endpoint.includes(':generateContent') || endpoint.includes(':predict') || endpoint.includes(':generateImages') || endpoint.includes('googleapis.com') || apiConfig.provider === 'Google';
     const isOpenAiEndpoint = endpoint.includes('/chat/completions') || endpoint.includes('/v1/images/generations') || endpoint.includes('/v1/chat/completions');
     
     let effectiveProtocol: 'google' | 'openai' | 'claude' = 'google';
     if (apiConfig.protocolType === 'claude' || apiConfig.protocolType === 'anthropic' || endpoint.includes('/v1/messages') || endpoint.includes('/messages')) {
       effectiveProtocol = 'claude';
+    } else if (apiConfig.protocolType === 'google') {
+      effectiveProtocol = 'google';
+    } else if (apiConfig.protocolType === 'openai') {
+      effectiveProtocol = 'openai';
     } else if (isGoogleEndpoint) {
       effectiveProtocol = 'google';
     } else if (isOpenAiEndpoint) {
@@ -1046,13 +1134,20 @@ export class BaseAgent {
         }
         
         let finalUrl = url;
-        let finalBody = body;
+        const mappedBody = this.applyRequestMapping(body, apiConfig.requestMapping, {
+          type,
+          method,
+          model: targetModel,
+          prompt: body?.prompt || body?.contents?.[0]?.parts?.find?.((part: any) => part?.text)?.text || '',
+          body
+        });
+        let finalBody = mappedBody;
         const isServer = typeof window === "undefined";
         const needsBridge = !isServer && !url.includes("localhost") && (apiConfig.provider === "Seedance" || url.includes("volces.com") || url.includes("vectorengine.ai") || url.includes("openai.com") || url.includes("googleapis.com"));
 
         if (needsBridge) {
           finalUrl = "/api/v1/bridge";
-          finalBody = { u: toBase64(url), m: "POST", b: toBase64(JSON.stringify(body)), k: apiKey };
+          finalBody = { u: toBase64(url), m: "POST", b: toBase64(JSON.stringify(mappedBody)), k: apiKey };
         } else if (isServer && finalUrl.startsWith("/")) {
           // If we are on the server and it's a relative URL, we must make it absolute
           finalUrl = `http://localhost:3000${finalUrl}`;
@@ -1088,8 +1183,6 @@ export class BaseAgent {
             else throw new Error(`API 返回解析失败 (${response.status})`);
           }
         }
-
-        logUsage(type === 'gptImage' ? 'gpt_image_gen' : (type === 'image' ? 'image_gen' : 'text_ai'), 0, { method, model: targetModel });
 
         if (!response.ok) {
           let errorMsg = result?.error?.message || result?.message || `API 请求失败 (${response.status})`;
@@ -1145,6 +1238,10 @@ export class BaseAgent {
           }
           throw new Error(errorMsg);
         }
+
+        result = this.applyResponseMapping(result, apiConfig.responseMapping);
+
+        logUsage(type === 'gptImage' ? 'gpt_image_gen' : (type === 'image' ? 'image_gen' : 'text_ai'), 0, { method, model: targetModel });
 
         // Post-processing responses for UI compatibility
         if (method === 'generateContent' && !result.text && result.candidates?.[0]?.content?.parts?.[0]?.text) {
@@ -1255,4 +1352,3 @@ export class BaseAgent {
     throw lastError;
   }
 }
-

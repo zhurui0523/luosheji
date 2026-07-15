@@ -179,7 +179,8 @@ export const DEFAULT_CONFIG: Config = {
     model: 'gemini-3.5-flash',
     apiKey: '',
     protocolType: 'openai',
-    modelType: 'text'
+    modelType: 'text',
+    capabilityKinds: ['text']
   },
   image: {
     provider: 'Third Party',
@@ -188,7 +189,11 @@ export const DEFAULT_CONFIG: Config = {
     model: 'gemini-3.1-flash-image-preview',
     apiKey: '',
     protocolType: 'openai',
-    modelType: 'image'
+    modelType: 'image',
+    capabilityKinds: ['image'],
+    defaultGenerationSettings: {
+      image: { aspectRatio: '1:1', imageSize: '1K' }
+    }
   },
   video: {
     provider: 'Google',
@@ -196,7 +201,11 @@ export const DEFAULT_CONFIG: Config = {
     path: '/v1beta/models/veo-3.1-generate-preview:generateVideos',
     model: 'veo-3.1-generate-preview',
     apiKey: '',
-    modelType: 'video'
+    modelType: 'video',
+    capabilityKinds: ['video'],
+    defaultGenerationSettings: {
+      video: { videoMode: 'all-around', duration: '5', aspectRatio: '16:9', resolution: '720p' }
+    }
   },
   videoVeoFast: {
     provider: 'Google',
@@ -204,7 +213,11 @@ export const DEFAULT_CONFIG: Config = {
     path: '/v1beta/models/veo-3.1-fast-generate-preview:generateVideos',
     model: 'veo-3.1-fast-generate-preview',
     apiKey: '',
-    modelType: 'video'
+    modelType: 'video',
+    capabilityKinds: ['video'],
+    defaultGenerationSettings: {
+      video: { videoMode: 'all-around', duration: '5', aspectRatio: '16:9', resolution: '720p' }
+    }
   },
   videoSeedance: {
     provider: 'Seedance',
@@ -215,7 +228,11 @@ export const DEFAULT_CONFIG: Config = {
     project: '',
     accessKeyId: '',
     secretKey: '',
-    modelType: 'video'
+    modelType: 'video',
+    capabilityKinds: ['video'],
+    defaultGenerationSettings: {
+      video: { videoMode: 'all-around', duration: '5', aspectRatio: '16:9', resolution: '720p' }
+    }
   },
   videoSeedanceMini: {
     provider: 'Seedance',
@@ -226,16 +243,24 @@ export const DEFAULT_CONFIG: Config = {
     project: '',
     accessKeyId: '',
     secretKey: '',
-    modelType: 'video'
+    modelType: 'video',
+    capabilityKinds: ['video'],
+    defaultGenerationSettings: {
+      video: { videoMode: 'all-around', duration: '5', aspectRatio: '16:9', resolution: '720p' }
+    }
   },
   gptImage: {
     provider: 'Third Party',
     endpoint: 'https://api.vectorengine.ai',
     path: '',
-    model: 'gemini-3-flash-preview',
+    model: 'gpt-image-2',
     apiKey: '',
     protocolType: 'openai',
-    modelType: 'image'
+    modelType: 'image',
+    capabilityKinds: ['image'],
+    defaultGenerationSettings: {
+      image: { aspectRatio: '1:1', imageSize: '1K' }
+    }
   },
   claudeSonnet: {
     provider: 'Third Party',
@@ -244,7 +269,18 @@ export const DEFAULT_CONFIG: Config = {
     model: 'Claude-sonnet-5',
     apiKey: '',
     protocolType: 'openai',
-    modelType: 'text'
+    modelType: 'text',
+    capabilityKinds: ['text']
+  },
+  gptText: {
+    provider: 'Third Party',
+    endpoint: 'https://api.openai.com/v1',
+    path: '',
+    model: 'gpt-4o',
+    apiKey: '',
+    protocolType: 'openai',
+    modelType: 'text',
+    capabilityKinds: ['text']
   }
 };
 

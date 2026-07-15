@@ -1,4 +1,4 @@
-
+﻿
 import express from "express";
 import fs from "fs";
 import path from "path";
@@ -35,6 +35,19 @@ import { videoAgent } from "./components/agents/videoAgent.ts";
 import db, { initDb, getLastError, testDatabaseConnection, repairDatabaseSchema } from "./services/database.ts";
 import { testOSSConnection, updateOSSConfig, getOSSClient, uploadToOSS } from "./services/oss.ts";
 import { persistFromBase64, persistFromUrl } from "./services/storage.ts";
+import {
+  buildPluginPackageFromCode,
+  buildAgentPackage,
+  buildSkillPackage,
+  buildWorkflowPackage,
+  deleteUserExtensionPackage,
+  listUserExtensionPackages,
+  syncAgentPackagesFromList,
+  syncModelPackagesFromConfig,
+  writeExtensionPackage,
+  sanitizePackageSegment,
+  type ExtensionPackageKind
+} from "./services/extensionPackages.ts";
 import { execSync } from "child_process";
 import crypto from "crypto";
 
@@ -59,7 +72,9 @@ const DEFAULT_API_CONFIG = {
     path: '/v1beta/models/gemini-1.5-pro:generateContent',
     model: 'gemini-1.5-pro',
     apiKey: '',
-    protocolType: 'openai'
+    protocolType: 'openai',
+    modelType: 'text',
+    capabilityKinds: ['text']
   },
   image: {
     provider: 'Third Party',
@@ -67,7 +82,9 @@ const DEFAULT_API_CONFIG = {
     path: '/v1beta/models/gemini-3.1-flash-image-preview',
     model: 'gemini-3.1-flash-image-preview',
     apiKey: '',
-    protocolType: 'openai'
+    protocolType: 'openai',
+    modelType: 'image',
+    capabilityKinds: ['image']
   },
   video: {
     provider: 'Google',
@@ -75,6 +92,8 @@ const DEFAULT_API_CONFIG = {
     path: '/v1beta/models/veo-3.1-generate-preview:generateVideos',
     model: 'veo-3.1-generate-preview',
     apiKey: '',
+    modelType: 'video',
+    capabilityKinds: ['video']
   },
   videoVeoFast: {
     provider: 'Google',
@@ -82,6 +101,8 @@ const DEFAULT_API_CONFIG = {
     path: '/v1beta/models/veo-3.1-fast-generate-preview:generateVideos',
     model: 'veo-3.1-fast-generate-preview',
     apiKey: '',
+    modelType: 'video',
+    capabilityKinds: ['video']
   },
   videoSeedance: {
     provider: 'Seedance',
@@ -91,7 +112,9 @@ const DEFAULT_API_CONFIG = {
     apiKey: '',
     project: '',
     accessKeyId: '',
-    secretKey: ''
+    secretKey: '',
+    modelType: 'video',
+    capabilityKinds: ['video']
   },
   videoSeedanceMini: {
     provider: 'Seedance',
@@ -101,7 +124,9 @@ const DEFAULT_API_CONFIG = {
     apiKey: '',
     project: '',
     accessKeyId: '',
-    secretKey: ''
+    secretKey: '',
+    modelType: 'video',
+    capabilityKinds: ['video']
   },
   gptImage: {
     provider: 'Third Party',
@@ -109,7 +134,9 @@ const DEFAULT_API_CONFIG = {
     path: '',
     model: 'gpt-image-2',
     apiKey: '',
-    protocolType: 'openai'
+    protocolType: 'openai',
+    modelType: 'image',
+    capabilityKinds: ['image']
   },
   claudeSonnet: {
     provider: 'Third Party',
@@ -117,9 +144,222 @@ const DEFAULT_API_CONFIG = {
     path: '',
     model: 'Claude-sonnet-5',
     apiKey: '',
-    protocolType: 'openai'
+    protocolType: 'openai',
+    modelType: 'text',
+    capabilityKinds: ['text']
+  },
+  gptText: {
+    provider: 'Third Party',
+    endpoint: 'https://api.openai.com/v1',
+    path: '',
+    model: 'gpt-4o',
+    apiKey: '',
+    protocolType: 'openai',
+    modelType: 'text',
+    capabilityKinds: ['text']
   }
 };
+
+const API_CONFIG_SLOT_TYPES: Record<string, 'text' | 'image' | 'video'> = {
+  script: 'text',
+  claudeSonnet: 'text',
+  gptText: 'text',
+  image: 'image',
+  gptImage: 'image',
+  video: 'video',
+  videoVeoFast: 'video',
+  videoSeedance: 'video',
+  videoSeedanceMini: 'video',
+};
+
+const cloneJson = <T,>(value: T): T => JSON.parse(JSON.stringify(value ?? {}));
+
+function defaultGenerationSettingsFor(modelType: 'text' | 'image' | 'video', existing?: any) {
+  if (modelType === 'image') {
+    return {
+      image: {
+        aspectRatio: existing?.image?.aspectRatio || '1:1',
+        imageSize: existing?.image?.imageSize || '1K',
+      },
+    };
+  }
+  if (modelType === 'video') {
+    return {
+      video: {
+        videoMode: existing?.video?.videoMode || 'all-around',
+        duration: existing?.video?.duration || '5',
+        aspectRatio: existing?.video?.aspectRatio || '16:9',
+        resolution: existing?.video?.resolution || '720p',
+      },
+    };
+  }
+  return undefined;
+}
+
+function inferApiModelType(key: string, section: any): 'text' | 'image' | 'video' {
+  if (section?.modelType === 'text' || section?.modelType === 'image' || section?.modelType === 'video') {
+    return section.modelType;
+  }
+  if (API_CONFIG_SLOT_TYPES[key]) return API_CONFIG_SLOT_TYPES[key];
+  const text = `${key} ${section?.model || ''} ${section?.provider || ''} ${section?.category || ''}`.toLowerCase();
+  if (text.includes('video') || text.includes('veo') || text.includes('seedance')) return 'video';
+  if (text.includes('image') || text.includes('gpt-image') || text.includes('dall') || text.includes('banana')) return 'image';
+  return 'text';
+}
+
+function normalizeApiConfigShape(rawConfig: any) {
+  const config = cloneJson(rawConfig || {});
+  const defaults = cloneJson(DEFAULT_API_CONFIG);
+
+  for (const key of Object.keys(defaults)) {
+    const userSection = config[key] && typeof config[key] === 'object' ? config[key] : {};
+    const modelType = inferApiModelType(key, { ...defaults[key as keyof typeof DEFAULT_API_CONFIG], ...userSection });
+    config[key] = {
+      ...(defaults as any)[key],
+      ...userSection,
+      modelType,
+      capabilityKinds: Array.isArray(userSection.capabilityKinds) && userSection.capabilityKinds.length > 0
+        ? userSection.capabilityKinds
+        : [modelType],
+      defaultGenerationSettings: defaultGenerationSettingsFor(modelType, userSection.defaultGenerationSettings),
+    };
+    if (modelType === 'text') {
+      delete config[key].defaultGenerationSettings;
+    }
+  }
+
+  const customInterfaces = config.customInterfaces && typeof config.customInterfaces === 'object'
+    ? config.customInterfaces
+    : {};
+  const normalizedCustom: Record<string, any> = {};
+  for (const [key, section] of Object.entries(customInterfaces)) {
+    if (!section || typeof section !== 'object') continue;
+    const modelType = inferApiModelType(key, section);
+    normalizedCustom[key] = {
+      ...(section as any),
+      modelType,
+      capabilityKinds: Array.isArray((section as any).capabilityKinds) && (section as any).capabilityKinds.length > 0
+        ? (section as any).capabilityKinds
+        : [modelType],
+      enabled: (section as any).enabled !== false,
+      isCustom: (section as any).isCustom !== false,
+      title: (section as any).title || (section as any).displayName || key,
+      defaultGenerationSettings: defaultGenerationSettingsFor(modelType, (section as any).defaultGenerationSettings),
+    };
+    if (modelType === 'text') {
+      delete normalizedCustom[key].defaultGenerationSettings;
+    }
+  }
+  config.customInterfaces = normalizedCustom;
+
+  return config;
+}
+
+const USER_DATA_DIR = path.join(process.cwd(), "data");
+const USER_PREFERENCES_FILE = path.join(USER_DATA_DIR, "user-preferences.json");
+
+type StoredPreference = {
+  pref_value: any;
+  updated_at: string;
+};
+
+type StoredPreferenceFile = Record<string, Record<string, StoredPreference>>;
+
+function readPreferenceFile(): StoredPreferenceFile {
+  try {
+    if (!fs.existsSync(USER_PREFERENCES_FILE)) return {};
+    const raw = fs.readFileSync(USER_PREFERENCES_FILE, "utf8");
+    if (!raw.trim()) return {};
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch (error) {
+    console.error("Failed to read file-backed user preferences:", error);
+    return {};
+  }
+}
+
+function writePreferenceFile(store: StoredPreferenceFile) {
+  fs.mkdirSync(USER_DATA_DIR, { recursive: true });
+  const tempPath = `${USER_PREFERENCES_FILE}.tmp`;
+  fs.writeFileSync(tempPath, `${JSON.stringify(store, null, 2)}\n`, "utf8");
+  fs.renameSync(tempPath, USER_PREFERENCES_FILE);
+}
+
+function getFilePreference(userId: any, prefKey: string) {
+  const store = readPreferenceFile();
+  return store[String(userId)]?.[prefKey] || null;
+}
+
+function setFilePreference(userId: any, prefKey: string, prefValue: any) {
+  const store = readPreferenceFile();
+  const key = String(userId);
+  store[key] = store[key] || {};
+  store[key][prefKey] = {
+    pref_value: prefValue,
+    updated_at: new Date().toISOString(),
+  };
+  writePreferenceFile(store);
+  return store[key][prefKey];
+}
+
+function listFilePreferences(userId: any) {
+  const store = readPreferenceFile();
+  const prefs = store[String(userId)] || {};
+  return Object.entries(prefs).map(([pref_key, item]) => ({
+    pref_key,
+    pref_value: item.pref_value,
+    updated_at: item.updated_at,
+  }));
+}
+
+async function readUserPreferenceValue(userId: any, prefKey: string) {
+  const filePref = getFilePreference(userId, prefKey);
+  if (filePref) return filePref.pref_value;
+
+  try {
+    const [prefRows]: any = await db.query(
+      "SELECT pref_value FROM user_preferences WHERE user_id = ? AND pref_key = ?",
+      [userId, prefKey]
+    );
+    if (prefRows.length > 0) return prefRows[0].pref_value;
+  } catch (error) {
+    console.warn("Database preference read failed, using file fallback:", error);
+  }
+
+  return null;
+}
+
+async function listUserPreferences(userId: any) {
+  const fileRows = listFilePreferences(userId);
+  try {
+    const [dbRows]: any = await db.query(
+      "SELECT pref_key, pref_value, updated_at FROM user_preferences WHERE user_id = ?",
+      [userId]
+    );
+    const merged = new Map<string, any>();
+    for (const row of dbRows) merged.set(row.pref_key, row);
+    for (const row of fileRows) merged.set(row.pref_key, row);
+    return Array.from(merged.values());
+  } catch (error) {
+    console.warn("Database preference list failed, using file fallback:", error);
+    return fileRows;
+  }
+}
+
+async function writeUserPreferenceValue(userId: any, prefKey: string, prefValue: any) {
+  setFilePreference(userId, prefKey, prefValue);
+
+  try {
+    await db.query("DELETE FROM user_preferences WHERE user_id = ? AND pref_key = ?", [userId, prefKey]);
+    await db.query("INSERT INTO user_preferences (user_id, pref_key, pref_value) VALUES (?, ?, ?)", [
+      userId,
+      prefKey,
+      prefValue,
+    ]);
+  } catch (error) {
+    console.warn("Database preference write failed; file-backed preference was saved:", error);
+  }
+}
 
 const getJwtSecret = () => process.env.JWT_SECRET || "default_secret";
 
@@ -193,7 +433,7 @@ async function startServer() {
 
       // Clean up any obsolete/misplaced plugins from the ai_skills table so they don't appear as SKILLs
       try {
-        await db.query("DELETE FROM ai_skills WHERE id IN ('perspective-sim', 'point-and-shoot', 'camera-control', 'panorama')");
+        await db.query("DELETE FROM ai_skills WHERE id IN ('perspective-sim', 'point-and-shoot', 'camera-control', 'panorama', 'ai-creative-director')");
         console.log('>>> [DEBUG] Cleaned up obsolete plugins from ai_skills table.');
       } catch (err) {
         console.error("Failed to clean up obsolete plugins from ai_skills:", err);
@@ -223,14 +463,14 @@ async function startServer() {
           if (exists.length === 0) {
             await db.query(
               'INSERT INTO ai_skills (id, name, `desc`, icon, instruction, creator_id, creator_name, is_public, is_system, tier, custom_options, category, enable_upload, upload_type) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-              [s.id, s.name, s.desc || "", s.icon || "⚙️", s.instruction, null, "官方默认", 1, 1, s.tier || "light", customOptionsStr, s.category || "text", s.enableUpload ? 1 : 0, s.uploadType || "all"]
+              [s.id, s.name, s.desc || "", s.icon || "鈿欙笍", s.instruction, null, "瀹樻柟榛樿", 1, 1, s.tier || "light", customOptionsStr, s.category || "text", s.enableUpload ? 1 : 0, s.uploadType || "all"]
             );
             console.log(`Seeded default system skill: ${s.name}`);
           } else {
             // Update existing system skill options and instructions to stay synchronized with definitions
             await db.query(
               'UPDATE ai_skills SET name = ?, `desc` = ?, icon = ?, instruction = ?, tier = ?, custom_options = ?, category = ?, enable_upload = ?, upload_type = ? WHERE id = ?',
-              [s.name, s.desc || "", s.icon || "⚙️", s.instruction, s.tier || "light", customOptionsStr, s.category || "text", s.enableUpload ? 1 : 0, s.uploadType || "all", s.id]
+              [s.name, s.desc || "", s.icon || "鈿欙笍", s.instruction, s.tier || "light", customOptionsStr, s.category || "text", s.enableUpload ? 1 : 0, s.uploadType || "all", s.id]
             );
           }
         }
@@ -283,18 +523,12 @@ async function startServer() {
             }
           }
 
-          // Ensure all keys from DEFAULT_API_CONFIG exist
-          for (const key of Object.keys(DEFAULT_API_CONFIG)) {
-            if (!config[key]) {
-              config[key] = { ...(DEFAULT_API_CONFIG as any)[key] };
-              changed = true;
-              console.log(`✅ Added missing config slot: ${key}`);
-            }
-          }
+          const normalizedConfig = normalizeApiConfigShape(config);
+          changed = changed || JSON.stringify(normalizedConfig) !== JSON.stringify(config);
 
           if (changed) {
-            await db.query('UPDATE settings SET value = ? WHERE `key` = ?', [JSON.stringify(config), 'global_api_config']);
-            console.log('✅ Global API config migrated and updated');
+            await db.query('UPDATE settings SET value = ? WHERE `key` = ?', [JSON.stringify(normalizedConfig), 'global_api_config']);
+            console.log('Global API config migrated and updated');
           }
         }
       }
@@ -324,7 +558,7 @@ async function startServer() {
   
   // Diagnostic for AI Key
   const aiKey = process.env.GEMINI_API_KEY || process.env.API_KEY || '';
-  console.log(`>>> [AI-Config] GEMINI_API_KEY is ${aiKey ? 'PRESENT (First 4: ' + aiKey.substring(0, 4) + '...)' : 'MISSING'}`);
+  console.log(`>>> [AI-Config] GEMINI_API_KEY is ${aiKey ? 'PRESENT' : 'MISSING'}`);
   fs.appendFileSync(path.join(process.cwd(), 'startup_debug.log'), `[AI-Config] GEMINI_API_KEY: ${aiKey ? 'PRESENT' : 'MISSING'}\n`);
 
   // Trust proxy for accurate rate limiting behind Cloud Run/Nginx
@@ -336,7 +570,7 @@ async function startServer() {
     crossOriginEmbedderPolicy: false
   }));
 
-  // Rate Limiting — Disabled at user request
+  // Rate Limiting 鈥?Disabled at user request
   // const limiter = rateLimit({
   //   windowMs: 15 * 60 * 1000, // 15 minutes
   //   max: 2000, // Increased from 100 to 2000 to support heavy tasks like script decomposition
@@ -349,7 +583,7 @@ async function startServer() {
   // });
   // app.use("/api/", limiter);
 
-  // Auth Limiter for login/register — Disabled at user request
+  // Auth Limiter for login/register 鈥?Disabled at user request
   // const authLimiter = rateLimit({
   //   windowMs: 3 * 60 * 1000, // 3 minutes
   //   max: 5, // Limit each IP to 5 failed attempts per 3 minutes
@@ -357,7 +591,7 @@ async function startServer() {
   //   handler: (req, res, next, options) => {
   //     res.status(options.statusCode).json(options.message);
   //   },
-  //   message: { error: "尝试次数过多，请在3分钟后重试" }
+  //   message: { error: "灏濊瘯娆℃暟杩囧锛岃鍦?鍒嗛挓鍚庨噸璇? }
   // });
   // app.use("/api/auth/", authLimiter);
 
@@ -439,21 +673,21 @@ async function startServer() {
     console.log(`[Auth] Token present: ${!!token}`);
 
     if (token === 'guest') {
-      req.user = { id: 999999, username: '游客', role: 'user', points: 0, status: 'active' };
+      req.user = { id: 999999, username: '娓稿', role: 'user', points: 0, status: 'active' };
       console.log(`[Auth] Authenticated Guest mode user for ${req.path}`);
       return next();
     }
 
     if (!token) {
       console.warn(`[Auth] No token provided for ${req.path}`);
-      return res.status(401).json({ error: "需要身份验证令牌" });
+      return res.status(401).json({ error: "Authentication token required" });
     }
 
     jwt.verify(token, getJwtSecret(), async (err: any, user: any) => {
       if (err) {
         console.error(`[Auth] JWT verification failed for ${req.path}:`, err.message);
         // Change 403 to 401 to avoid Nginx interception of 403 and provide better feedback
-        return res.status(401).json({ error: "令牌无效或已过期，请重新登录" });
+        return res.status(401).json({ error: "浠ょ墝鏃犳晥鎴栧凡杩囨湡锛岃閲嶆柊鐧诲綍" });
       }
       
       // Fetch latest user info from database to handle role transfers and status changes
@@ -465,7 +699,7 @@ async function startServer() {
           user.status = users[0].status;
           
           if (user.status === 'disabled') {
-            return res.status(401).json({ error: "账号已被禁用" });
+            return res.status(401).json({ error: "璐﹀彿宸茶绂佺敤" });
           }
         }
       } catch (dbErr) {
@@ -489,7 +723,7 @@ async function startServer() {
 
   const isAdmin = (req: any, res: any, next: any) => {
     if (req.user.role !== 'admin') {
-      return res.status(401).json({ error: '需要管理员权限' });
+      return res.status(401).json({ error: '闇€瑕佺鐞嗗憳鏉冮檺' });
     }
     next();
   };
@@ -505,7 +739,7 @@ async function startServer() {
 
   app.post("/api/panorama/heal-seam", authenticateToken, async (req: any, res) => {
     const { imageUrl } = req.body;
-    if (!imageUrl) return res.status(400).json({ error: "缺少图片URL" });
+    if (!imageUrl) return res.status(400).json({ error: "缂哄皯鍥剧墖URL" });
 
     try {
       console.log(`>>> [Seam-Fix] Processing image: ${imageUrl}`);
@@ -585,7 +819,7 @@ async function startServer() {
 
     } catch (error: any) {
       console.error("[Seam-Fix] Error:", error);
-      res.status(500).json({ error: "接缝修复失败", details: error.message });
+      res.status(500).json({ error: "鎺ョ紳淇澶辫触", details: error.message });
     }
   });
 
@@ -624,7 +858,7 @@ async function startServer() {
     const { username, password, phone, inviteCode } = req.body;
 
     if (!username || !password || !phone || !inviteCode) {
-      return res.status(400).json({ error: "缺少必填字段" });
+      return res.status(400).json({ error: "缂哄皯蹇呭～瀛楁" });
     }
 
     // Check if invite code is valid and has uses left
@@ -632,7 +866,7 @@ async function startServer() {
     const codeRow = codes[0];
     
     if (!codeRow) {
-      return res.status(400).json({ error: "邀请码无效或已使用" });
+      return res.status(400).json({ error: "閭€璇风爜鏃犳晥鎴栧凡浣跨敤" });
     }
 
     try {
@@ -653,12 +887,12 @@ async function startServer() {
       // Increment code usage
       await db.query("UPDATE invitation_codes SET current_uses = current_uses + 1 WHERE id = ?", [codeRow.id]);
 
-      res.json({ message: "注册成功" });
+      res.json({ message: "娉ㄥ唽鎴愬姛" });
     } catch (e: any) {
       if (e.message.includes('UNIQUE constraint failed') || e.code === 'ER_DUP_ENTRY') {
-        return res.status(400).json({ error: "用户名已存在" });
+        return res.status(400).json({ error: "鐢ㄦ埛鍚嶅凡瀛樺湪" });
       }
-      res.status(500).json({ error: "服务器错误" });
+      res.status(500).json({ error: "Server error" });
     }
   });
 
@@ -668,11 +902,11 @@ async function startServer() {
     const [users]: any = await db.query("SELECT * FROM users WHERE username = ?", [username]);
     const user = users[0];
     
-    if (!user) return res.status(401).json({ error: "用户名或密码错误" });
-    if (user.status === 'disabled') return res.status(401).json({ error: "账号已禁用" });
+    if (!user) return res.status(401).json({ error: "鐢ㄦ埛鍚嶆垨瀵嗙爜閿欒" });
+    if (user.status === 'disabled') return res.status(401).json({ error: "Account disabled" });
 
     const validPassword = await bcrypt.compare(password, user.password);
-    if (!validPassword) return res.status(401).json({ error: "用户名或密码错误" });
+    if (!validPassword) return res.status(401).json({ error: "鐢ㄦ埛鍚嶆垨瀵嗙爜閿欒" });
 
      const token = jwt.sign({ id: user.id, username: user.username, role: user.role }, getJwtSecret(), { expiresIn: '7d' });
     res.json({ token, user: { id: user.id, username: user.username, role: user.role, points: user.points } });
@@ -681,53 +915,53 @@ async function startServer() {
   app.post("/api/auth/verify-forgot", async (req, res) => {
     const { username, phone } = req.body;
     if (!username || !phone) {
-      return res.status(400).json({ error: "请输入用户名和手机号" });
+      return res.status(400).json({ error: "璇疯緭鍏ョ敤鎴峰悕鍜屾墜鏈哄彿" });
     }
 
     try {
       const [users]: any = await db.query("SELECT id, username, phone, status FROM users WHERE username = ?", [username]);
       const user = users[0];
       if (!user) {
-        return res.status(400).json({ error: "用户名或手机号不正确" });
+        return res.status(400).json({ error: "鐢ㄦ埛鍚嶆垨鎵嬫満鍙蜂笉姝ｇ‘" });
       }
       if (user.status === 'disabled') {
-        return res.status(400).json({ error: "账号已禁用" });
+        return res.status(400).json({ error: "Account disabled" });
       }
 
       if (user.phone !== phone) {
-        return res.status(400).json({ error: "用户名或手机号不正确" });
+        return res.status(400).json({ error: "鐢ㄦ埛鍚嶆垨鎵嬫満鍙蜂笉姝ｇ‘" });
       }
 
-      res.json({ success: true, message: "验证成功，请输入新密码" });
+      res.json({ success: true, message: "Verified. Please enter a new password." });
     } catch (e: any) {
       console.error("verify-forgot error:", e);
-      res.status(500).json({ error: "服务器内部错误" });
+      res.status(500).json({ error: "Internal server error" });
     }
   });
 
   app.post("/api/auth/reset-forgot", async (req, res) => {
     const { username, phone, newPassword } = req.body;
     if (!username || !phone || !newPassword) {
-      return res.status(400).json({ error: "信息不完整" });
+      return res.status(400).json({ error: "Incomplete request" });
     }
 
     try {
       const [users]: any = await db.query("SELECT id, username, phone, status FROM users WHERE username = ?", [username]);
       const user = users[0];
       if (!user || user.phone !== phone) {
-        return res.status(400).json({ error: "验证失败，无法修改密码" });
+        return res.status(400).json({ error: "Verification failed" });
       }
       if (user.status === 'disabled') {
-        return res.status(400).json({ error: "账号已禁用" });
+        return res.status(400).json({ error: "Account disabled" });
       }
 
       const hashedPassword = await bcrypt.hash(newPassword, 10);
       await db.query("UPDATE users SET password = ? WHERE id = ?", [hashedPassword, user.id]);
 
-      res.json({ success: true, message: "密码修改成功，请使用新密码登录" });
+      res.json({ success: true, message: "Password reset successfully" });
     } catch (e: any) {
       console.error("reset-forgot error:", e);
-      res.status(500).json({ error: "服务器内部错误" });
+      res.status(500).json({ error: "Internal server error" });
     }
   });
 
@@ -737,7 +971,7 @@ async function startServer() {
     if (req.user.id === 999999) {
       return res.json({
         id: 'guest',
-        username: '游客',
+        username: '娓稿',
         phone: '13800000000',
         points: 0,
         role: 'user',
@@ -752,7 +986,7 @@ async function startServer() {
 
     const [users]: any = await db.query("SELECT id, username, phone, points, role, status, leader_id, point_limit FROM users WHERE id = ?", [req.user.id]);
     const user = users[0];
-    if (!user) return res.status(404).json({ error: "未找到用户" });
+    if (!user) return res.status(404).json({ error: "User not found" });
 
     // Calculate monthly spent for the current user
     const [spentRows]: any = await db.query(
@@ -801,22 +1035,22 @@ async function startServer() {
   app.patch("/api/user/profile", authenticateToken, async (req: any, res) => {
     const { username } = req.body;
     if (!username || username.trim().length < 2) {
-      return res.status(400).json({ error: "用户名长度至少为2个字符" });
+      return res.status(400).json({ error: "Username must be at least 2 characters" });
     }
 
     try {
       // Check if username is already taken
       const [existing]: any = await db.query("SELECT id FROM users WHERE username = ? AND id != ?", [username, req.user.id]);
       if (existing.length > 0) {
-        return res.status(400).json({ error: "该用户名已被占用" });
+        return res.status(400).json({ error: "璇ョ敤鎴峰悕宸茶鍗犵敤" });
       }
 
       const [result]: any = await db.query("UPDATE users SET username = ? WHERE id = ?", [username, req.user.id]);
-      if (result.affectedRows === 0) return res.status(404).json({ error: "未找到用户" });
+      if (result.affectedRows === 0) return res.status(404).json({ error: "User not found" });
 
       res.json({ success: true, username });
     } catch (e: any) {
-      res.status(500).json({ error: "更新用户名失败", details: e.message });
+      res.status(500).json({ error: "Failed to update username", details: e.message });
     }
   });
 
@@ -824,8 +1058,8 @@ async function startServer() {
     const { newPassword } = req.body;
     const hashedPassword = await bcrypt.hash(newPassword, 10);
     const [result]: any = await db.query("UPDATE users SET password = ? WHERE id = ?", [hashedPassword, req.user.id]);
-    if (result.affectedRows === 0) return res.status(500).json({ error: "更新失败" });
-    res.json({ message: "密码已更新" });
+    if (result.affectedRows === 0) return res.status(500).json({ error: "鏇存柊澶辫触" });
+    res.json({ message: "Password updated" });
   });
 
   app.post("/api/user/deduct-points", authenticateToken, async (req: any, res) => {
@@ -833,13 +1067,13 @@ async function startServer() {
     const deductAmount = Number(amount);
     
     if (isNaN(deductAmount) || deductAmount <= 0) {
-      return res.status(400).json({ error: "无效金额" });
+      return res.status(400).json({ error: "鏃犳晥閲戦" });
     }
 
     try {
       const [users]: any = await db.query("SELECT username, points, leader_id, point_limit FROM users WHERE id = ?", [req.user.id]);
       const user = users[0];
-      if (!user) return res.status(404).json({ error: "未找到用户" });
+      if (!user) return res.status(404).json({ error: "User not found" });
 
       let targetId = req.user.id;
       let usingTeamPoints = false;
@@ -867,7 +1101,7 @@ async function startServer() {
         const spent = Number(spentRows[0].spent);
         if (spent + deductAmount > user.point_limit) {
           console.log(`[Points] User ${req.user.id} exceeded point limit. Spent: ${spent}, Limit: ${user.point_limit}`);
-          return res.status(400).json({ error: `已超出本月积分使用上限 (${user.point_limit})，当前已使用 ${spent}。` });
+          return res.status(400).json({ error: `Monthly point limit exceeded (${user.point_limit}). Already used ${spent}.` });
         }
       }
 
@@ -900,13 +1134,13 @@ async function startServer() {
         
         console.log(`[Points] Deduction failed. Target points: ${currentPoints}, Required: ${deductAmount}`);
 
-        let errorMsg = "积分不足";
+        let errorMsg = "绉垎涓嶈冻";
         if (usingTeamPoints) {
-          errorMsg = "团队积分不足";
+          errorMsg = "鍥㈤槦绉垎涓嶈冻";
         } else if (effectiveLeaderId) {
-          errorMsg = `团队积分不足且个人积分不足 (当前个人积分: ${user.points})`;
+          errorMsg = `鍥㈤槦绉垎涓嶈冻涓斾釜浜虹Н鍒嗕笉瓒?(褰撳墠涓汉绉垎: ${user.points})`;
         } else {
-          errorMsg = `积分不足 (当前积分: ${user.points})`;
+          errorMsg = `绉垎涓嶈冻 (褰撳墠绉垎: ${user.points})`;
         }
 
         return res.status(401).json({ 
@@ -933,7 +1167,7 @@ async function startServer() {
       res.json({ success: true, remainingPoints, usingTeamPoints });
     } catch (error: any) {
       console.error('Points deduction failed:', error);
-      res.status(500).json({ error: "积分扣除失败，请稍后重试", details: error.message });
+      res.status(500).json({ error: "绉垎鎵ｉ櫎澶辫触锛岃绋嶅悗閲嶈瘯", details: error.message });
     }
   });
 
@@ -942,7 +1176,7 @@ async function startServer() {
     const refundAmount = Number(amount);
     
     if (isNaN(refundAmount) || refundAmount <= 0) {
-      return res.status(400).json({ error: "无效金额" });
+      return res.status(400).json({ error: "鏃犳晥閲戦" });
     }
 
     try {
@@ -976,7 +1210,7 @@ async function startServer() {
       res.json({ success: true, remainingPoints });
     } catch (error: any) {
       console.error("Refund points error:", error);
-      res.status(500).json({ error: "积分退还失败", details: error.message });
+      res.status(500).json({ error: "Failed to refund points", details: error.message });
     }
   });
 
@@ -999,14 +1233,35 @@ async function startServer() {
       );
       const installedSet = new Set(installedRows.map((r: any) => r.skill_id));
 
-      const mappedCustomSkills = customSkills.map((skill: any) => ({
+      const sourceSkills = customSkills.length > 0
+        ? customSkills
+        : ((db as any).getMode?.() === 'offline'
+          ? SYSTEM_SKILLS.map((skill: any) => ({
+              id: skill.id,
+              name: skill.name,
+              desc: skill.desc || "",
+              icon: skill.icon || "Zap",
+              instruction: skill.instruction || "",
+              creator_id: null,
+              creator_name: "System",
+              is_public: true,
+              is_system: true,
+              tier: skill.tier || "light",
+              category: skill.category || "text",
+              enable_upload: skill.enableUpload ? 1 : 0,
+              upload_type: skill.uploadType || "all",
+              custom_options: skill.customOptions ? JSON.stringify(skill.customOptions) : null,
+            }))
+          : customSkills);
+
+      const mappedCustomSkills = sourceSkills.map((skill: any) => ({
         id: skill.id,
         name: skill.name,
         desc: skill.desc || "",
-        icon: skill.icon || "⚙️",
+        icon: skill.icon || "鈿欙笍",
         instruction: skill.instruction || "",
         creatorId: skill.creator_id,
-        creatorName: skill.creator_name || "未知用户",
+        creatorName: skill.creator_name || "鏈煡鐢ㄦ埛",
         isPublic: Boolean(skill.is_public),
         isSystem: Boolean(skill.is_system),
         tier: skill.tier || "light",
@@ -1027,7 +1282,96 @@ async function startServer() {
       res.json({ success: true, skills: mappedCustomSkills });
     } catch (error: any) {
       console.error("Failed to query skills:", error);
-      res.status(500).json({ error: "获取技能列表失败", details: error.message });
+      res.status(500).json({ error: "Failed to fetch skills", details: error.message });
+    }
+  });
+
+  const inferPackageKindFromManifest = (manifest: any): ExtensionPackageKind => {
+    if (manifest?.type === "skill") return "skill";
+    if (manifest?.type === "agent") return "agent";
+    if (manifest?.type === "model") return "model";
+    if (manifest?.type === "adapter") return "adapter";
+    if (manifest?.type === "workflow") return "workflow";
+    if (manifest?.type === "bundle") return "bundle";
+    const contributes = manifest?.contributes || {};
+    if (contributes.workflowPresets?.length) return "workflow";
+    if (manifest?.adapters?.length || contributes.adapters?.length || contributes.tools?.length) return "adapter";
+    return "plugin";
+  };
+
+  app.get("/api/extensions/packages", authenticateToken, async (req: any, res) => {
+    try {
+      const kind = req.query.kind as ExtensionPackageKind | undefined;
+      const packages = listUserExtensionPackages(kind, req.user.id);
+      res.json({ success: true, packages });
+    } catch (error: any) {
+      console.error("Failed to list extension packages:", error);
+      res.status(500).json({ error: "Failed to list extension packages", details: error.message });
+    }
+  });
+
+  app.post("/api/extensions/packages/import", authenticateToken, async (req: any, res) => {
+    try {
+      const { manifest, kind, files } = req.body || {};
+      if (!manifest?.id || !manifest?.name || !manifest?.version || !manifest?.description || !manifest?.type) {
+        return res.status(400).json({ error: "Invalid manifest. id/name/version/description/type are required." });
+      }
+      const packageKind = (kind || inferPackageKindFromManifest(manifest)) as ExtensionPackageKind;
+      const safeFiles = Array.isArray(files) ? files : [];
+      const result = writeExtensionPackage(packageKind, req.user.id, manifest.id, manifest, safeFiles);
+      res.json({ success: true, package: result });
+    } catch (error: any) {
+      console.error("Failed to import extension package:", error);
+      res.status(500).json({ error: "Failed to import extension package", details: error.message });
+    }
+  });
+
+  app.delete("/api/extensions/packages/:kind/:id", authenticateToken, async (req: any, res) => {
+    try {
+      const kind = req.params.kind as ExtensionPackageKind;
+      const validKinds: ExtensionPackageKind[] = ["skill", "plugin", "agent", "model", "adapter", "workflow", "template", "bundle"];
+      if (!validKinds.includes(kind)) {
+        return res.status(400).json({ error: "Invalid extension package kind." });
+      }
+      const result = deleteUserExtensionPackage(kind, req.user.id, req.params.id);
+      res.json(result);
+    } catch (error: any) {
+      console.error("Failed to delete extension package:", error);
+      res.status(500).json({ error: "Failed to delete extension package", details: error.message });
+    }
+  });
+
+  app.post("/api/agents/packages/sync", authenticateToken, async (req: any, res) => {
+    try {
+      const body = req.body || {};
+      const agents = Array.isArray(body.agents)
+        ? body.agents
+        : body.agent
+          ? [body.agent]
+          : [];
+
+      if (!Array.isArray(agents)) {
+        return res.status(400).json({ error: "Invalid agents payload." });
+      }
+
+      const packages = body.replaceAll === false
+        ? agents.map((agent: any) => buildAgentPackage(agent, { id: req.user.id, username: req.user.username }))
+        : syncAgentPackagesFromList(agents, { id: req.user.id, username: req.user.username });
+
+      res.json({ success: true, packages });
+    } catch (error: any) {
+      console.error("Failed to sync agent packages:", error);
+      res.status(500).json({ error: "Failed to sync agent packages", details: error.message });
+    }
+  });
+
+  app.delete("/api/agents/packages/:id", authenticateToken, async (req: any, res) => {
+    try {
+      const result = deleteUserExtensionPackage("agent", req.user.id, req.params.id);
+      res.json(result);
+    } catch (error: any) {
+      console.error("Failed to delete agent package:", error);
+      res.status(500).json({ error: "Failed to delete agent package", details: error.message });
     }
   });
 
@@ -1052,7 +1396,7 @@ async function startServer() {
           id: row.id,
           name: row.name,
           creatorId: row.creator_id,
-          creatorName: row.creator_name || "未知用户",
+          creatorName: row.creator_name || "鏈煡鐢ㄦ埛",
           history: historyObj,
           createdAt: row.created_at ? new Date(row.created_at).getTime() : Date.now(),
           isShared: true
@@ -1062,18 +1406,18 @@ async function startServer() {
       res.json({ success: true, canvases });
     } catch (error: any) {
       console.error("Failed to query shared canvases:", error);
-      res.status(500).json({ error: "获取共享画布失败", details: error.message });
+      res.status(500).json({ error: "鑾峰彇鍏变韩鐢诲竷澶辫触", details: error.message });
     }
   });
 
   app.post("/api/shared-canvases", authenticateToken, async (req: any, res) => {
     const { id, name, history } = req.body;
     if (!id || !name) {
-      return res.status(400).json({ error: "缺少画布ID或名称" });
+      return res.status(400).json({ error: "Missing canvas id or name" });
     }
 
     const userId = req.user.id;
-    const username = req.user.username || "未知用户";
+    const username = req.user.username || "鏈煡鐢ㄦ埛";
     const historyStr = history ? JSON.stringify(history) : "[]";
 
     try {
@@ -1082,7 +1426,7 @@ async function startServer() {
       if (exists.length > 0) {
         // Check permissions
         if (exists[0].creator_id !== userId && req.user.role !== 'admin') {
-          return res.status(403).json({ error: "您没有权限更新此共享画布" });
+          return res.status(403).json({ error: "鎮ㄦ病鏈夋潈闄愭洿鏂版鍏变韩鐢诲竷" });
         }
         
         await db.query(
@@ -1096,6 +1440,16 @@ async function startServer() {
         );
       }
 
+      let packageInfo: any = null;
+      try {
+        packageInfo = buildWorkflowPackage(
+          { id, name, history, source: "shared_canvas" },
+          { id: userId, username }
+        );
+      } catch (packageErr: any) {
+        console.error("Failed to sync shared canvas workflow package:", packageErr);
+      }
+
       res.json({
         success: true,
         canvas: {
@@ -1105,12 +1459,14 @@ async function startServer() {
           creatorName: username,
           history,
           createdAt: Date.now(),
-          isShared: true
-        }
+          isShared: true,
+          packagePath: packageInfo?.packagePath
+        },
+        package: packageInfo
       });
     } catch (error: any) {
       console.error("Failed to save shared canvas:", error);
-      res.status(500).json({ error: "分享画布失败", details: error.message });
+      res.status(500).json({ error: "鍒嗕韩鐢诲竷澶辫触", details: error.message });
     }
   });
 
@@ -1119,37 +1475,42 @@ async function startServer() {
     try {
       const [rows]: any = await db.query("SELECT creator_id FROM shared_canvases WHERE id = ?", [id]);
       if (rows.length === 0) {
-        return res.status(404).json({ error: "未找到共享画布" });
+        return res.status(404).json({ error: "Shared canvas not found" });
       }
 
       const userId = req.user.id;
       if (rows[0].creator_id !== userId && req.user.role !== 'admin') {
-        return res.status(403).json({ error: "您没有权限删除此共享画布" });
+        return res.status(403).json({ error: "鎮ㄦ病鏈夋潈闄愬垹闄ゆ鍏变韩鐢诲竷" });
       }
 
       await db.query("DELETE FROM shared_canvases WHERE id = ?", [id]);
-      res.json({ success: true, message: "删除共享画布成功" });
+      try {
+        deleteUserExtensionPackage("workflow", rows[0].creator_id, id);
+      } catch (packageErr: any) {
+        console.error("Failed to delete shared canvas workflow package:", packageErr);
+      }
+      res.json({ success: true, message: "鍒犻櫎鍏变韩鐢诲竷鎴愬姛" });
     } catch (error: any) {
       console.error("Failed to delete shared canvas:", error);
-      res.status(500).json({ error: "删除共享画布失败", details: error.message });
+      res.status(500).json({ error: "鍒犻櫎鍏变韩鐢诲竷澶辫触", details: error.message });
     }
   });
 
   app.post("/api/skills", authenticateToken, async (req: any, res) => {
     const { name, desc, icon, instruction, isPublic, tier, customOptions, category, enableUpload, uploadType } = req.body;
     if (!name || !instruction) {
-      return res.status(400).json({ error: "名称和系统提示词属于必填字段" });
+      return res.status(400).json({ error: "鍚嶇О鍜岀郴缁熸彁绀鸿瘝灞炰簬蹇呭～瀛楁" });
     }
 
     const id = "skill_" + Date.now() + "_" + Math.random().toString(36).substring(2, 6);
     const userId = req.user.id;
-    const username = req.user.username || "未知用户";
+    const username = req.user.username || "鏈煡鐢ㄦ埛";
 
     try {
       const customOptionsStr = customOptions ? JSON.stringify(customOptions) : null;
       await db.query(
         "INSERT INTO ai_skills (id, name, `desc`, icon, instruction, creator_id, creator_name, is_public, tier, custom_options, category, enable_upload, upload_type) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        [id, name, desc || "", icon || "⚙️", instruction, userId, username, isPublic !== false ? 1 : 0, tier || "light", customOptionsStr, category || "text", enableUpload ? 1 : 0, uploadType || "all"]
+        [id, name, desc || "", icon || "鈿欙笍", instruction, userId, username, isPublic !== false ? 1 : 0, tier || "light", customOptionsStr, category || "text", enableUpload ? 1 : 0, uploadType || "all"]
       );
 
       // Automatically install for creator
@@ -1158,13 +1519,38 @@ async function startServer() {
         [userId, id]
       );
 
+      let packageInfo: any = null;
+      try {
+        packageInfo = buildSkillPackage(
+          {
+            id,
+            name,
+            desc: desc || "",
+            icon: icon || "Zap",
+            instruction,
+            creator_id: userId,
+            creator_name: username,
+            is_public: isPublic !== false,
+            is_system: false,
+            tier: tier || "light",
+            custom_options: customOptionsStr,
+            category: category || "text",
+            enable_upload: enableUpload ? 1 : 0,
+            upload_type: uploadType || "all"
+          },
+          { id: userId, username }
+        );
+      } catch (packageErr: any) {
+        console.error("Failed to sync user skill package:", packageErr);
+      }
+
       res.json({
         success: true,
         skill: {
           id,
           name,
           desc: desc || "",
-          icon: icon || "⚙️",
+          icon: icon || "鈿欙笍",
           instruction,
           creatorId: userId,
           creatorName: username,
@@ -1175,19 +1561,21 @@ async function startServer() {
           enableUpload: Boolean(enableUpload),
           uploadType: uploadType || "all",
           customOptions: customOptions || null,
-          isInstalled: true
-        }
+          isInstalled: true,
+          packagePath: packageInfo?.packagePath
+        },
+        package: packageInfo
       });
     } catch (error: any) {
       console.error("Failed to create skill:", error);
-      res.status(500).json({ error: "创建技能失败", details: error.message });
+      res.status(500).json({ error: "Failed to create skill", details: error.message });
     }
   });
 
   app.post("/api/plugins/generate", authenticateToken, async (req: any, res) => {
     const { prompt, existingCode, modelSlot } = req.body;
     if (!prompt) {
-      return res.status(400).json({ error: "请输入生成提示词或修改要求" });
+      return res.status(400).json({ error: "Missing generation prompt" });
     }
 
     const slot = modelSlot || 'script';
@@ -1262,7 +1650,41 @@ Requirements:
       res.json({ success: true, code: cleanCode });
     } catch (err: any) {
       console.error("[PluginGenerator] Failed to generate plugin code:", err);
-      res.status(500).json({ error: "生成插件代码失败", details: err.message });
+      res.status(500).json({ error: "鐢熸垚鎻掍欢浠ｇ爜澶辫触", details: err.message });
+    }
+  });
+
+  app.post("/api/plugins/packages/sync", authenticateToken, async (req: any, res) => {
+    try {
+      const { id, name, desc, description, code, category, icon } = req.body || {};
+      if (!code || !String(code).trim()) {
+        return res.status(400).json({ error: "Plugin code is required." });
+      }
+      const packageInfo = buildPluginPackageFromCode(
+        {
+          id,
+          name: name || id || "User Plugin",
+          description: desc || description || "User saved plugin package.",
+          code,
+          category,
+          icon
+        },
+        { id: req.user.id, username: req.user.username }
+      );
+      res.json({ success: true, package: packageInfo });
+    } catch (err: any) {
+      console.error("[PluginPackage] Failed to sync plugin package:", err);
+      res.status(500).json({ error: "Failed to sync plugin package", details: err.message });
+    }
+  });
+
+  app.delete("/api/plugins/packages/:id", authenticateToken, async (req: any, res) => {
+    try {
+      const result = deleteUserExtensionPackage("plugin", req.user.id, req.params.id);
+      res.json(result);
+    } catch (err: any) {
+      console.error("[PluginPackage] Failed to delete plugin package:", err);
+      res.status(500).json({ error: "Failed to delete plugin package", details: err.message });
     }
   });
 
@@ -1271,33 +1693,57 @@ Requirements:
     const { name, desc, icon, instruction, isPublic, tier, customOptions, category, enableUpload, uploadType } = req.body;
 
     if (!name || !instruction) {
-      return res.status(400).json({ error: "名称和系统提示词属于必填字段" });
+      return res.status(400).json({ error: "鍚嶇О鍜岀郴缁熸彁绀鸿瘝灞炰簬蹇呭～瀛楁" });
     }
 
     try {
       // Find skill
       const [skills]: any = await db.query("SELECT * FROM ai_skills WHERE id = ?", [id]);
       if (skills.length === 0) {
-        return res.status(404).json({ error: "技能未找到" });
+        return res.status(404).json({ error: "鎶€鑳芥湭鎵惧埌" });
       }
 
       // Restrict update to creator or admin
       const userId = req.user.id;
       const isUserAdmin = req.user.role === "admin";
       if (skills[0].creator_id !== userId && !isUserAdmin) {
-        return res.status(403).json({ error: "只有创建者或管理员可以修改该技能" });
+        return res.status(403).json({ error: "Only creator or admin can update this skill" });
       }
 
       const customOptionsStr = customOptions ? JSON.stringify(customOptions) : null;
       await db.query(
         "UPDATE ai_skills SET name = ?, `desc` = ?, icon = ?, instruction = ?, is_public = ?, tier = ?, custom_options = ?, category = ?, enable_upload = ?, upload_type = ? WHERE id = ?",
-        [name, desc || "", icon || "⚙️", instruction, isPublic !== false ? 1 : 0, tier || "light", customOptionsStr, category || "text", enableUpload ? 1 : 0, uploadType || "all", id]
+        [name, desc || "", icon || "鈿欙笍", instruction, isPublic !== false ? 1 : 0, tier || "light", customOptionsStr, category || "text", enableUpload ? 1 : 0, uploadType || "all", id]
       );
 
-      res.json({ success: true, message: "技能已更新" });
+      try {
+        buildSkillPackage(
+          {
+            id,
+            name,
+            desc: desc || "",
+            icon: icon || "鈿欙笍",
+            instruction,
+            creator_id: skills[0].creator_id,
+            creator_name: skills[0].creator_name,
+            is_public: isPublic !== false,
+            is_system: skills[0].is_system,
+            tier: tier || "light",
+            custom_options: customOptionsStr,
+            category: category || "text",
+            enable_upload: enableUpload ? 1 : 0,
+            upload_type: uploadType || "all"
+          },
+          { id: skills[0].creator_id, username: skills[0].creator_name || req.user.username }
+        );
+      } catch (packageErr: any) {
+        console.error("Failed to sync updated skill package:", packageErr);
+      }
+
+      res.json({ success: true, message: "鎶€鑳藉凡鏇存柊" });
     } catch (error: any) {
       console.error("Failed to update skill:", error);
-      res.status(500).json({ error: "更新技能失败", details: error.message });
+      res.status(500).json({ error: "Failed to update skill", details: error.message });
     }
   });
 
@@ -1310,12 +1756,12 @@ Requirements:
       // Find skill
       const [skills]: any = await db.query("SELECT * FROM ai_skills WHERE id = ?", [id]);
       if (skills.length === 0) {
-        return res.status(404).json({ error: "技能未找到" });
+        return res.status(404).json({ error: "鎶€鑳芥湭鎵惧埌" });
       }
 
       // Restrict delete to creator or admin to prevent random deletion
       if (skills[0].creator_id !== userId && !isUserAdmin) {
-        return res.status(403).json({ error: "只有创建者或管理员可以删除该技能" });
+        return res.status(403).json({ error: "Only creator or admin can delete this skill" });
       }
 
       // If deleting a system skill, register it as deleted in settings
@@ -1343,10 +1789,15 @@ Requirements:
 
       // Delete from DB (user_skills references it with ON DELETE CASCADE)
       await db.query("DELETE FROM ai_skills WHERE id = ?", [id]);
-      res.json({ success: true, message: "技能已成功删除" });
+      try {
+        deleteUserExtensionPackage("skill", skills[0].creator_id, id);
+      } catch (packageErr: any) {
+        console.error("Failed to delete user skill package:", packageErr);
+      }
+      res.json({ success: true, message: "鎶€鑳藉凡鎴愬姛鍒犻櫎" });
     } catch (error: any) {
       console.error("Failed to delete skill:", error);
-      res.status(500).json({ error: "删除技能失败", details: error.message });
+      res.status(500).json({ error: "Failed to delete skill", details: error.message });
     }
   });
 
@@ -1357,7 +1808,7 @@ Requirements:
     try {
       const [skills]: any = await db.query("SELECT * FROM ai_skills WHERE id = ?", [id]);
       if (skills.length === 0) {
-        return res.status(404).json({ error: "技能未找到" });
+        return res.status(404).json({ error: "鎶€鑳芥湭鎵惧埌" });
       }
 
       // Add to user active list with duplicate safety
@@ -1370,10 +1821,10 @@ Requirements:
         );
       }
 
-      res.json({ success: true, message: "技能已添加入您的专属列表" });
+      res.json({ success: true, message: "Skill installed" });
     } catch (error: any) {
       console.error("Failed to install skill:", error);
-      res.status(500).json({ error: "添加技能失败", details: error.message });
+      res.status(500).json({ error: "Failed to install skill", details: error.message });
     }
   });
 
@@ -1383,16 +1834,16 @@ Requirements:
 
     try {
       await db.query("DELETE FROM user_skills WHERE user_id = ? AND skill_id = ?", [userId, id]);
-      res.json({ success: true, message: "技能已在您的专属列表中移除" });
+      res.json({ success: true, message: "鎶€鑳藉凡鍦ㄦ偍鐨勪笓灞炲垪琛ㄤ腑绉婚櫎" });
     } catch (error: any) {
       console.error("Failed to uninstall skill:", error);
-      res.status(500).json({ error: "移除技能失败", details: error.message });
+      res.status(500).json({ error: "Failed to uninstall skill", details: error.message });
     }
   });
 
   app.post("/api/user/log-usage", authenticateToken, async (req: any, res) => {
     const { type, amount, details } = req.body;
-    if (!type) return res.status(400).json({ error: "缺少类型" });
+    if (!type) return res.status(400).json({ error: "缂哄皯绫诲瀷" });
 
     try {
       await db.query(
@@ -1401,7 +1852,7 @@ Requirements:
       );
       res.json({ success: true });
     } catch (e: any) {
-      res.status(500).json({ error: "记录使用情况失败", details: e.message });
+      res.status(500).json({ error: "璁板綍浣跨敤鎯呭喌澶辫触", details: e.message });
     }
   });
 
@@ -1447,33 +1898,33 @@ Requirements:
         const normalized = (reason || '').toLowerCase();
         const modelStr = (config?.model || '').toLowerCase();
         
-        if (normalized.includes('创作剧本') || normalized.includes('编剧') || normalized.includes('script_gen')) {
-          return '创作剧本';
+        if (normalized.includes('鍒涗綔鍓ф湰') || normalized.includes('缂栧墽') || normalized.includes('script_gen')) {
+          return '鍒涗綔鍓ф湰';
         }
-        if (normalized.includes('分析剧本') || normalized.includes('剧本深度分析') || normalized.includes('拆解剧本')) {
-          return '分析剧本';
+        if (normalized.includes('鍒嗘瀽鍓ф湰') || normalized.includes('鍓ф湰娣卞害鍒嗘瀽') || normalized.includes('鎷嗚В鍓ф湰')) {
+          return '鍒嗘瀽鍓ф湰';
         }
-        if (normalized.includes('影音拉片') || normalized.includes('拉片分析') || normalized.includes('dissector') || normalized.includes('dissect')) {
-          return '影音拉片';
+        if (normalized.includes('褰遍煶鎷夌墖') || normalized.includes('鎷夌墖鍒嗘瀽') || normalized.includes('dissector') || normalized.includes('dissect')) {
+          return '褰遍煶鎷夌墖';
         }
-        if (normalized.includes('改写剧本') || normalized.includes('剧本深度改写')) {
-          return '改写剧本';
+        if (normalized.includes('鏀瑰啓鍓ф湰') || normalized.includes('鍓ф湰娣卞害鏀瑰啓')) {
+          return '鏀瑰啓鍓ф湰';
         }
         
-        if (normalized.includes('video') || normalized.includes('视频') || type === 'video' || modelStr.includes('video') || modelStr.includes('seedance')) {
+        if (normalized.includes('video') || normalized.includes('瑙嗛') || type === 'video' || modelStr.includes('video') || modelStr.includes('seedance')) {
           if (normalized.includes('mini') || modelStr.includes('mini')) {
-            return 'RH-SD2.0mini/多模态视频';
+            return 'RH-SD2.0mini/video';
           }
           if (normalized.includes('2.5') || modelStr.includes('2.5')) {
-            return 'SD.25即将上线/多模态视频';
+            return 'SD2.5/video';
           }
           if (normalized.includes('2.1') || modelStr.includes('2.1')) {
-            return 'Seedance 2.1/多模态视频';
+            return 'Seedance 2.1/video';
           }
-          return 'RH-SD2.0/多模态视频';
+          return 'RH-SD2.0/video';
         }
         
-        if (normalized.includes('image') || normalized.includes('图片') || normalized.includes('图') || type === 'image') {
+        if (normalized.includes('image') || type === 'image') {
           if (modelStr.includes('gpt-image-2') || modelStr.includes('gpt') || normalized.includes('gpt-image-2') || normalized.includes('gpt')) {
             return 'GPT-Image-2';
           }
@@ -1483,20 +1934,20 @@ Requirements:
           return 'nano banana 2';
         }
         
-        if (normalized.includes('提示词')) {
-          return '提示词编写';
+        if (normalized.includes('prompt')) {
+          return 'Prompt writing';
         }
-        if (normalized.includes('质检')) {
-          return '质检审计';
+        if (normalized.includes('璐ㄦ')) {
+          return '璐ㄦ瀹¤';
         }
-        if (normalized.includes('导演') || normalized.includes('制片')) {
-          return '导演制片咨询';
+        if (normalized.includes('瀵兼紨') || normalized.includes('鍒剁墖')) {
+          return '瀵兼紨鍒剁墖鍜ㄨ';
         }
-        if (normalized.includes('灵感编剧') || normalized.includes('灵境文造') || normalized.includes('编剧')) {
-          return '创作剧本';
+        if (normalized.includes('creative-writing') || normalized.includes('script')) {
+          return '鍒涗綔鍓ф湰';
         }
         
-        return reason || '智能创意任务';
+        return reason || 'Creative task';
       };
 
       const parseCreatedAt = (created_at: any): number => {
@@ -1557,11 +2008,11 @@ Requirements:
             if (matchedHistoryIds.has(String(h.id))) continue;
 
             // Type match verification
-            const isVideoSpent = normalized.includes('video') || normalized.includes('视频') || normalized.includes('seedance');
+            const isVideoSpent = normalized.includes('video') || normalized.includes('瑙嗛') || normalized.includes('seedance');
             const isVideoHistory = h.type === 'video';
             if (isVideoSpent !== isVideoHistory) continue;
 
-            const isImageSpent = normalized.includes('image') || normalized.includes('图片') || normalized.includes('图') || normalized.includes('banana');
+            const isImageSpent = normalized.includes('image') || normalized.includes('banana');
             const isImageHistory = h.type === 'image';
             if (isImageSpent !== isImageHistory) continue;
 
@@ -1596,38 +2047,38 @@ Requirements:
         } else if (matchingRefund) {
           isFailed = true;
           matchedRefundIds.add(matchingRefund.id);
-        } else if (reason.toLowerCase().includes('failed') || reason.toLowerCase().includes('失败')) {
+        } else if (reason.toLowerCase().includes('failed') || reason.toLowerCase().includes('澶辫触')) {
           isFailed = true;
         }
 
         const parsedConfig = matchedHistory ? safeParseJson(matchedHistory.config, {}) : null;
         const taskName = mapReasonToTaskName(reason, matchedHistory?.type || '', parsedConfig);
 
-        let status = '成功';
+        let status = 'success';
         if (matchedHistory) {
           if (matchedHistory.status === 'failed' || matchedHistory.status === 'error') {
-            status = '失败';
+            status = 'failed';
           } else if (matchedHistory.status === 'loading' || matchedHistory.status === 'processing' || matchedHistory.status === 'running') {
-            status = '进行中';
+            status = 'running';
           }
         } else if (isFailed) {
-          status = '失败';
+          status = 'failed';
         }
 
         let durationStr = '00:03';
         const seed = spent.id;
-        if (status === '进行中') {
+        if (status === 'running') {
           const startTime = matchedHistory ? Number(matchedHistory.timestamp) : spentTime;
           const elapsedSecs = Math.max(0, Math.floor((Date.now() - startTime) / 1000));
           const mins = Math.floor(elapsedSecs / 60);
           const remSecs = elapsedSecs % 60;
           durationStr = `${String(mins).padStart(2, '0')}:${String(remSecs).padStart(2, '0')}`;
-        } else if (taskName.includes('视频') || taskName.includes('seedance') || taskName.includes('Omni')) {
+        } else if (taskName.toLowerCase().includes('video') || taskName.toLowerCase().includes('seedance') || taskName.includes('Omni')) {
           const secs = 75 + (seed % 285);
           const mins = Math.floor(secs / 60);
           const remSecs = secs % 60;
           durationStr = `${String(mins).padStart(2, '0')}:${String(remSecs).padStart(2, '0')}`;
-        } else if (taskName.toLowerCase().includes('image') || taskName.includes('图')) {
+        } else if (taskName.toLowerCase().includes('image') || taskName.toLowerCase().includes('banana')) {
           const secs = 5 + (seed % 15);
           durationStr = `00:${String(secs).padStart(2, '0')}`;
         } else {
@@ -1696,8 +2147,8 @@ Requirements:
         // Human readable task name
         const taskName = mapReasonToTaskName(reason);
         
-        // If it's a refund due to failure, show as '失败' status so points show as 0 and status shows as '失败'
-        const isFailureRefund = reason.includes('失败') || reason.includes('退款') || reason.toLowerCase().includes('fail') || reason.toLowerCase().includes('refund');
+        // If it's a refund due to failure, show as '澶辫触' status so points show as 0 and status shows as '澶辫触'
+        const isFailureRefund = reason.toLowerCase().includes('fail') || reason.toLowerCase().includes('refund');
 
         let finalCreatedAt = ref.created_at;
         if (refTime) {
@@ -1711,7 +2162,7 @@ Requirements:
           type: ref.type,
           amount: ref.amount,
           taskName: taskName,
-          status: isFailureRefund ? '失败' : '成功',
+          status: isFailureRefund ? '澶辫触' : '鎴愬姛',
           duration: '-'
         };
       });
@@ -1741,7 +2192,7 @@ Requirements:
         }
       });
     } catch (e: any) {
-      res.status(500).json({ error: "获取积分使用情况和任务记录失败", details: e.message });
+      res.status(500).json({ error: "Failed to fetch points usage", details: e.message });
     }
   });
 
@@ -1750,7 +2201,7 @@ Requirements:
   app.get("/api/user/history/:id", authenticateToken, async (req: any, res) => {
     try {
       const [rows]: any = await db.query("SELECT * FROM history WHERE id = ? AND user_id = ?", [req.params.id, req.user.id]);
-      if (rows.length === 0) return res.status(404).json({ error: "未找到记录" });
+      if (rows.length === 0) return res.status(404).json({ error: "Record not found" });
       
       const row = rows[0];
       const item = {
@@ -1768,7 +2219,7 @@ Requirements:
       };
       res.json(item);
     } catch (e: any) {
-      res.status(500).json({ error: "获取记录失败", details: e.message });
+      res.status(500).json({ error: "鑾峰彇璁板綍澶辫触", details: e.message });
     }
   });
 
@@ -1791,7 +2242,7 @@ Requirements:
       }));
       res.json(history);
     } catch (e: any) {
-      res.status(500).json({ error: "获取历史记录失败", details: e.message });
+      res.status(500).json({ error: "鑾峰彇鍘嗗彶璁板綍澶辫触", details: e.message });
     }
   });
 
@@ -1802,7 +2253,7 @@ Requirements:
       const url = await persistFromBase64(data, finalFilename);
       res.json({ success: true, url });
     } catch (e: any) {
-      res.status(500).json({ error: "媒体上传失败", details: e.message });
+      res.status(500).json({ error: "濯掍綋涓婁紶澶辫触", details: e.message });
     }
   });
 
@@ -1956,7 +2407,7 @@ Requirements:
       });
     } catch (e: any) {
       console.error('Failed to save history:', e);
-      res.status(500).json({ error: "保存历史记录失败", details: e.message });
+      res.status(500).json({ error: "淇濆瓨鍘嗗彶璁板綍澶辫触", details: e.message });
     }
   });
 
@@ -1965,7 +2416,7 @@ Requirements:
       await db.query("DELETE FROM history WHERE id = ? AND user_id = ?", [req.params.id, req.user.id]);
       res.json({ success: true });
     } catch (e: any) {
-      res.status(500).json({ error: "删除历史记录失败", details: e.message });
+      res.status(500).json({ error: "鍒犻櫎鍘嗗彶璁板綍澶辫触", details: e.message });
     }
   });
 
@@ -1973,10 +2424,10 @@ Requirements:
 
   app.get("/api/user/preferences", authenticateToken, async (req: any, res) => {
     try {
-      const [rows]: any = await db.query("SELECT pref_key, pref_value, updated_at FROM user_preferences WHERE user_id = ?", [req.user.id]);
+      const rows = await listUserPreferences(req.user.id);
       res.json({ success: true, preferences: rows });
     } catch (e: any) {
-      res.status(500).json({ error: "获取用户偏好失败", details: e.message });
+      res.status(500).json({ error: "鑾峰彇鐢ㄦ埛鍋忓ソ澶辫触", details: e.message });
     }
   });
 
@@ -1984,13 +2435,12 @@ Requirements:
     try {
       const { pref_key, pref_value } = req.body;
       if (!pref_key) {
-        return res.status(400).json({ error: "缺少 pref_key" });
+        return res.status(400).json({ error: "缂哄皯 pref_key" });
       }
-      await db.query("DELETE FROM user_preferences WHERE user_id = ? AND pref_key = ?", [req.user.id, pref_key]);
-      await db.query("INSERT INTO user_preferences (user_id, pref_key, pref_value) VALUES (?, ?, ?)", [req.user.id, pref_key, pref_value]);
+      await writeUserPreferenceValue(req.user.id, pref_key, pref_value);
       res.json({ success: true });
     } catch (e: any) {
-      res.status(500).json({ error: "保存用户偏好失败", details: e.message });
+      res.status(500).json({ error: "淇濆瓨鐢ㄦ埛鍋忓ソ澶辫触", details: e.message });
     }
   });
 
@@ -2007,7 +2457,7 @@ Requirements:
       const [rows]: any = await db.query(query, params);
       res.json({ success: true, learnings: rows });
     } catch (e: any) {
-      res.status(500).json({ error: "获取系统学习经验失败", details: e.message });
+      res.status(500).json({ error: "鑾峰彇绯荤粺瀛︿範缁忛獙澶辫触", details: e.message });
     }
   });
 
@@ -2015,12 +2465,12 @@ Requirements:
     try {
       const { skill_id, learning_key, learning_value } = req.body;
       if (!learning_value) {
-        return res.status(400).json({ error: "缺少 learning_value" });
+        return res.status(400).json({ error: "缂哄皯 learning_value" });
       }
       await db.query("INSERT INTO system_learnings (skill_id, learning_key, learning_value) VALUES (?, ?, ?)", [skill_id || null, learning_key || null, learning_value]);
       res.json({ success: true });
     } catch (e: any) {
-      res.status(500).json({ error: "保存系统学习经验失败", details: e.message });
+      res.status(500).json({ error: "淇濆瓨绯荤粺瀛︿範缁忛獙澶辫触", details: e.message });
     }
   });
 
@@ -2045,7 +2495,7 @@ Requirements:
       }));
       res.json(pipelines);
     } catch (e: any) {
-      res.status(500).json({ error: "获取流水线失败", details: e.message });
+      res.status(500).json({ error: "Failed to fetch workflows", details: e.message });
     }
   });
 
@@ -2187,18 +2637,37 @@ Requirements:
           JSON.stringify(p.segments || []), p.globalRule
         ]
       );
-      res.json({ success: true, assets: p.assets });
+      let packageInfo: any = null;
+      try {
+        packageInfo = buildWorkflowPackage(
+          {
+            ...p,
+            source: "user_pipeline",
+            history: p.tasks || p.segments || [],
+            nodes: p.tasks || [],
+          },
+          { id: req.user.id, username: req.user.username }
+        );
+      } catch (packageErr: any) {
+        console.error("Failed to sync pipeline workflow package:", packageErr);
+      }
+      res.json({ success: true, assets: p.assets, package: packageInfo });
     } catch (e: any) {
-      res.status(500).json({ error: "保存流水线失败", details: e.message });
+      res.status(500).json({ error: "Failed to save workflow", details: e.message });
     }
   });
 
   app.delete("/api/user/pipelines/:id", authenticateToken, async (req: any, res) => {
     try {
       await db.query("DELETE FROM pipelines WHERE id = ? AND user_id = ?", [req.params.id, req.user.id]);
+      try {
+        deleteUserExtensionPackage("workflow", req.user.id, req.params.id);
+      } catch (packageErr: any) {
+        console.error("Failed to delete pipeline workflow package:", packageErr);
+      }
       res.json({ success: true });
     } catch (e: any) {
-      res.status(500).json({ error: "删除流水线失败", details: e.message });
+      res.status(500).json({ error: "Failed to delete workflow", details: e.message });
     }
   });
 
@@ -2206,7 +2675,7 @@ Requirements:
 
   const isLeader = (req: any, res: any, next: any) => {
     if (req.user.role !== 'leader' && req.user.role !== 'admin') {
-      return res.status(401).json({ error: '需要组长或管理员权限' });
+      return res.status(401).json({ error: 'Leader or admin permission required' });
     }
     next();
   };
@@ -2215,7 +2684,7 @@ Requirements:
     if (req.user.role === 'leader' || req.user.role === 'admin' || req.user.leader_id) {
       return next();
     }
-    return res.status(401).json({ error: '需要组长、管理员或团队成员权限' });
+    return res.status(401).json({ error: 'Leader, admin, or team member permission required' });
   };
 
   // --- Leader/Team Management Routes ---
@@ -2227,14 +2696,14 @@ Requirements:
     try {
       // Check if user is in the team
       const [membership]: any = await db.query("SELECT * FROM team_members WHERE team_id = ? AND user_id = ?", [teamId, userId]);
-      if (membership.length === 0) return res.status(404).json({ error: "您不在该团队中" });
+      if (membership.length === 0) return res.status(404).json({ error: "You are not in this team" });
 
       // Check if user is the leader of the team
       const [team]: any = await db.query("SELECT leader_id FROM teams WHERE id = ?", [teamId]);
-      if (team.length === 0) return res.status(404).json({ error: "团队不存在" });
+      if (team.length === 0) return res.status(404).json({ error: "Team not found" });
       
       if (team[0].leader_id === userId) {
-        return res.status(400).json({ error: "组长不能退出团队，请先解散团队或转移权限" });
+        return res.status(400).json({ error: "Leader cannot leave team before transfer or dissolution" });
       }
 
       // Remove from team_members
@@ -2253,7 +2722,7 @@ Requirements:
 
       res.json({ success: true });
     } catch (e: any) {
-      res.status(500).json({ error: "退出团队失败", details: e.message });
+      res.status(500).json({ error: "Failed to leave team", details: e.message });
     }
   });
 
@@ -2277,13 +2746,13 @@ Requirements:
       }
       res.json(teams);
     } catch (e: any) {
-      res.status(500).json({ error: "获取团队列表失败", details: e.message });
+      res.status(500).json({ error: "鑾峰彇鍥㈤槦鍒楄〃澶辫触", details: e.message });
     }
   });
 
   app.post("/api/leader/teams", authenticateToken, async (req: any, res) => {
     const { name } = req.body;
-    if (!name) return res.status(400).json({ error: "团队名称不能为空" });
+    if (!name) return res.status(400).json({ error: "鍥㈤槦鍚嶇О涓嶈兘涓虹┖" });
 
     try {
       const [result]: any = await db.query(
@@ -2292,24 +2761,24 @@ Requirements:
       );
       res.json({ id: result.insertId, name, leader_id: req.user.id });
     } catch (e: any) {
-      res.status(500).json({ error: "创建团队失败", details: e.message });
+      res.status(500).json({ error: "鍒涘缓鍥㈤槦澶辫触", details: e.message });
     }
   });
 
   app.patch("/api/leader/teams/:id", authenticateToken, async (req: any, res) => {
     const { id } = req.params;
     const { name } = req.body;
-    if (!name) return res.status(400).json({ error: "团队名称不能为空" });
+    if (!name) return res.status(400).json({ error: "鍥㈤槦鍚嶇О涓嶈兘涓虹┖" });
 
     try {
       // Ensure the team belongs to the current user
       const [teams]: any = await db.query("SELECT id FROM teams WHERE id = ? AND leader_id = ?", [id, req.user.id]);
-      if (teams.length === 0) return res.status(401).json({ error: "无权修改此团队" });
+      if (teams.length === 0) return res.status(401).json({ error: "No permission to update this team" });
 
       await db.query("UPDATE teams SET name = ? WHERE id = ?", [name, id]);
       res.json({ success: true, name });
     } catch (e: any) {
-      res.status(500).json({ error: "修改团队名称失败", details: e.message });
+      res.status(500).json({ error: "淇敼鍥㈤槦鍚嶇О澶辫触", details: e.message });
     }
   });
 
@@ -2317,7 +2786,7 @@ Requirements:
     try {
       // Ensure the team belongs to the current user
       const [teams]: any = await db.query("SELECT id FROM teams WHERE id = ? AND leader_id = ?", [req.params.id, req.user.id]);
-      if (teams.length === 0) return res.status(401).json({ error: "无权删除此团队" });
+      if (teams.length === 0) return res.status(401).json({ error: "No permission to delete this team" });
 
       // Get all members of this team before deleting
       const [members]: any = await db.query("SELECT user_id FROM team_members WHERE team_id = ?", [req.params.id]);
@@ -2344,7 +2813,7 @@ Requirements:
 
       res.json({ success: true });
     } catch (e: any) {
-      res.status(500).json({ error: "删除团队失败", details: e.message });
+      res.status(500).json({ error: "鍒犻櫎鍥㈤槦澶辫触", details: e.message });
     }
   });
 
@@ -2352,7 +2821,7 @@ Requirements:
     try {
       // Check if user is leader of the team or an admin
       const [teams]: any = await db.query("SELECT leader_id FROM teams WHERE id = ?", [req.params.teamId]);
-      if (teams.length === 0) return res.status(404).json({ error: "团队不存在" });
+      if (teams.length === 0) return res.status(404).json({ error: "Team not found" });
       
       const isLeader = teams[0].leader_id === req.user.id;
       const isAdmin = req.user.role === 'admin';
@@ -2362,7 +2831,7 @@ Requirements:
       const isMember = membership.length > 0;
 
       if (!isLeader && !isAdmin && !isMember) {
-        return res.status(401).json({ error: "无权查看此团队成员" });
+        return res.status(401).json({ error: "No permission to view team members" });
       }
 
       const [members]: any = await db.query(`
@@ -2384,7 +2853,7 @@ Requirements:
 
       res.json(formattedMembers);
     } catch (e: any) {
-      res.status(500).json({ error: "获取成员列表失败", details: e.message });
+      res.status(500).json({ error: "鑾峰彇鎴愬憳鍒楄〃澶辫触", details: e.message });
     }
   });
 
@@ -2395,9 +2864,9 @@ Requirements:
     try {
       // Check if user is leader of the team
       const [teams]: any = await db.query("SELECT leader_id FROM teams WHERE id = ?", [teamId]);
-      if (teams.length === 0) return res.status(404).json({ error: "团队不存在" });
+      if (teams.length === 0) return res.status(404).json({ error: "Team not found" });
       if (teams[0].leader_id !== req.user.id && req.user.role !== 'admin') {
-        return res.status(401).json({ error: "无权向此团队添加成员" });
+        return res.status(401).json({ error: "鏃犳潈鍚戞鍥㈤槦娣诲姞鎴愬憳" });
       }
 
       const [users]: any = await db.query(
@@ -2405,14 +2874,14 @@ Requirements:
         [identifier, identifier]
       );
 
-      if (users.length === 0) return res.status(404).json({ error: "用户不存在" });
+      if (users.length === 0) return res.status(404).json({ error: "User not found" });
       const targetUser = users[0];
 
-      if (targetUser.role === 'admin') return res.status(400).json({ error: "不能添加管理员" });
+      if (targetUser.role === 'admin') return res.status(400).json({ error: "Cannot add admin" });
 
       // Check member limit
       const [count]: any = await db.query("SELECT COUNT(*) as total FROM team_members WHERE team_id = ?", [teamId]);
-      if (count[0].total >= 200) return res.status(400).json({ error: "团队成员已达上限" });
+      if (count[0].total >= 200) return res.status(400).json({ error: "鍥㈤槦鎴愬憳宸茶揪涓婇檺" });
 
       // Add to team_members
       await db.query(
@@ -2425,7 +2894,7 @@ Requirements:
 
       res.json({ success: true });
     } catch (e: any) {
-      res.status(500).json({ error: "添加成员失败", details: e.message });
+      res.status(500).json({ error: "娣诲姞鎴愬憳澶辫触", details: e.message });
     }
   });
 
@@ -2435,9 +2904,9 @@ Requirements:
     try {
       // Check if user is leader of the team
       const [teams]: any = await db.query("SELECT leader_id FROM teams WHERE id = ?", [teamId]);
-      if (teams.length === 0) return res.status(404).json({ error: "团队不存在" });
+      if (teams.length === 0) return res.status(404).json({ error: "Team not found" });
       if (teams[0].leader_id !== req.user.id && req.user.role !== 'admin') {
-        return res.status(401).json({ error: "无权从此团队移除成员" });
+        return res.status(401).json({ error: "鏃犳潈浠庢鍥㈤槦绉婚櫎鎴愬憳" });
       }
 
       await db.query("DELETE FROM team_members WHERE team_id = ? AND user_id = ?", [teamId, userId]);
@@ -2457,7 +2926,7 @@ Requirements:
 
       res.json({ success: true });
     } catch (e: any) {
-      res.status(500).json({ error: "移除成员失败", details: e.message });
+      res.status(500).json({ error: "绉婚櫎鎴愬憳澶辫触", details: e.message });
     }
   });
 
@@ -2486,7 +2955,7 @@ Requirements:
       );
       res.json(members);
     } catch (e: any) {
-      res.status(500).json({ error: "获取成员失败", details: e.message });
+      res.status(500).json({ error: "鑾峰彇鎴愬憳澶辫触", details: e.message });
     }
   });
 
@@ -2497,25 +2966,25 @@ Requirements:
     try {
       // Check if user is leader of the target user or an admin
       const [users]: any = await db.query("SELECT leader_id FROM users WHERE id = ?", [userId]);
-      if (users.length === 0) return res.status(404).json({ error: "用户不存在" });
+      if (users.length === 0) return res.status(404).json({ error: "User not found" });
       
       const isLeader = users[0].leader_id === req.user.id;
       const isAdmin = req.user.role === 'admin';
 
       if (!isLeader && !isAdmin) {
-        return res.status(401).json({ error: "无权修改此成员的积分限制" });
+        return res.status(401).json({ error: "鏃犳潈淇敼姝ゆ垚鍛樼殑绉垎闄愬埗" });
       }
 
       await db.query("UPDATE users SET point_limit = ? WHERE id = ?", [point_limit, userId]);
       res.json({ success: true });
     } catch (e: any) {
-      res.status(500).json({ error: "修改积分限制失败", details: e.message });
+      res.status(500).json({ error: "淇敼绉垎闄愬埗澶辫触", details: e.message });
     }
   });
 
   app.post("/api/leader/add-member", authenticateToken, isLeader, async (req: any, res) => {
     const { identifier } = req.body; // username or phone
-    if (!identifier) return res.status(400).json({ error: "缺少标识符" });
+    if (!identifier) return res.status(400).json({ error: "Missing identifier" });
 
     try {
       const leaderId = req.user.id;
@@ -2523,22 +2992,22 @@ Requirements:
       // Check member limit
       const [countResult]: any = await db.query("SELECT COUNT(*) as count FROM users WHERE leader_id = ?", [leaderId]);
       if (countResult[0].count >= 200) {
-        return res.status(400).json({ error: "团队成员已达上限 (200人)" });
+        return res.status(400).json({ error: "鍥㈤槦鎴愬憳宸茶揪涓婇檺 (200浜?" });
       }
 
       // Find user
       const [users]: any = await db.query("SELECT id, leader_id, role FROM users WHERE username = ? OR phone = ?", [identifier, identifier]);
       const user = users[0];
 
-      if (!user) return res.status(404).json({ error: "未找到该用户" });
-      if (user.leader_id) return res.status(400).json({ error: "该用户已在其他团队中" });
-      if (user.role === 'admin') return res.status(400).json({ error: "不能添加管理员为成员" });
-      if (user.id === leaderId) return res.status(400).json({ error: "不能添加自己" });
+      if (!user) return res.status(404).json({ error: "鏈壘鍒拌鐢ㄦ埛" });
+      if (user.leader_id) return res.status(400).json({ error: "璇ョ敤鎴峰凡鍦ㄥ叾浠栧洟闃熶腑" });
+      if (user.role === 'admin') return res.status(400).json({ error: "涓嶈兘娣诲姞绠＄悊鍛樹负鎴愬憳" });
+      if (user.id === leaderId) return res.status(400).json({ error: "涓嶈兘娣诲姞鑷繁" });
 
       await db.query("UPDATE users SET leader_id = ? WHERE id = ?", [leaderId, user.id]);
-      res.json({ success: true, message: "添加成功" });
+      res.json({ success: true, message: "娣诲姞鎴愬姛" });
     } catch (e: any) {
-      res.status(500).json({ error: "添加成员失败", details: e.message });
+      res.status(500).json({ error: "娣诲姞鎴愬憳澶辫触", details: e.message });
     }
   });
 
@@ -2558,7 +3027,7 @@ Requirements:
       await db.query("UPDATE users SET leader_id = NULL, point_limit = 0 WHERE id = ? AND leader_id = ?", [memberId, leaderId]);
       res.json({ success: true });
     } catch (e: any) {
-      res.status(500).json({ error: "移除成员失败", details: e.message });
+      res.status(500).json({ error: "绉婚櫎鎴愬憳澶辫触", details: e.message });
     }
   });
 
@@ -2569,7 +3038,7 @@ Requirements:
 
       // Check if member is in team
       const [members]: any = await db.query("SELECT id FROM users WHERE id = ? AND leader_id = ?", [memberId, leaderId]);
-      if (!members[0]) return res.status(400).json({ error: "该用户不是您的团队成员" });
+      if (!members[0]) return res.status(400).json({ error: "User is not your team member" });
 
       // Start transaction
       const connection = await db.getConnection();
@@ -2591,7 +3060,7 @@ Requirements:
         }
 
         await connection.commit();
-        res.json({ success: true, message: "权限转移成功" });
+        res.json({ success: true, message: "鏉冮檺杞Щ鎴愬姛" });
       } catch (err) {
         await connection.rollback();
         throw err;
@@ -2599,7 +3068,7 @@ Requirements:
         connection.release();
       }
     } catch (e: any) {
-      res.status(500).json({ error: "转移角色失败", details: e.message });
+      res.status(500).json({ error: "杞Щ瑙掕壊澶辫触", details: e.message });
     }
   });
 
@@ -2652,7 +3121,7 @@ Requirements:
     }
 
     if (updates.length === 0) {
-      return res.status(400).json({ error: "未提供更新内容" });
+      return res.status(400).json({ error: "No update payload provided" });
     }
 
     const query = `UPDATE users SET ${updates.join(", ")} WHERE id = ?`;
@@ -2660,10 +3129,10 @@ Requirements:
 
     try {
       const [result]: any = await db.query(query, params);
-      if (result.affectedRows === 0) return res.status(404).json({ error: "未找到用户" });
-      res.json({ message: "用户已更新" });
+      if (result.affectedRows === 0) return res.status(404).json({ error: "User not found" });
+      res.json({ message: "User updated" });
     } catch (e: any) {
-      res.status(500).json({ error: "更新失败", details: e.message });
+      res.status(500).json({ error: "鏇存柊澶辫触", details: e.message });
     }
   });
 
@@ -2672,22 +3141,22 @@ Requirements:
     try {
       await db.query("DELETE FROM team_members WHERE user_id = ?", [id]);
       await db.query("UPDATE users SET leader_id = NULL, point_limit = 0 WHERE id = ?", [id]);
-      res.json({ success: true, message: "已将该用户从所有小组中移除" });
+      res.json({ success: true, message: "宸插皢璇ョ敤鎴蜂粠鎵€鏈夊皬缁勪腑绉婚櫎" });
     } catch (e: any) {
-      res.status(500).json({ error: "操作失败", details: e.message });
+      res.status(500).json({ error: "鎿嶄綔澶辫触", details: e.message });
     }
   });
 
   app.delete("/api/admin/accounts/:id", authenticateToken, isAdmin, async (req, res) => {
     const { id } = req.params;
     const [result]: any = await db.query("DELETE FROM users WHERE id = ?", [id]);
-    if (result.affectedRows === 0) return res.status(500).json({ error: "删除失败" });
-    res.json({ message: "用户已删除" });
+    if (result.affectedRows === 0) return res.status(500).json({ error: "鍒犻櫎澶辫触" });
+    res.json({ message: "User deleted" });
   });
 
   app.post("/api/admin/invitation-codes", authenticateToken, isLeader, async (req: any, res) => {
     const count = parseInt(req.body.count) || 10;
-    if (count > 100) return res.status(400).json({ error: "一次生成的邀请码过多" });
+    if (count > 100) return res.status(400).json({ error: "涓€娆＄敓鎴愮殑閭€璇风爜杩囧" });
     
     const codes = [];
     for (let i = 0; i < count; i++) {
@@ -2702,7 +3171,7 @@ Requirements:
 
   app.post("/api/group-chats", authenticateToken, async (req: any, res) => {
     const { name, memberIds, agentIds, objective } = req.body;
-    if (!name) return res.status(400).json({ error: "群组名称不能为空" });
+    if (!name) return res.status(400).json({ error: "缇ょ粍鍚嶇О涓嶈兘涓虹┖" });
 
     try {
       const connection = await db.getConnection();
@@ -2741,19 +3210,19 @@ Requirements:
         connection.release();
       }
     } catch (e: any) {
-      res.status(500).json({ error: "创建群聊失败", details: e.message });
+      res.status(500).json({ error: "鍒涘缓缇よ亰澶辫触", details: e.message });
     }
   });
 
   app.get("/api/group-chats", authenticateToken, async (req: any, res) => {
     try {
-      // Ensure default "项目1组" exists if user is in a team
+      // Ensure default "椤圭洰1缁? exists if user is in a team
       const effectiveLeaderId = req.user.role === 'leader' ? req.user.id : req.user.leader_id;
       
       if (effectiveLeaderId) {
         const [existingDefault]: any = await db.query(
           "SELECT id FROM group_chats WHERE name = ? AND leader_id = ? LIMIT 1",
-          ['项目1组', effectiveLeaderId]
+          ['Project group 1', effectiveLeaderId]
         );
 
         let groupId;
@@ -2762,7 +3231,7 @@ Requirements:
           try {
             const [result]: any = await db.query(
               "INSERT INTO group_chats (name, leader_id) VALUES (?, ?)",
-              ['项目1组', effectiveLeaderId]
+              ['Project group 1', effectiveLeaderId]
             );
             groupId = result.insertId;
             
@@ -2810,7 +3279,7 @@ Requirements:
 
       res.json(parsedGroups);
     } catch (e: any) {
-      res.status(500).json({ error: "获取群聊列表失败", details: e.message });
+      res.status(500).json({ error: "鑾峰彇缇よ亰鍒楄〃澶辫触", details: e.message });
     }
   });
 
@@ -2820,9 +3289,9 @@ Requirements:
 
     try {
       const [groups]: any = await db.query("SELECT leader_id FROM group_chats WHERE id = ?", [id]);
-      if (!groups[0]) return res.status(404).json({ error: "未找到群聊" });
+      if (!groups[0]) return res.status(404).json({ error: "Group not found" });
       if (groups[0].leader_id !== req.user.id) {
-        return res.status(401).json({ error: "无权编辑群聊，仅创建者可修改" });
+        return res.status(401).json({ error: "鏃犳潈缂栬緫缇よ亰锛屼粎鍒涘缓鑰呭彲淇敼" });
       }
 
       const connection = await db.getConnection();
@@ -2862,7 +3331,7 @@ Requirements:
         connection.release();
       }
     } catch (e: any) {
-      res.status(500).json({ error: "更新群聊失败", details: e.message });
+      res.status(500).json({ error: "鏇存柊缇よ亰澶辫触", details: e.message });
     }
   });
 
@@ -2871,12 +3340,12 @@ Requirements:
     const userId = req.user.id;
     try {
       const [groups]: any = await db.query("SELECT leader_id FROM group_chats WHERE id = ?", [id]);
-      if (!groups[0]) return res.status(404).json({ error: "未找到群聊" });
+      if (!groups[0]) return res.status(404).json({ error: "Group not found" });
       
       await db.query("INSERT IGNORE INTO group_chat_members (group_id, user_id) VALUES (?, ?)", [id, userId]);
       res.json({ success: true });
     } catch (e: any) {
-      res.status(500).json({ error: "加入群聊失败", details: e.message });
+      res.status(500).json({ error: "鍔犲叆缇よ亰澶辫触", details: e.message });
     }
   });
 
@@ -2884,23 +3353,23 @@ Requirements:
     const { id } = req.params;
     try {
       const [groups]: any = await db.query("SELECT leader_id FROM group_chats WHERE id = ?", [id]);
-      if (!groups[0]) return res.status(404).json({ error: "未找到群聊" });
+      if (!groups[0]) return res.status(404).json({ error: "Group not found" });
       
       const isAdmin = req.user.role === 'admin';
       if (!isAdmin && groups[0].leader_id !== req.user.id) {
-        return res.status(401).json({ error: "无权删除群聊，仅创建者或管理员可删除" });
+        return res.status(401).json({ error: "鏃犳潈鍒犻櫎缇よ亰锛屼粎鍒涘缓鑰呮垨绠＄悊鍛樺彲鍒犻櫎" });
       }
 
       await db.query("DELETE FROM group_chats WHERE id = ?", [id]);
       res.json({ success: true });
     } catch (e: any) {
-      res.status(500).json({ error: "删除群聊失败", details: e.message });
+      res.status(500).json({ error: "鍒犻櫎缇よ亰澶辫触", details: e.message });
     }
   });
 
   app.post("/api/group-messages", authenticateToken, async (req: any, res) => {
     const { groupId, content, type, url, quotedMessageId, agentContext } = req.body;
-    if (!groupId || !content) return res.status(400).json({ error: "参数不完整" });
+    if (!groupId || !content) return res.status(400).json({ error: "Incomplete parameters" });
 
     // Sanitize quotedMessageId if it's coming from frontend with prefix
     let sanitizedQuoteId = quotedMessageId;
@@ -2915,7 +3384,7 @@ Requirements:
         "SELECT id FROM group_chat_members WHERE group_id = ? AND user_id = ?",
         [groupId, req.user.id]
       );
-      if (!members[0]) return res.status(403).json({ error: "您不是该群聊的成员" });
+      if (!members[0]) return res.status(403).json({ error: "You are not a member of this group" });
 
       const timestamp = Date.now();
       const [result]: any = await db.query(
@@ -2932,31 +3401,34 @@ Requirements:
         if (enableAiCollaboration) {
           // Get group context/objective and involved agents
           const [groupData]: any = await db.query("SELECT objective, name, agent_ids FROM group_chats WHERE id = ?", [groupId]);
-          const objective = groupData[0]?.objective || "协同完成项目任务";
-          const groupName = groupData[0]?.name || "项目组";
+          const objective = groupData[0]?.objective || "鍗忓悓瀹屾垚椤圭洰浠诲姟";
+          const groupName = groupData[0]?.name || "Project group";
           
           const mentionMatch = content.match(/@([^\s]+)/);
           const mentionedName = mentionMatch ? mentionMatch[1] : null;
 
           // Ids Map for names
           const agentMap: Record<string, string> = {
-            'CEO': 'ceo', '导师': 'ceo', '大脑': 'ceo', 'AI': 'ceo', '统筹': 'ceo', '首席执行官': 'ceo',
-            '智能体': 'ceo', '超级员工': 'ceo', '小逻': 'ceo'
+            'CEO': 'ceo',
+            'AI': 'ceo',
+            'brain': 'ceo',
+            'agent': 'ceo',
+            'xiaoluo': 'ceo'
           };
 
           let respondingAgentId: string | null = null;
-          let displayName = mentionedName || '小逻的大脑 (CEO)';
+          let displayName = mentionedName || '灏忛€荤殑澶ц剳 (CEO)';
           let customSystemInstruction = agentContext?.systemInstruction;
 
           const agentIdToNameMap: Record<string, string> = {
-            'ceo': '小逻的大脑 (CEO)'
+            'ceo': '灏忛€荤殑澶ц剳 (CEO)'
           };
 
           if (agentContext && agentContext.agentId) {
             respondingAgentId = agentContext.agentId;
             // Try to find display name if not explicitly mentioned
             if (!mentionedName) {
-               displayName = agentIdToNameMap[respondingAgentId] || 'AI专家';
+               displayName = agentIdToNameMap[respondingAgentId] || 'AI涓撳';
             }
           } else if (mentionedName) {
             for (const [keyword, agentId] of Object.entries(agentMap)) {
@@ -2979,7 +3451,7 @@ Requirements:
               for (const [keyword, agentId] of Object.entries(agentMap)) {
                 if (content.includes(keyword) && invitedAgentIds.includes(agentId)) {
                   respondingAgentId = agentId;
-                  displayName = agentIdToNameMap[agentId] || 'AI专家';
+                  displayName = agentIdToNameMap[agentId] || 'AI涓撳';
                   break;
                 }
               }
@@ -2990,17 +3462,17 @@ Requirements:
                 } else {
                   respondingAgentId = invitedAgentIds[0];
                 }
-                displayName = agentIdToNameMap[respondingAgentId] || 'AI专家';
+                displayName = agentIdToNameMap[respondingAgentId] || 'AI涓撳';
               }
             }
           }
 
           if (respondingAgentId) {
             console.log(`[GroupChat] Responding agent identified: ${respondingAgentId}`);
-            // 立即插入一条“研讨中”的占位消息
+            // 绔嬪嵆鎻掑叆涓€鏉♀€滅爺璁ㄤ腑鈥濈殑鍗犱綅娑堟伅
             const [placeholderResult]: any = await db.query(
               "INSERT INTO group_messages (group_id, sender_id, agent_name, content, type, timestamp) VALUES (?, ?, ?, ?, ?, ?)",
-              [groupId, null, displayName, '专家正在研讨中...', 'thinking', Date.now()]
+              [groupId, null, displayName, '涓撳姝ｅ湪鐮旇涓?..', 'thinking', Date.now()]
             );
             const placeholderId = placeholderResult.insertId;
 
@@ -3015,23 +3487,15 @@ Requirements:
               const chatHistory = history.reverse().map((h: any) => `${h.username || h.agent_name || 'AI'}: ${h.content}`).join('\n');
 
               const agentRoles: Record<string, string> = {
-                'ceo': '小逻的大脑 (CEO)，团队领导者和首席执行官，提供战略决策和整体协调'
+                'ceo': 'XiaoLuo brain agent: strategic coordinator and task planner.'
               };
-              const roleDesc = agentRoles[respondingAgentId!] || 'AI协同专家';
+              const roleDesc = agentRoles[respondingAgentId!] || 'AI collaboration expert';
 
               let aiPrompt = '';
               if (customSystemInstruction) {
-                aiPrompt = `${customSystemInstruction}\n\n当前群组的项目目标是: ${objective}\n目前群聊内的对话如下:\n${chatHistory}\n\n请根据你的专业背景和当前对话语境加入讨论。直接输出回复内容，不要带任何前缀。`;
+                aiPrompt = `${customSystemInstruction}\n\nGroup objective: ${objective}\nConversation:\n${chatHistory}\n\nReply directly with helpful, concise content.`;
               } else {
-                aiPrompt = `你是一名资深的 ${groupName} 专家，你的角色是: ${roleDesc}。
-当前群组的项目目标是: ${objective}
-目前群聊内的对话如下:
-${chatHistory}
-
-请根据你的专业背景和当前对话语境加入讨论。
-你的回复应该是启发性的、专业且简洁的。
-如果你被提到（@）而回应，请针对提到的问题给出明确方案。
-直接输出回复内容，不要带任何前缀。`;
+                aiPrompt = `You are an expert in ${groupName}. Your role is: ${roleDesc}.\nGroup objective: ${objective}\nConversation:\n${chatHistory}\n\nJoin the discussion with a clear, professional, concise reply. Reply directly without a prefix.`;
               }
 
               // Get user config for image helper
@@ -3047,8 +3511,8 @@ ${chatHistory}
                 'ceo': 'script',
                 'script_analyzer': 'script',
                 'script_rewriter': 'script',
-                'image': 'gptImage', // 生图专家 (GPT)
-                'image_gemini': 'image', // 生图专家 (Gemini)
+                'image': 'gptImage', // 鐢熷浘涓撳 (GPT)
+                'image_gemini': 'image', // 鐢熷浘涓撳 (Gemini)
                 'spirit_space': 'image',
                 'director_producer': 'script',
                 'prompts': 'script',
@@ -3100,17 +3564,19 @@ ${chatHistory}
                 return await imageAgent.callApi(s, 'generateContent', body, globalConfig);
               };
 
-              // 特殊处理生图专家
+              // 鐗规畩澶勭悊鐢熷浘涓撳
               const isImageAgent = respondingAgentId === 'image_gemini' || respondingAgentId === 'image' || respondingAgentId === 'spirit_space';
               
               if (isImageAgent) {
-                // 尝试提取关键词生图
                 try {
-                  const extractionResult = await executeAi(usedSlot, `基于以下对话，为生图助手提取一个最适合的绘图提示词（包含风格描述、镜头等细节，输出为英文）：\n\n${chatHistory}\n\n只返回提示词，不要带任何其他文字。`);
+                  const extractionResult = await executeAi(
+                    usedSlot,
+                    `Based on the following conversation, extract one concise English image generation prompt with style, camera, subject, and scene details.\n\n${chatHistory}\n\nReturn only the prompt.`
+                  );
                   
                   const refinedPrompt = (extractionResult.text || "").trim() || content;
                   
-                  // 调用生图专家生成真实图片
+                  // 璋冪敤鐢熷浘涓撳鐢熸垚鐪熷疄鍥剧墖
                   console.log(`[GroupChat] ImageAgent generating for prompt: ${refinedPrompt} using slot: ${usedSlot}`);
                   const imgResult = await imageAgent.generateSmartImage({
                     prompt: refinedPrompt,
@@ -3128,19 +3594,21 @@ ${chatHistory}
 
                   await db.query(
                     "UPDATE group_messages SET content = ?, type = ?, url = ?, timestamp = ? WHERE id = ?",
-                    [`🎨 根据当前讨论生成的图片：\n${imgResult.revisedPrompt || refinedPrompt}`, 'image', finalUrl, Date.now(), placeholderId]
+                    [`馃帹 鏍规嵁褰撳墠璁ㄨ鐢熸垚鐨勫浘鐗囷細\n${imgResult.revisedPrompt || refinedPrompt}`, 'image', finalUrl, Date.now(), placeholderId]
                   );
                 } catch (extErr: any) {
                   console.error("Extraction/Generation error:", extErr);
                   await db.query(
                     "UPDATE group_messages SET content = ?, type = ?, timestamp = ? WHERE id = ?",
-                    [`🎨 **建议提示词**\n${content}\n\n(生图尝试失败: ${extErr.message})`, 'text', Date.now(), placeholderId]
+                    [`馃帹 **寤鸿鎻愮ず璇?*\n${content}\n\n(鐢熷浘灏濊瘯澶辫触: ${extErr.message})`, 'text', Date.now(), placeholderId]
                   );
                 }
               } else if (respondingAgentId === 'video') {
-                // 特殊处理生视频专家
                 try {
-                  const extractionResult = await executeAi(usedSlot, `基于以下对话，为生视频助手提取一个最适合的视频生成提示词（包含视觉风格、镜头运动、光影等细节，输出为英文）：\n\n${chatHistory}\n\n只返回提示词，不要带任何其他文字。`);
+                  const extractionResult = await executeAi(
+                    usedSlot,
+                    `Based on the following conversation, extract one concise English video generation prompt with visual style, camera movement, lighting, subject, and scene details.\n\n${chatHistory}\n\nReturn only the prompt.`
+                  );
                   
                   const refinedPrompt = (extractionResult.text || "").trim() || content;
                   console.log(`[GroupChat] VideoAgent generating for prompt: ${refinedPrompt}`);
@@ -3155,7 +3623,7 @@ ${chatHistory}
                     let finalVideoUrl = result.videoUrl;
                     
                     if (!finalVideoUrl && result.operationId) {
-                      // 简单尝试轮询 3 次，如果还没出，就返回生成中
+                      // 绠€鍗曞皾璇曡疆璇?3 娆★紝濡傛灉杩樻病鍑猴紝灏辫繑鍥炵敓鎴愪腑
                       let polled = false;
                       for (let i = 0; i < 3; i++) {
                         await new Promise(resolve => setTimeout(resolve, 8000));
@@ -3170,7 +3638,7 @@ ${chatHistory}
                       if (!polled) {
                         await db.query(
                           "UPDATE group_messages SET content = ?, type = ?, timestamp = ? WHERE id = ?",
-                          [`🎥 视频正在后台生成中 (Operation ID: ${result.operationId})，请稍后在历史记录中查看。\n\n提示词：${refinedPrompt}`, 'text', Date.now(), placeholderId]
+                          [`馃帴 瑙嗛姝ｅ湪鍚庡彴鐢熸垚涓?(Operation ID: ${result.operationId})锛岃绋嶅悗鍦ㄥ巻鍙茶褰曚腑鏌ョ湅銆俓n\n鎻愮ず璇嶏細${refinedPrompt}`, 'text', Date.now(), placeholderId]
                         );
                         return;
                       }
@@ -3186,24 +3654,24 @@ ${chatHistory}
 
                       await db.query(
                         "UPDATE group_messages SET content = ?, type = ?, url = ?, timestamp = ? WHERE id = ?",
-                        [`🎥 根据讨论生成的视频：\n${refinedPrompt}`, 'video', finalVideoUrl, Date.now(), placeholderId]
+                        [`馃帴 鏍规嵁璁ㄨ鐢熸垚鐨勮棰戯細\n${refinedPrompt}`, 'video', finalVideoUrl, Date.now(), placeholderId]
                       );
                     }
                   } else {
-                    throw new Error("未能启动视频生成任务");
+                    throw new Error("鏈兘鍚姩瑙嗛鐢熸垚浠诲姟");
                   }
                 } catch (vErr: any) {
                   console.error("VideoAgent Error:", vErr);
                   await db.query(
                     "UPDATE group_messages SET content = ?, type = ?, timestamp = ? WHERE id = ?",
-                    [`🎥 **视频生成建议**\n${content}\n\n(启动失败: ${vErr.message})`, 'text', Date.now(), placeholderId]
+                    [`馃帴 **瑙嗛鐢熸垚寤鸿**\n${content}\n\n(鍚姩澶辫触: ${vErr.message})`, 'text', Date.now(), placeholderId]
                   );
                 }
               } else {
                 try {
                   const aiResult = await executeAi(usedSlot, aiPrompt);
                   
-                  const aiResponseText = aiResult.text || ' (AI 思考中，暂时没有输出内容)';
+                  const aiResponseText = aiResult.text || ' (AI 鎬濊€冧腑锛屾殏鏃舵病鏈夎緭鍑哄唴瀹?';
 
                   await db.query(
                     "UPDATE group_messages SET content = ?, type = ?, timestamp = ? WHERE id = ?",
@@ -3213,7 +3681,7 @@ ${chatHistory}
                   console.error("Generation error:", genErr);
                   await db.query(
                     "UPDATE group_messages SET content = ?, type = ?, timestamp = ? WHERE id = ?",
-                    [`⚠️ AI 暂时无法回复: ${genErr.message}`, 'text', Date.now(), placeholderId]
+                    [`鈿狅笍 AI 鏆傛椂鏃犳硶鍥炲: ${genErr.message}`, 'text', Date.now(), placeholderId]
                   );
                 }
               }
@@ -3221,7 +3689,7 @@ ${chatHistory}
               console.error("AI Group Collaboration Error:", aiErr);
               await db.query(
                 "UPDATE group_messages SET content = ?, type = ?, timestamp = ? WHERE id = ?",
-                [`⚠️ 系统协同异常: ${aiErr.message}`, 'text', Date.now(), placeholderId]
+                [`鈿狅笍 绯荤粺鍗忓悓寮傚父: ${aiErr.message}`, 'text', Date.now(), placeholderId]
               );
             }
           }, 1500); 
@@ -3231,7 +3699,7 @@ ${chatHistory}
         console.error("Group context fetch error:", err);
       }
     } catch (e: any) {
-      res.status(500).json({ error: "发送消息失败", details: e.message });
+      res.status(500).json({ error: "Failed to send message", details: e.message });
     }
   });
 
@@ -3240,13 +3708,13 @@ ${chatHistory}
     const { objective } = req.body;
     try {
       const [groups]: any = await db.query("SELECT leader_id FROM group_chats WHERE id = ?", [id]);
-      if (!groups[0]) return res.status(404).json({ error: "未找到群聊" });
-      if (groups[0].leader_id !== req.user.id) return res.status(401).json({ error: "仅创建者可修改目标" });
+      if (!groups[0]) return res.status(404).json({ error: "Group not found" });
+      if (groups[0].leader_id !== req.user.id) return res.status(401).json({ error: "浠呭垱寤鸿€呭彲淇敼鐩爣" });
       
       await db.query("UPDATE group_chats SET objective = ? WHERE id = ?", [objective, id]);
       res.json({ success: true });
     } catch (e: any) {
-      res.status(500).json({ error: "更新目标失败", details: e.message });
+      res.status(500).json({ error: "鏇存柊鐩爣澶辫触", details: e.message });
     }
   });
 
@@ -3278,7 +3746,7 @@ ${chatHistory}
 
       res.json(comments);
     } catch (e: any) {
-      res.status(500).json({ error: "获取批注失败", details: e.message });
+      res.status(500).json({ error: "鑾峰彇鎵规敞澶辫触", details: e.message });
     }
   });
 
@@ -3287,11 +3755,11 @@ ${chatHistory}
     const { id, username, content, timestamp, timecode, drawings } = req.body;
     
     if (!content && (!drawings || drawings.length === 0)) {
-      return res.status(400).json({ error: "内容与图形标注不能同时为空" });
+      return res.status(400).json({ error: "Content and annotation cannot both be empty" });
     }
 
     if (req.user.id === 999999) {
-      return res.status(403).json({ error: "游客模式不允许发表评论批注" });
+      return res.status(403).json({ error: "Guest mode cannot publish comments" });
     }
 
     try {
@@ -3311,7 +3779,7 @@ ${chatHistory}
         );
         const isLeader = chats[0] && String(chats[0].leader_id) === String(req.user.id);
         if (!members[0] && !isLeader) {
-          return res.status(403).json({ error: "您尚未加入本协作小组，无法进行评论批注" });
+          return res.status(403).json({ error: "You have not joined this collaboration group" });
         }
       }
 
@@ -3321,12 +3789,12 @@ ${chatHistory}
 
       await db.query(
         "INSERT INTO media_comments (id, media_id, username, content, timestamp, timecode, drawings) VALUES (?, ?, ?, ?, ?, ?, ?)",
-        [commentId, mediaId, username || '匿名', content || '', commentTimestamp, timecode || null, drawingsJson]
+        [commentId, mediaId, username || '鍖垮悕', content || '', commentTimestamp, timecode || null, drawingsJson]
       );
 
       res.json({ success: true, comment: { id: commentId, username, content, timestamp: commentTimestamp, timecode, drawings } });
     } catch (e: any) {
-      res.status(500).json({ error: "添加批注失败", details: e.message });
+      res.status(500).json({ error: "娣诲姞鎵规敞澶辫触", details: e.message });
     }
   });
 
@@ -3345,7 +3813,7 @@ ${chatHistory}
           "SELECT id FROM group_chat_members WHERE group_id = ? AND user_id = ?",
           [groupId, req.user.id]
         );
-        if (!members[0]) return res.status(403).json({ error: "您不是该群聊的成员" });
+        if (!members[0]) return res.status(403).json({ error: "You are not a member of this group" });
       }
 
       let query = `
@@ -3377,7 +3845,7 @@ ${chatHistory}
           type: m.type,
           url: m.url,
           timestamp: Number(m.timestamp),
-          agentName: m.agent_name || m.senderName || (m.sender_id === 0 ? 'AI专家' : '小逻'),
+          agentName: m.agent_name || m.senderName || (m.sender_id === 0 ? 'AI Expert' : 'XiaoLuo'),
           sender_id: m.sender_id
         };
 
@@ -3386,7 +3854,7 @@ ${chatHistory}
             id: m.quoted_message_id,
             content: m.quotedContent,
             sender_id: m.quotedSenderId,
-            agentName: m.quotedAgentName || m.quotedSenderName || (m.quotedSenderId === 0 ? 'AI专家' : '小逻'),
+            agentName: m.quotedAgentName || m.quotedSenderName || (m.quotedSenderId === 0 ? 'AI Expert' : 'XiaoLuo'),
             type: m.quotedType,
             url: m.quotedUrl,
             role: m.quotedSenderId === req.user.id ? 'user' : 'assistant'
@@ -3397,7 +3865,7 @@ ${chatHistory}
 
       res.json(parsedResults);
     } catch (e: any) {
-      res.status(500).json({ error: "获取消息失败", details: e.message });
+      res.status(500).json({ error: "鑾峰彇娑堟伅澶辫触", details: e.message });
     }
   });
 
@@ -3431,7 +3899,7 @@ ${chatHistory}
           isFromHistory = true;
           historyItem = historyRows[0];
         } else {
-          return res.status(404).json({ error: "未找到对应的媒体文件" });
+          return res.status(404).json({ error: "鏈壘鍒板搴旂殑濯掍綋鏂囦欢" });
         }
       }
 
@@ -3443,7 +3911,7 @@ ${chatHistory}
           type: historyItem.type === 'image' ? 'image' : (historyItem.type === 'video' ? 'video' : 'file'),
           url: historyItem.video_url || historyItem.image_url,
           timestamp: historyItem.timestamp,
-          agentName: historyItem.senderName || 'AI专家',
+          agentName: historyItem.senderName || 'AI涓撳',
           senderId: historyItem.user_id
         };
         return res.json(msg);
@@ -3457,7 +3925,7 @@ ${chatHistory}
         type: m.type,
         url: m.url,
         timestamp: m.timestamp,
-        agentName: m.agent_name || m.senderName || (m.sender_id === 0 ? 'AI专家' : '小逻'),
+        agentName: m.agent_name || m.senderName || (m.sender_id === 0 ? 'AI Expert' : 'XiaoLuo'),
         senderId: m.sender_id
       };
 
@@ -3479,7 +3947,7 @@ ${chatHistory}
           id: `server_${m.quoted_message_id}`,
           content: m.quotedContent,
           sender_id: m.quotedSenderId,
-          agentName: m.quotedAgentName || m.quotedSenderName || (m.quotedSenderId === 0 ? 'AI专家' : '小逻'),
+          agentName: m.quotedAgentName || m.quotedSenderName || (m.quotedSenderId === 0 ? 'AI Expert' : 'XiaoLuo'),
           type: m.quotedType,
           url: m.quotedUrl,
           role: m.quotedSenderId === req.user.id ? 'user' : 'assistant'
@@ -3488,7 +3956,7 @@ ${chatHistory}
 
       res.json(msg);
     } catch (e: any) {
-      res.status(500).json({ error: "获取分享媒体详情失败", details: e.message });
+      res.status(500).json({ error: "鑾峰彇鍒嗕韩濯掍綋璇︽儏澶辫触", details: e.message });
     }
   });
 
@@ -3539,11 +4007,11 @@ ${chatHistory}
             const timeDiff = Math.abs(hTime - spentTime);
             if (timeDiff > 90000) return false;
             
-            const isVideoSpent = reason.includes('video') || reason.includes('视频') || reason.includes('seedance');
+            const isVideoSpent = reason.includes('video') || reason.includes('瑙嗛') || reason.includes('seedance');
             const isVideoHistory = h.type === 'video';
             if (isVideoSpent !== isVideoHistory) return false;
 
-            const isImageSpent = reason.includes('image') || reason.includes('图片') || reason.includes('图') || reason.includes('banana');
+            const isImageSpent = reason.includes('image') || reason.includes('banana');
             const isImageHistory = h.type === 'image';
             if (isImageSpent !== isImageHistory) return false;
 
@@ -3555,8 +4023,8 @@ ${chatHistory}
         
         if (
           reason.includes('image') || 
-          reason.includes('图片') || 
-          reason.includes('图') || 
+          reason.includes('鍥剧墖') || 
+          reason.includes('banana') || 
           reason.includes('banana') || 
           hType === 'image'
         ) {
@@ -3565,7 +4033,7 @@ ${chatHistory}
         
         if (
           reason.includes('video') || 
-          reason.includes('视频') || 
+          reason.includes('瑙嗛') || 
           reason.includes('seedance') || 
           reason.includes('omni') || 
           hType === 'video'
@@ -3574,15 +4042,15 @@ ${chatHistory}
         }
         
         if (
-          reason.includes('分镜生成') || 
-          reason.includes('分镜') ||
-          reason.includes('重新生成分段') || 
-          reason.includes('剧本资产扫描') || 
-          reason.includes('资产扫描') || 
-          reason.includes('场景布局') || 
-          reason.includes('场景方案') || 
-          reason.includes('资产检测') || 
-          reason.includes('制剧')
+          reason.includes('鍒嗛暅鐢熸垚') || 
+          reason.includes('鍒嗛暅') ||
+          reason.includes('閲嶆柊鐢熸垚鍒嗘') || 
+          reason.includes('鍓ф湰璧勪骇鎵弿') || 
+          reason.includes('璧勪骇鎵弿') || 
+          reason.includes('鍦烘櫙甯冨眬') || 
+          reason.includes('鍦烘櫙鏂规') || 
+          reason.includes('asset-check') || 
+          reason.includes('鍒跺墽')
         ) {
           return 'script_gen';
         }
@@ -3625,7 +4093,7 @@ ${chatHistory}
         if (!userMap.has(userId)) {
           userMap.set(userId, {
             id: userId,
-            username: `用户_${userId}`,
+            username: `鐢ㄦ埛_${userId}`,
             points_spent: 0,
             text_ai_count: 0,
             script_gen_count: 0,
@@ -3745,7 +4213,7 @@ ${chatHistory}
         userStats
       });
     } catch (e: any) {
-      res.status(500).json({ error: "获取统计数据失败", details: e.message });
+      res.status(500).json({ error: "鑾峰彇缁熻鏁版嵁澶辫触", details: e.message });
     }
   });
 
@@ -3789,7 +4257,7 @@ ${chatHistory}
         dailyTrend
       });
     } catch (e: any) {
-      res.status(500).json({ error: "获取用户统计数据失败", details: e.message });
+      res.status(500).json({ error: "鑾峰彇鐢ㄦ埛缁熻鏁版嵁澶辫触", details: e.message });
     }
   });
 
@@ -3892,12 +4360,12 @@ ${chatHistory}
       dbInitialized = true;
       res.json({ 
         success: true, 
-        message: "数据库配置已在当前会话中更新并应用。配置已成功写入本地 .env 文件进行持久化保存。" 
+        message: "Database configuration updated and persisted."
       });
     } catch (error: any) {
       console.error('Failed to apply new database configuration:', error);
       res.status(500).json({ 
-        error: "应用新配置失败", 
+        error: "Failed to apply database configuration",
         details: error.message 
       });
     }
@@ -4007,22 +4475,21 @@ ${chatHistory}
   app.get("/api/user/settings/api-config", authenticateToken, async (req: any, res) => {
     try {
       const userId = req.user.id;
-      const [prefRows]: any = await db.query(
-        'SELECT pref_value FROM user_preferences WHERE user_id = ? AND pref_key = ?',
-        [userId, 'api_config']
-      );
-      if (prefRows.length > 0) {
-        const val = prefRows[0].pref_value;
-        return res.json(typeof val === 'string' ? JSON.parse(val) : val);
+      const val = await readUserPreferenceValue(userId, 'api_config');
+      if (val) {
+        return res.json(normalizeApiConfigShape(typeof val === 'string' ? JSON.parse(val) : val));
       } else {
         // Fallback to global settings template
-        const [rows]: any = await db.query('SELECT value FROM settings WHERE `key` = ?', ['global_api_config']);
-        if (rows.length > 0) {
-          const val = rows[0].value;
-          return res.json(typeof val === 'string' ? JSON.parse(val) : val);
-        } else {
-          return res.json({});
+        try {
+          const [rows]: any = await db.query('SELECT value FROM settings WHERE `key` = ?', ['global_api_config']);
+          if (rows.length > 0) {
+            const globalVal = rows[0].value;
+            return res.json(normalizeApiConfigShape(typeof globalVal === 'string' ? JSON.parse(globalVal) : globalVal));
+          }
+        } catch (dbError) {
+          console.warn("Global API settings read failed, returning normalized defaults:", dbError);
         }
+        return res.json(normalizeApiConfigShape({}));
       }
     } catch (e: any) {
       res.status(500).json({ error: "获取用户接口配置失败", details: e.message });
@@ -4030,16 +4497,20 @@ ${chatHistory}
   });
 
   app.post("/api/user/settings/api-config", authenticateToken, async (req: any, res) => {
-    const config = req.body;
+    const config = normalizeApiConfigShape(req.body);
     try {
       const userId = req.user.id;
       const valStr = JSON.stringify(config);
-      
-      await db.query('DELETE FROM user_preferences WHERE user_id = ? AND pref_key = ?', [userId, 'api_config']);
-      await db.query('INSERT INTO user_preferences (user_id, pref_key, pref_value) VALUES (?, ?, ?)', 
-        [userId, 'api_config', valStr]);
+      await writeUserPreferenceValue(userId, 'api_config', valStr);
 
-      res.json({ success: true, message: "个人模型接口配置更新成功" });
+      let packages: any[] = [];
+      try {
+        packages = syncModelPackagesFromConfig(config, { id: userId, username: req.user.username });
+      } catch (packageErr: any) {
+        console.error("Failed to sync user model packages:", packageErr);
+      }
+
+      res.json({ success: true, message: "个人模型接口配置更新成功", config, packages });
     } catch (e: any) {
       console.error('Failed to update user API settings:', e);
       res.status(500).json({ error: "保存配置失败", details: e.message });
@@ -4113,7 +4584,8 @@ ${chatHistory}
         headers['Authorization'] = `Bearer ${apiKey}`;
       }
 
-      console.log(`[User Test API] Testing ${type} with protocol ${effectiveProtocol} (Provider: ${provider}) at ${testUrl}`);
+      const maskedUrlForLog = testUrl.replace(/key=[^&]+/, "key=***");
+      console.log(`[User Test API] Testing ${type} with protocol ${effectiveProtocol} (Provider: ${provider}) at ${maskedUrlForLog}`);
       
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 10000);
@@ -4146,19 +4618,13 @@ ${chatHistory}
     console.log(`[API] Received request for global-api-config from user: ${userId}`);
     try {
       const userConfig = await getGlobalApiConfig(userId);
-      const baseConfig = JSON.parse(JSON.stringify(DEFAULT_API_CONFIG));
       if (userConfig) {
-        const merged = { ...baseConfig };
-        Object.keys(userConfig).forEach(key => {
-          if (userConfig[key]) {
-            merged[key] = { ...merged[key], ...userConfig[key] };
-          }
-        });
+        const merged = normalizeApiConfigShape(userConfig);
         console.log(`[API] Fetched merged API config from user preferences for user ${userId}`);
         return res.json(merged);
       } else {
         console.log('[API] No user preferences found, returning DEFAULT_API_CONFIG');
-        return res.json(baseConfig);
+        return res.json(normalizeApiConfigShape({}));
       }
     } catch (e: any) {
       console.error('[API] Failed to fetch user API settings:', e);
@@ -4445,20 +4911,20 @@ ${chatHistory}
   async function getGlobalApiConfig(userId?: number): Promise<Config | null> {
     try {
       if (userId) {
-        const [prefRows]: any = await db.query(
-          'SELECT pref_value FROM user_preferences WHERE user_id = ? AND pref_key = ?',
-          [userId, 'api_config']
-        );
-        if (prefRows.length > 0) {
-          const val = prefRows[0].pref_value;
+        const val = await readUserPreferenceValue(userId, 'api_config');
+        if (val) {
           return typeof val === 'string' ? JSON.parse(val) : val;
         }
       }
 
-      const [rows]: any = await db.query('SELECT `value` FROM settings WHERE `key` = ?', ['global_api_config']);
-      if (rows.length > 0) {
-        const val = rows[0].value;
-        return typeof val === 'string' ? JSON.parse(val) : val;
+      try {
+        const [rows]: any = await db.query('SELECT `value` FROM settings WHERE `key` = ?', ['global_api_config']);
+        if (rows.length > 0) {
+          const val = rows[0].value;
+          return typeof val === 'string' ? JSON.parse(val) : val;
+        }
+      } catch (dbError) {
+        console.warn('Database global API config read failed, using normalized defaults:', dbError);
       }
     } catch (e) {
       console.error('Failed to fetch global/user API config:', e);
@@ -4482,7 +4948,7 @@ ${chatHistory}
 
       // 1. Test Ark API Key if provided
       if (config.apiKey) {
-        console.log(`[Test] Testing Ark API Key: ${config.apiKey.substring(0, 8)}...`);
+        console.log(`[Test] Testing Ark API Key...`);
         try {
           // For Ark V3, there isn't a simple list models for Bearer, 
           // but we can try to GET the tasks endpoint (which should 405 if key is valid)
@@ -4502,29 +4968,29 @@ ${chatHistory}
           // If 405, it means "Method Not Allowed" but the gateway accepted our Auth!
           // If 401/403, it means Auth failed.
           if (probeRes.status === 405 || probeRes.ok) {
-            return res.json({ success: true, message: 'API Key 验证通过' });
+            return res.json({ success: true, message: 'API Key 楠岃瘉閫氳繃' });
           } else {
             console.warn(`[Test] Ark API Key probe returned ${probeRes.status}:`, probeText);
             // If it's a specific Ark error about invalid key, we should report it
             if (probeText.includes('invalid') && (probeText.includes('key') || probeText.includes('token'))) {
-              throw new Error(`API Key 无效: ${probeRes.status} ${probeText}`);
+              throw new Error(`API Key 鏃犳晥: ${probeRes.status} ${probeText}`);
             }
           }
         } catch (e: any) {
           console.error('[Test] Ark API Key test failed:', e);
           // If AK/SK is also present, we continue to test that
           if (!config.ak || !config.sk) {
-            return res.status(401).json({ error: `API Key 验证失败: ${e.message}` });
+            return res.status(401).json({ error: `API Key 楠岃瘉澶辫触: ${e.message}` });
           }
         }
       }
 
       if (!config.ak || !config.sk) {
-        throw new Error('缺少 AccessKey 或 SecretKey，且 API Key 验证未通过');
+        throw new Error('缂哄皯 AccessKey 鎴?SecretKey锛屼笖 API Key 楠岃瘉鏈€氳繃');
       }
       
       // 2. Test AK/SK Signature
-      console.log(`[Test] Testing Volcengine SigV4 with AK: ${config.ak.substring(0, 8)}...`);
+      console.log(`[Test] Testing Volcengine SigV4 with AK...`);
       const response = await volcFetch({
         ak: config.ak, 
         sk: config.sk, 
@@ -4545,12 +5011,12 @@ ${chatHistory}
       
       const data = await response.json();
       if (!response.ok) {
-        const errMsg = data.error?.message || data.message || 'SigV4 鉴权失败';
+        const errMsg = data.error?.message || data.message || 'SigV4 閴存潈澶辫触';
         console.error(`[Test] SigV4 failed (${response.status}):`, data);
         throw new Error(`${errMsg} (${response.status})`);
       }
       
-      res.json({ success: true, message: 'AK/SK 及项目权限验证通过' });
+      res.json({ success: true, message: 'AK/SK 鍙婇」鐩潈闄愰獙璇侀€氳繃' });
     } catch (e: any) {
       res.status(500).json({ error: e.message });
     }
@@ -4769,7 +5235,7 @@ async function trimVideo(src: string, startTime: number, duration: number): Prom
       }
     }
     
-    const globalConfig = await getGlobalApiConfig();
+    const globalConfig = await getGlobalApiConfig((req as any).user?.id);
     const isMini = model === 'seedance-mini';
     const seedanceConfig = isMini ? (globalConfig?.videoSeedanceMini || globalConfig?.videoSeedance) : globalConfig?.videoSeedance;
     const baseUrl = seedanceConfig?.endpoint?.replace(/\/$/, '') || (isMini ? 'https://www.runninghub.cn/openapi/v2/rhart-video/sparkvideo-2.0-mini/multimodal-video' : 'https://www.runninghub.cn/openapi/v2/rhart-video/sparkvideo-2.0/multimodal-video');
@@ -4780,7 +5246,7 @@ async function trimVideo(src: string, startTime: number, duration: number): Prom
     }
 
     if (!apiKey) {
-      return res.status(500).json({ error: isMini ? "未配置 RHSD2.0Mini API KEY" : "未配置 SEEDANCE API KEY" });
+      return res.status(500).json({ error: isMini ? "鏈厤缃?RHSD2.0Mini API KEY" : "鏈厤缃?SEEDANCE API KEY" });
     }
 
     // Helper to format as asset if applicable
@@ -4901,7 +5367,7 @@ async function trimVideo(src: string, startTime: number, duration: number): Prom
     const audioUrlList: string[] = [];
     
     // 1. Process referenceAssets (Tray + Explicit Mentions from frontend)
-    // These should come first to maintain @图1, @图2 alignment
+    // These should come first to maintain @鍥?, @鍥? alignment
     const rawAssets: { url: string; originalType: 'image' | 'video' | 'audio'; asset: any }[] = [];
     if (referenceAssets && referenceAssets.length > 0) {
       for (const asset of referenceAssets) {
@@ -4923,7 +5389,7 @@ async function trimVideo(src: string, startTime: number, duration: number): Prom
     }
 
     // 2. Add image (Start Frame) and lastFrame if not already present
-    // Add them to the END to not disturb the @图X indices
+    // Add them to the END to not disturb the @鍥綳 indices
     let firstFrameIdx = -1;
     let lastFrameIdx = -1;
 
@@ -4960,11 +5426,11 @@ async function trimVideo(src: string, startTime: number, duration: number): Prom
 
     let finalPrompt = prompt || '';
     if (finalPrompt) {
-      // 1. Replace explicit @图N labels with lowercase @image, @video, @audio tags without spaces (supporting optional separators like underscore, space, or hyphen)
+      // 1. Replace explicit @鍥綨 labels with lowercase @image, @video, @audio tags without spaces (supporting optional separators like underscore, space, or hyphen)
       finalPrompt = finalPrompt
-        .replace(/@(?:图|Image|image)[\s_-]*(\d+)/gi, '@image$1')
-        .replace(/@(?:视频|Video|video)[\s_-]*(\d+)/gi, '@video$1')
-        .replace(/@(?:音频|Audio|audio)[\s_-]*(\d+)/gi, '@audio$1');
+        .replace(/@(?:鍥緗Image|image)[\s_-]*(\d+)/gi, '@image$1')
+        .replace(/@(?:瑙嗛|Video|video)[\s_-]*(\d+)/gi, '@video$1')
+        .replace(/@(?:闊抽|Audio|audio)[\s_-]*(\d+)/gi, '@audio$1');
     }
 
     // Smart-classify reference assets based on prompt usage or RunningHub limits
@@ -5029,18 +5495,18 @@ async function trimVideo(src: string, startTime: number, duration: number): Prom
     if (finalPrompt) {
       // 2. Map history mentions if they were sent as referenceAssets
       // The frontend should have included these in referenceAssets, so they are already in the lists.
-      // If the prompt has @历史图ID, we need to map that ID to its index in imageUrlList
-      // However, the current regex .replace(/@(?:历史图)\s*(\d+)/, '@Image $1') is risky if $1 is a large ID.
+      // If the prompt has @鍘嗗彶鍥綢D, we need to map that ID to its index in imageUrlList
+      // However, the current regex .replace(/@(?:鍘嗗彶鍥?\s*(\d+)/, '@Image $1') is risky if $1 is a large ID.
       // Better strategy: the frontend should replace these names with indices before sending OR 
       // the server needs to know which ID maps to which index.
-      // For now, let's assume simple labels like @图1 are the main user intent.
+      // For now, let's assume simple labels like @鍥? are the main user intent.
       
-      // 3. Replace @首帧 / @尾帧 with actual indices in lowercase
+      // 3. Replace @棣栧抚 / @灏惧抚 with actual indices in lowercase
       if (firstFrameIdx !== -1) {
-        finalPrompt = finalPrompt.replace(/@(?:首帧|FirstFrame|start_frame)/g, `@image${firstFrameIdx}`);
+        finalPrompt = finalPrompt.replace(/@(?:棣栧抚|FirstFrame|start_frame)/g, `@image${firstFrameIdx}`);
       }
       if (lastFrameIdx !== -1) {
-        finalPrompt = finalPrompt.replace(/@(?:尾帧|LastFrame|end_frame)/g, `@image${lastFrameIdx}`);
+        finalPrompt = finalPrompt.replace(/@(?:灏惧抚|LastFrame|end_frame)/g, `@image${lastFrameIdx}`);
       }
 
       // Cleanup multi-spaces
@@ -5159,13 +5625,13 @@ async function trimVideo(src: string, startTime: number, duration: number): Prom
       try {
         data = JSON.parse(text);
       } catch (e) {
-        return res.status(500).json({ error: "RunningHub 返回了无效的 JSON 响应", details: text });
+        return res.status(500).json({ error: "RunningHub 杩斿洖浜嗘棤鏁堢殑 JSON 鍝嶅簲", details: text });
       }
 
       if (!rhResponse.ok || (data && data.errorCode && data.errorCode !== '0' && data.errorCode !== '')) {
         let errorMsg = (data && (data.errorMessage || data.message)) || text;
         if ((data && data.errorCode === '1014') || (typeof errorMsg === 'string' && errorMsg.includes('Enterprise-Shared'))) {
-          errorMsg = "访问被拒绝：您的 API Key 权限不足。会员级 Key 仅支持调用 AI 应用或工作流接口。请在页面设置中录入工作流 ID (Workflow ID) 或更换企业级-共享 Key。";
+          errorMsg = "Access denied: API key permission is insufficient.";
         }
         return res.status(rhResponse.status === 200 ? 400 : rhResponse.status).json({ 
           error: errorMsg,
@@ -5174,7 +5640,7 @@ async function trimVideo(src: string, startTime: number, duration: number): Prom
       }
 
       if (!data || !data.taskId) {
-        return res.status(500).json({ error: "RunningHub 响应中缺失 taskId", details: data });
+        return res.status(500).json({ error: "RunningHub 鍝嶅簲涓己澶?taskId", details: data });
       }
 
       return res.json({ taskId: data.taskId });
@@ -5187,7 +5653,7 @@ async function trimVideo(src: string, startTime: number, duration: number): Prom
   app.get('/api/status/:taskId', authenticateToken, async (req, res) => {
     const { taskId } = req.params;
     
-    const globalConfig = await getGlobalApiConfig();
+    const globalConfig = await getGlobalApiConfig((req as any).user?.id);
     let seedanceConfig = globalConfig?.videoSeedanceMini;
     if (!seedanceConfig?.apiKey && globalConfig?.videoSeedance?.apiKey) {
       seedanceConfig = globalConfig.videoSeedance;
@@ -5201,7 +5667,7 @@ async function trimVideo(src: string, startTime: number, duration: number): Prom
     }
 
     if (!apiKey) {
-      return res.status(500).json({ error: "未配置 SEEDANCE API KEY，请在管理后台中设置" });
+      return res.status(500).json({ error: "鏈厤缃?SEEDANCE API KEY锛岃鍦ㄧ鐞嗗悗鍙颁腑璁剧疆" });
     }
 
     try {
@@ -5220,18 +5686,18 @@ async function trimVideo(src: string, startTime: number, duration: number): Prom
       try {
         data = JSON.parse(text);
       } catch (e) {
-        return res.status(500).json({ error: "查询响应格式无效", details: text });
+        return res.status(500).json({ error: "鏌ヨ鍝嶅簲鏍煎紡鏃犳晥", details: text });
       }
 
       if (!rhResponse.ok || (data && data.errorCode && data.errorCode !== '0' && data.errorCode !== '')) {
          return res.status(rhResponse.status === 200 ? 500 : rhResponse.status).json({ 
-           error: data?.errorMessage || data?.message || "查询任务失败", 
+           error: data?.errorMessage || data?.message || "鏌ヨ浠诲姟澶辫触", 
            errorCode: data?.errorCode 
          });
       }
 
       if (!data) {
-        return res.status(500).json({ error: "RunningHub 返回为空" });
+        return res.status(500).json({ error: "RunningHub 杩斿洖涓虹┖" });
       }
 
       // Normalize RunningHub format
@@ -5363,8 +5829,7 @@ async function trimVideo(src: string, startTime: number, duration: number): Prom
   console.log(`>>> [SERVER] Routes and endpoints initialized.`);
   fs.appendFileSync(path.join(process.cwd(), 'startup_debug.log'), `[SERVER] Handlers registered at ${new Date().toISOString()}\n`);
 
-  // Vite 中置件处理
-  console.log('>>> [DEBUG] Setting up Vite/Static middleware...');
+  // Vite 涓疆浠跺鐞?  console.log('>>> [DEBUG] Setting up Vite/Static middleware...');
   if (process.env.NODE_ENV !== "production") {
     console.log('>>> [DEBUG] Starting Vite in development mode...');
     const vite = await createViteServer({
@@ -5386,7 +5851,7 @@ async function trimVideo(src: string, startTime: number, duration: number): Prom
   // Global Error Handler
   app.use((err: any, req: any, res: any, next: any) => {
     console.error(err.stack);
-    res.status(500).json({ error: "内部服务器错误", details: err.message });
+    res.status(500).json({ error: "Internal server error", details: err.message });
   });
 
   // --- Cleanup Task ---

@@ -1,0 +1,30 @@
+{
+  "id": "comfyui-adapter",
+  "name": "ComfyUI Connector",
+  "version": "1.1.0",
+  "description": "Expose custom Stable Diffusion web workflows via local ComfyUI WebSocket/HTTP backend proxy",
+  "type": "plugin",
+  "author": "Stable Diffusion Hub",
+  "permissions": ["use_network", "read_assets", "write_assets"],
+  "runtime": {
+    "kind": "http",
+    "baseUrl": "http://127.0.0.1:8188",
+    "entry": "api/prompt"
+  },
+  "source": {
+    "sourceUrl": "https://github.com/comfyanonymous/ComfyUI",
+    "license": "GPL-3.0",
+    "homepage": "https://github.com/comfyanonymous/ComfyUI",
+    "author": "comfyanonymous"
+  },
+  "contributes": {
+    "skills": [
+      {
+        "id": "run-comfyui-workflow",
+        "name": "ComfyUI 工作流生图",
+        "description": "通过 ComfyUI 本地服务器运行 Stable Diffusion 图案生成工作流",
+        "category": "image"
+      }
+    ]
+  }
+}

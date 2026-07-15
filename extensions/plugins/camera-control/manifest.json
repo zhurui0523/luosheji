@@ -1,0 +1,22 @@
+{
+  "id": "camera-control",
+  "name": "相机调整",
+  "version": "1.0.0",
+  "description": "配置专业级拍摄与摄影相机参数",
+  "type": "plugin",
+  "author": "XiaoLuo Team",
+  "category": "image",
+  "icon": "📷",
+  "permissions": ["call_model"],
+  "sandbox": "none",
+  "runtime": {
+    "kind": "prompt",
+    "entry": "./skill.ts"
+  },
+  "metadata": {
+    "builtin": true,
+    "independentPackage": true,
+    "packagePath": "extensions/plugins/camera-control",
+    "entry": "index.ts"
+  }
+}

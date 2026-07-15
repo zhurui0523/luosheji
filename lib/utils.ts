@@ -54,3 +54,11 @@ export function fromBase64(b64: string): string {
 export function logUsage(action: string, data: any, metadata?: any) {
   console.log(`[Usage Log] ${action}:`, { data, ...metadata });
 }
+
+import { clsx, type ClassValue } from "clsx";
+import { twMerge } from "tailwind-merge";
+
+export function cn(...inputs: ClassValue[]) {
+  return twMerge(clsx(inputs));
+}
+

@@ -154,7 +154,27 @@ const SkillIcon = ({ icon, className = "w-3.5 h-3.5" }: { icon: any; className?:
   return <Sparkles className={className} />;
 };
 
-import { PerspectiveSim, PerspectiveParams } from "./PerspectiveSim";
+import { WebSandbox } from "./os/WebSandbox";
+import { DEFAULT_PLUGIN_CODES } from "../plugin/definitions/defaultPluginCodes";
+
+export interface PerspectiveParams {
+  azimuth: number;
+  elevation: number;
+  distance: number;
+  prompt: string;
+  referenceImage?: string;
+  stageParams?: {
+    characters: any[];
+    cameras: any[];
+    activeCamId: string;
+    cameraStats?: {
+      azimuth: number;
+      elevation: number;
+      distance: number;
+    };
+    cinematicLabel?: string;
+  };
+}
 import { PointAndShootEditor } from "./PointAndShootEditor";
 import { CameraControl } from "./CameraControl";
 import { PanoramaViewer } from "./PanoramaViewer";
@@ -707,6 +727,25 @@ export const SmartImageGenerator: React.FC<SmartImageGeneratorProps> = ({
   const collabFilesCount = isAiChat ? collabAiFilesCount : collabTeamFilesCount;
   const collabFiles = isAiChat ? collabAiFiles : collabTeamFiles;
   const collabQuote = isAiChat ? collabAiQuote : collabTeamQuote;
+
+  const resolveModelConfigByValue = React.useCallback((modelValue: string, modelType: "image" | "video") => {
+    if (!config) return null;
+    const keys: (keyof Config)[] = modelType === "image"
+      ? ["image", "gptImage"]
+      : ["video", "videoVeoFast", "videoSeedance", "videoSeedanceMini"];
+
+    for (const key of keys) {
+      const section = config[key] as any;
+      if (section && (modelValue === key || modelValue === section.model)) {
+        return section;
+      }
+    }
+
+    const customInterfaces = config.customInterfaces || {};
+    return (customInterfaces as any)[modelValue]
+      || Object.values(customInterfaces).find((section: any) => section?.model === modelValue && section?.modelType === modelType)
+      || null;
+  }, [config]);
 
   const setCollabQuote = React.useCallback((val: any | null) => {
     if (collabChatTargetId.endsWith('_ai')) {
@@ -16222,6 +16261,7 @@ ${prompt}
                                           ...imageConfig,
                                           model: m.value,
                                         };
+                                        const imageDefaults = resolveModelConfigByValue(m.value, "image")?.defaultGenerationSettings?.image;
                                         if (m.value === "gpt-image-2") {
                                           newConfig.gptSize =
                                             imageConfig.gptSize || "1024x1536";
@@ -16248,6 +16288,10 @@ ${prompt}
                                             imageConfig.bananaImageSize ||
                                             imageConfig.imageSize ||
                                             "1K";
+                                        }
+                                        if (imageDefaults) {
+                                          newConfig.aspectRatio = imageDefaults.aspectRatio || newConfig.aspectRatio;
+                                          newConfig.imageSize = imageDefaults.imageSize || newConfig.imageSize;
                                         }
 
                                         // Update config.image if it's a custom interface
@@ -16905,11 +16949,14 @@ ${prompt}
                                         <button
                                           key={m.value}
                                           onClick={() => {
+                                            const videoDefaults = resolveModelConfigByValue(m.value, "video")?.defaultGenerationSettings?.video;
                                             setVideoConfig({
                                               ...videoConfig,
                                               model: m.value,
-                                              videoMode: (VIDEO_MODES[m.value] && VIDEO_MODES[m.value]?.[0]?.value) || "all-around",
-                                              duration: (VIDEO_MODEL_CONFIGS[m.value]?.durations?.[0] || "4") as any,
+                                              videoMode: videoDefaults?.videoMode || (VIDEO_MODES[m.value] && VIDEO_MODES[m.value]?.[0]?.value) || "all-around",
+                                              duration: (videoDefaults?.duration || VIDEO_MODEL_CONFIGS[m.value]?.durations?.[0] || "4") as any,
+                                              aspectRatio: videoDefaults?.aspectRatio || videoConfig?.aspectRatio || "16:9",
+                                              resolution: (videoDefaults?.resolution || videoConfig?.resolution || "720p") as any,
                                             });
 
                                             // Update config.video if it's a custom interface
@@ -17824,12 +17871,50 @@ ${prompt}
 
       <AnimatePresence>
         {showPerspectiveSim && (
-          <PerspectiveSim
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[100] bg-[#06080f] flex flex-col overflow-hidden text-slate-100"
             key="perspective-sim-modal"
-            onClose={() => setShowPerspectiveSim(false)}
-            onGenerate={handlePerspectiveGenerate}
-            initialImage={imageConfig.referenceImages?.[0]?.data}
-          />
+          >
+            <div className="h-16 border-b border-slate-800/50 bg-[#0a0b14] flex items-center justify-between px-6 shrink-0 relative z-30 shadow-2xl">
+              <div className="flex items-center space-x-3">
+                <div className="w-10 h-10 bg-indigo-600 rounded-xl flex items-center justify-center shadow-[0_0_20px_rgba(79,70,229,0.4)] text-white font-bold text-xl">
+                  🎥
+                </div>
+                <div className="flex flex-col">
+                  <h1 className="text-sm font-black tracking-tight text-white flex items-center">
+                    3D 导演台 <span className="mx-2 text-slate-700">/</span> DIRECTOR_STAGE (SANDBOX)
+                  </h1>
+                  <span className="text-[9px] font-black text-slate-500 uppercase tracking-[0.2em]">3D Cinematic Director Stage</span>
+                </div>
+              </div>
+              <button 
+                onClick={() => setShowPerspectiveSim(false)}
+                className="w-10 h-10 flex items-center justify-center rounded-xl bg-slate-900 text-slate-500 hover:bg-red-500/10 hover:text-red-500 transition-all border border-slate-800/50"
+              >
+                <span className="text-lg font-bold">✕</span>
+              </button>
+            </div>
+            <div className="flex-1 relative bg-slate-950">
+              <WebSandbox 
+                code={DEFAULT_PLUGIN_CODES['perspective-sim']}
+                className="w-full h-full border-none bg-transparent"
+                onMessage={(msg) => {
+                  if (msg.type === 'perspective-sim-generate') {
+                    handlePerspectiveGenerate(msg.params);
+                  } else if (msg.type === 'perspective-sim-close') {
+                    setShowPerspectiveSim(false);
+                  }
+                }}
+                context={{
+                  initialImage: imageConfig.referenceImages?.[0]?.data || "",
+                  initialPrompt: imageConfig.prompt || ""
+                }}
+              />
+            </div>
+          </motion.div>
         )}
       </AnimatePresence>
 

@@ -21,7 +21,7 @@ export const ConfigModal: React.FC<ConfigModalProps> = ({ config, setConfig, onC
   }, [config]);
   
   const handleTestConnection = async (type: string) => {
-    const isCustom = !['script', 'image', 'videoSeedance', 'videoSeedanceMini', 'gptImage', 'claudeSonnet'].includes(type);
+    const isCustom = !['script', 'image', 'videoSeedance', 'videoSeedanceMini', 'gptImage', 'claudeSonnet', 'gptText'].includes(type);
     const section = (isCustom 
       ? localConfig.customInterfaces?.[type]
       : (localConfig[type as keyof Config] || DEFAULT_CONFIG[type as keyof Config])) as any;
@@ -82,7 +82,7 @@ export const ConfigModal: React.FC<ConfigModalProps> = ({ config, setConfig, onC
     if (!section) return null;
 
     const status = testStatus[type];
-    const computedModelType = section.modelType || (isCustom ? 'text' : (type === 'script' || type === 'claudeSonnet' ? 'text' : (type === 'image' || type === 'gptImage' ? 'image' : 'video')));
+    const computedModelType = section.modelType || (isCustom ? 'text' : (type === 'script' || type === 'claudeSonnet' || type === 'gptText' ? 'text' : (type === 'image' || type === 'gptImage' ? 'image' : 'video')));
 
     return (
       <div className="pt-10 border-t border-gray-100 first:border-t-0 first:pt-0 space-y-6">
@@ -391,7 +391,7 @@ export const ConfigModal: React.FC<ConfigModalProps> = ({ config, setConfig, onC
               <input 
                 type="text"
                 className="w-full h-12 bg-white border border-gray-100 rounded-2xl px-10 text-sm font-medium outline-none focus:ring-2 focus:ring-blue-500/10 transition-all"
-                placeholder={type === 'videoSeedance' ? "https://www.runninghub.cn/openapi/v2/rhart-video/sparkvideo-2.0/multimodal-video" : type === 'videoSeedanceMini' ? "https://www.runninghub.cn/openapi/v2/rhart-video/sparkvideo-2.0-mini/multimodal-video" : (type === 'gptImage' ? "https://api.openai.com/v1" : "https://api.vectorengine.ai/v1beta/models/gemini-3.1-pro-preview:generateContent")}
+                placeholder={type === 'videoSeedance' ? "https://www.runninghub.cn/openapi/v2/rhart-video/sparkvideo-2.0/multimodal-video" : type === 'videoSeedanceMini' ? "https://www.runninghub.cn/openapi/v2/rhart-video/sparkvideo-2.0-mini/multimodal-video" : (type === 'gptImage' || type === 'gptText' ? "https://api.openai.com/v1" : "https://api.vectorengine.ai/v1beta/models/gemini-3.1-pro-preview:generateContent")}
                 value={section.endpoint || ''}
                 onChange={e => {
                   let val = e.target.value;
@@ -530,6 +530,7 @@ export const ConfigModal: React.FC<ConfigModalProps> = ({ config, setConfig, onC
         {renderConfigSection('videoSeedance', '视频生成 (SEEDANCE API)', <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 00-2 2z" strokeWidth={2} /></svg>)}
         {renderConfigSection('videoSeedanceMini', '视频生成 (SD2.0Mini API)', <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 00-2 2z" strokeWidth={2} /></svg>)}
         {renderConfigSection('claudeSonnet', 'Claude-sonnet-5 (CLAUDE API)', <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" strokeWidth={2} /></svg>)}
+        {renderConfigSection('gptText', 'GPT-4o (GPT TEXT API)', <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" strokeWidth={2} /></svg>)}
         
         {/* Dynamic Custom Interfaces */}
         {Object.entries(localConfig.customInterfaces || {}).map(([key, customInt]: [string, any]) => {

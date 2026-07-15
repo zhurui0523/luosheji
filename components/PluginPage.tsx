@@ -24,9 +24,15 @@ import {
   X
 } from 'lucide-react';
 import { AiSkill } from '../skills/types';
-import { PLUGINS } from '../plugin';
+import { PLUGINS, SYSTEM_PLUGINS } from '../plugin';
 import { safeJson } from '../lib/fetch';
 import { WebSandbox } from './os/WebSandbox';
+import { DEFAULT_PLUGIN_CODES } from '../plugin/definitions/defaultPluginCodes';
+import { ExtensionRegistry } from '../lib/os/registries/ExtensionRegistry';
+import { validateExtensionManifest } from '../lib/os/extension/validateManifest';
+import { UserExtensionStore } from '../lib/os/extension/UserExtensionStore';
+import { ExtensionHub } from '../lib/os/extension/ExtensionHub';
+
 
 const getPluginCategory = (id: string, fallback?: 'text' | 'image' | 'video' | 'all'): 'text' | 'image' | 'video' | 'all' => {
   const saved = localStorage.getItem(`plugin_category_${id}`);
@@ -47,8 +53,139 @@ export const PluginPage: React.FC<PluginPageProps> = ({ user }) => {
   const [tick, setTick] = useState(0);
   const forceUpdate = () => setTick(t => t + 1);
 
-  // Navigation Tab State: 'browse' | 'all' | 'workshop'
-  const [activeTab, setActiveTab] = useState<'browse' | 'all' | 'workshop'>('browse');
+  // Navigation Tab State: 'browse' | 'all' | 'workshop' | 'manifest'
+  const [activeTab, setActiveTab] = useState<'browse' | 'all' | 'workshop' | 'manifest'>('browse');
+
+  // Manifest Import States
+  const [manifests, setManifests] = useState<any[]>(() => {
+    return UserExtensionStore.listManifests(user?.id);
+  });
+  const [manifestInput, setManifestInput] = useState<string>('');
+  const [manifestError, setManifestError] = useState<string | null>(null);
+  const [manifestSuccess, setManifestSuccess] = useState<boolean>(false);
+
+  const creativeWriterJson = `{
+  "id": "creative-writer",
+  "name": "创意写作助手",
+  "version": "1.0.0",
+  "description": "全自动文学修辞润色、冲突情节自动续写及生成式画风提示词扩展插件。",
+  "type": "plugin",
+  "author": "XiaoLuo OS Core Team",
+  "category": "text",
+  "icon": "✍️",
+  "permissions": ["call_model"],
+  "sandbox": "none",
+  "contributes": {
+    "skills": [
+      {
+        "id": "writer-polish",
+        "name": "文学级语言润色",
+        "description": "对简单、直白的文本进行深度修辞重组与情感张力扩写。",
+        "category": "text",
+        "instruction": "你是一位精通华丽修辞与叙事张力的文学大师。请对用户输入的段落进行深度润色，保持原意但大幅度提升文采和画面感。"
+      },
+      {
+        "id": "conflict-generator",
+        "name": "情节冲突续写",
+        "description": "根据当前大纲，自动规划并续写下一阶段的戏剧冲突核心情节。",
+        "category": "text",
+        "instruction": "你是一位资深的悬疑与戏剧编剧。请根据用户的情节概述，续写至少300字的高潮冲突段落，并制造一个引人入胜的悬念悬崖（Cliffhanger）。"
+      }
+    ]
+  }
+}`;
+
+  const assetNamerJson = `{
+  "id": "asset-namer",
+  "name": "资产自动命名器",
+  "version": "1.0.0",
+  "description": "基于多模态对生成的数字资产（图片、视频、文本等）进行智能分类与语义化统一命名规范。",
+  "type": "plugin",
+  "author": "XiaoLuo OS Core Team",
+  "category": "data",
+  "icon": "🏷️",
+  "permissions": ["read_assets", "write_assets"],
+  "sandbox": "none",
+  "contributes": {
+    "skills": [
+      {
+        "id": "asset-auto-categorize",
+        "name": "资产分类与命名",
+        "description": "提取数字资产关键特征并按照规范格式重命名。",
+        "category": "data",
+        "instruction": "你是一位资深的数字资产管理专家（DAM）。请对输入的资产描述与元数据，根据规范【[分类]_[年份]_[关键字]】生成唯一的语义化资产名称并分级归档。"
+      }
+    ]
+  }
+}`;
+
+  const handleImportManifest = async () => {
+    setManifestError(null);
+    setManifestSuccess(false);
+    try {
+      const parsed = JSON.parse(manifestInput);
+      const validation = validateExtensionManifest(parsed);
+      if (!validation.ok || !validation.manifest) {
+        setManifestError(`校验失败:\n${validation.errors.join('\n')}`);
+        return;
+      }
+      
+      const manifest = validation.manifest;
+      
+      const result = ExtensionHub.installManifest(manifest, { userId: user?.id });
+      setManifests(result.manifests);
+
+      try {
+        const token = localStorage.getItem('token');
+        await fetch('/api/extensions/packages/import', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+          },
+          body: JSON.stringify({ manifest })
+        });
+      } catch (syncErr) {
+        console.warn('[PluginPage] Manifest imported locally but package sync failed:', syncErr);
+      }
+      
+      setManifestInput('');
+      setManifestSuccess(true);
+      forceUpdate();
+      
+      window.dispatchEvent(new CustomEvent('skills-changed'));
+      alert(`🎉 插件 "${manifest.name}" 导入并安装成功！`);
+    } catch (err: any) {
+      setManifestError(`JSON 解析失败: ${err.message || String(err)}`);
+    }
+  };
+
+  const handleToggleExtension = (id: string, currentState: string) => {
+    if (currentState === 'enabled') {
+      ExtensionHub.disable(id, user?.id);
+    } else {
+      ExtensionHub.enable(id, user?.id);
+    }
+    forceUpdate();
+  };
+
+  const getExtensionStatus = (id: string) => {
+    const record = ExtensionRegistry.get(id);
+    if (!record) return { state: 'uninstalled', error: null };
+    return { state: record.state, error: record.error };
+  };
+
+  const handleUninstallExtension = (id: string) => {
+    if (window.confirm('确认要卸载并彻底移除此清单插件及所有贡献项吗？')) {
+      const result = ExtensionHub.uninstall(id, user?.id);
+      setManifests(result.manifests);
+      
+      forceUpdate();
+      window.dispatchEvent(new CustomEvent('skills-changed'));
+      alert('插件已成功卸载。');
+    }
+  };
+
 
   // Workshop States
   const [workshopSelectedId, setWorkshopSelectedId] = useState<string>('new');
@@ -180,6 +317,8 @@ root.render(<App />);`);
 
   const canModifyPlugin = (skill: AiSkill) => {
     if (user?.role === 'admin') return true;
+    const systemIds = SYSTEM_PLUGINS.map(sp => sp.id);
+    if (systemIds.includes(skill.id)) return true;
     if (skill.isSystem) return false;
     if (skill.creatorId && user?.id && String(skill.creatorId) === String(user?.id)) {
       return true;
@@ -190,6 +329,8 @@ root.render(<App />);`);
   const canModifySelectedWorkshopPlugin = useMemo(() => {
     if (workshopSelectedId === 'new') return true;
     if (user?.role === 'admin') return true;
+    const systemIds = SYSTEM_PLUGINS.map(sp => sp.id);
+    if (systemIds.includes(workshopSelectedId)) return true;
     const userPlugins = JSON.parse(localStorage.getItem('user_plugins') || '[]');
     const plugin = userPlugins.find((p: any) => p.id === workshopSelectedId);
     if (plugin && plugin.creatorId && user?.id && String(plugin.creatorId) === String(user?.id)) {
@@ -327,7 +468,7 @@ root.render(<App />);`);
     }
   };
 
-  const handleDeleteConfirm = (id: string) => {
+  const handleDeleteConfirm = async (id: string) => {
     try {
       // Check if it is a user plugin
       const userPluginsStr = localStorage.getItem('user_plugins');
@@ -336,6 +477,15 @@ root.render(<App />);`);
         const filtered = userPlugins.filter((p: any) => p.id !== id);
         if (filtered.length !== userPlugins.length) {
           localStorage.setItem('user_plugins', JSON.stringify(filtered));
+          try {
+            const token = localStorage.getItem('token');
+            await fetch(`/api/plugins/packages/${encodeURIComponent(id)}`, {
+              method: 'DELETE',
+              headers: token ? { 'Authorization': `Bearer ${token}` } : {}
+            });
+          } catch (syncErr) {
+            console.warn('[PluginPage] Plugin deleted locally but package delete failed:', syncErr);
+          }
           setDeletingPluginId(null);
           window.dispatchEvent(new CustomEvent('skills-changed'));
           return;
@@ -419,20 +569,44 @@ root.render(<App />);`);
       setSaveFormCategory('all');
     } else {
       const userPlugins = JSON.parse(localStorage.getItem('user_plugins') || '[]');
-      const matched = userPlugins.find((p: any) => p.id === id);
+      let matched = userPlugins.find((p: any) => p.id === id);
+      
+      // If not in user_plugins, check if it is an edited system plugin in edited_system_plugins
+      if (!matched) {
+        const editedPlugins = JSON.parse(localStorage.getItem('edited_system_plugins') || '{}');
+        if (editedPlugins[id]) {
+          matched = { id, ...editedPlugins[id] };
+        }
+      }
+
+      // If still not found, check if it's one of our default system plugins
+      const sysPlugin = SYSTEM_PLUGINS.find(p => p.id === id);
+      if (!matched && sysPlugin) {
+        const defaultCode = DEFAULT_PLUGIN_CODES[id] || '';
+        matched = {
+          id,
+          name: sysPlugin.name,
+          desc: sysPlugin.desc || '',
+          icon: sysPlugin.icon || '🔌',
+          category: sysPlugin.category || 'image',
+          instruction: `[Generative UI Plugin: ${sysPlugin.name}] Please use the following code as reference: ${defaultCode}`
+        };
+      }
+
       if (matched) {
         // Extract code from instruction
         let savedCode = '';
         const matchToken = 'Please use the following code as reference: ';
-        const tokenIdx = matched.instruction.indexOf(matchToken);
+        const instruction = matched.instruction || '';
+        const tokenIdx = instruction.indexOf(matchToken);
         if (tokenIdx !== -1) {
-          savedCode = matched.instruction.substring(tokenIdx + matchToken.length);
+          savedCode = instruction.substring(tokenIdx + matchToken.length);
         } else {
-          savedCode = matched.instruction;
+          savedCode = instruction;
         }
         setWorkshopCode(savedCode);
         setSaveFormName(matched.name);
-        setSaveFormDesc(matched.desc);
+        setSaveFormDesc(matched.desc || matched.description || '');
         setSaveFormIcon(matched.icon || '✨');
         setSaveFormCategory(matched.category || 'all');
       }
@@ -505,7 +679,7 @@ root.render(<App />);`);
   };
 
   // Workshop save action
-  const handleWorkshopSave = (closeModalAfter?: boolean) => {
+  const handleWorkshopSave = async (closeModalAfter?: boolean) => {
     if (!saveFormName.trim()) {
       alert('请先输入插件名称');
       return;
@@ -515,47 +689,87 @@ root.render(<App />);`);
     const isNew = workshopSelectedId === 'new' || !canModifySelectedWorkshopPlugin;
     const pluginId = isNew ? 'custom_' + Date.now().toString() : workshopSelectedId;
 
-    const savedPayload = {
-      id: pluginId,
-      name: saveFormName + (isNew && workshopSelectedId !== 'new' ? ' (副本)' : ''),
-      desc: saveFormDesc,
-      icon: saveFormIcon,
-      instruction: `[Generative UI Plugin: ${saveFormName}] Please use the following code as reference: ${workshopCode}`,
-      isPublic: true,
-      isSystem: false,
-      isInstalled: true,
-      category: saveFormCategory,
-      status: 'approved',
-      creatorId: isNew ? user?.id : (userPlugins.find((p: any) => p.id === pluginId)?.creatorId || user?.id),
-      creatorName: isNew ? (user?.username || '团队自制') : (userPlugins.find((p: any) => p.id === pluginId)?.creatorName || user?.username || '团队自制')
-    };
-
-    if (isNew) {
-      userPlugins.push(savedPayload);
-      // Migrate chat history
-      setWorkshopChatHistory(prev => {
-        const updated = { ...prev };
-        if (updated[workshopSelectedId]) {
-          updated[pluginId] = updated[workshopSelectedId];
-          if (workshopSelectedId === 'new') {
-            delete updated['new'];
-          }
-        }
-        localStorage.setItem('workshop_chat_history', JSON.stringify(updated));
-        return updated;
-      });
+    const systemIds = SYSTEM_PLUGINS.map(sp => sp.id);
+    if (systemIds.includes(pluginId)) {
+      // Save to edited system plugins
+      const editedPlugins = JSON.parse(localStorage.getItem('edited_system_plugins') || '{}');
+      editedPlugins[pluginId] = {
+        ...editedPlugins[pluginId],
+        id: pluginId,
+        name: saveFormName,
+        desc: saveFormDesc,
+        icon: saveFormIcon,
+        instruction: `[Generative UI Plugin: ${saveFormName}] Please use the following code as reference: ${workshopCode}`,
+        category: saveFormCategory,
+        isSystem: true,
+        isInstalled: true,
+        isPublic: true
+      };
+      localStorage.setItem('edited_system_plugins', JSON.stringify(editedPlugins));
+      localStorage.setItem(`plugin_category_${pluginId}`, saveFormCategory);
     } else {
-      const idx = userPlugins.findIndex((p: any) => p.id === pluginId);
-      if (idx !== -1) {
-        userPlugins[idx] = savedPayload;
-      } else {
+      const savedPayload = {
+        id: pluginId,
+        name: saveFormName + (isNew && workshopSelectedId !== 'new' ? ' (副本)' : ''),
+        desc: saveFormDesc,
+        icon: saveFormIcon,
+        instruction: `[Generative UI Plugin: ${saveFormName}] Please use the following code as reference: ${workshopCode}`,
+        isPublic: true,
+        isSystem: false,
+        isInstalled: true,
+        category: saveFormCategory,
+        status: 'approved',
+        creatorId: isNew ? user?.id : (userPlugins.find((p: any) => p.id === pluginId)?.creatorId || user?.id),
+        creatorName: isNew ? (user?.username || '团队自制') : (userPlugins.find((p: any) => p.id === pluginId)?.creatorName || user?.username || '团队自制')
+      };
+
+      if (isNew) {
         userPlugins.push(savedPayload);
+        // Migrate chat history
+        setWorkshopChatHistory(prev => {
+          const updated = { ...prev };
+          if (updated[workshopSelectedId]) {
+            updated[pluginId] = updated[workshopSelectedId];
+            if (workshopSelectedId === 'new') {
+              delete updated['new'];
+            }
+          }
+          localStorage.setItem('workshop_chat_history', JSON.stringify(updated));
+          return updated;
+        });
+      } else {
+        const idx = userPlugins.findIndex((p: any) => p.id === pluginId);
+        if (idx !== -1) {
+          userPlugins[idx] = savedPayload;
+        } else {
+          userPlugins.push(savedPayload);
+        }
+      }
+
+      localStorage.setItem('user_plugins', JSON.stringify(userPlugins));
+      localStorage.setItem(`plugin_category_${pluginId}`, saveFormCategory);
+      try {
+        const token = localStorage.getItem('token');
+        await fetch('/api/plugins/packages/sync', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+          },
+          body: JSON.stringify({
+            id: pluginId,
+            name: savedPayload.name,
+            desc: savedPayload.desc,
+            icon: savedPayload.icon,
+            category: savedPayload.category,
+            code: workshopCode
+          })
+        });
+      } catch (syncErr) {
+        console.warn('[PluginPage] Plugin saved locally but package sync failed:', syncErr);
       }
     }
 
-    localStorage.setItem('user_plugins', JSON.stringify(userPlugins));
-    localStorage.setItem(`plugin_category_${pluginId}`, saveFormCategory);
-    
     // Sync selecting new plugin
     if (isNew) {
       setWorkshopSelectedId(pluginId);
@@ -622,10 +836,20 @@ root.render(<App />);`);
             >
               ✨ AI 插件工坊 (Beta)
             </button>
+            <button
+              onClick={() => setActiveTab('manifest')}
+              className={`text-xs font-bold px-3.5 py-1.5 rounded-lg transition-all select-none cursor-pointer ${
+                activeTab === 'manifest'
+                  ? 'bg-white text-indigo-600 shadow-sm border border-slate-250'
+                  : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100/60 border border-transparent'
+              }`}
+            >
+              🔌 Manifest 导入
+            </button>
           </div>
         </div>
 
-        {activeTab !== 'workshop' ? (
+        {activeTab === 'browse' || activeTab === 'all' ? (
           <div className="flex items-center justify-between md:justify-end gap-3 flex-1">
             <div className="relative flex items-center w-full sm:w-64 md:w-72 group">
               <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3.5 transition-colors group-focus-within:text-indigo-500 pointer-events-none" />
@@ -642,14 +866,14 @@ root.render(<App />);`);
                 setActiveTab('workshop');
                 handleWorkshopLoadPlugin('new');
               }}
-              className="flex items-center space-x-1.5 px-3.5 py-2 rounded-xl text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-700 active:scale-95 transition-all cursor-pointer shrink-0 shadow-sm"
+              className="flex items-center space-x-1.5 px-3.5 py-2 rounded-xl text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-700 active:scale-95 transition-all cursor-pointer shrink-0 shadow-sm border-0"
               title="前往 AI 插件工坊新建插件"
             >
               <Sparkles className="w-3.5 h-3.5" />
               <span>制作新插件</span>
             </button>
           </div>
-        ) : (
+        ) : activeTab === 'workshop' ? (
           <div className="flex items-center space-x-3 flex-1 justify-end">
             <span className="text-xs text-slate-500">
               ⚙️ 当前工作空间：
@@ -657,20 +881,35 @@ root.render(<App />);`);
             <select
               value={workshopSelectedId}
               onChange={(e) => handleWorkshopLoadPlugin(e.target.value)}
-              className="text-xs border border-slate-200 bg-white rounded-xl px-3 py-2 outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 min-w-48"
+              className="text-xs border border-slate-200 bg-white rounded-xl px-3 py-2 outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 min-w-48 cursor-pointer font-medium"
             >
               <option value="new">✨ 新建自定义插件</option>
-              {customSavedPluginsList.map((p: any) => (
-                <option key={p.id} value={p.id}>
-                  {p.icon || '📦'} {p.name} (自建)
-                </option>
-              ))}
+              <optgroup label="官方预设插件">
+                {SYSTEM_PLUGINS.map(sp => (
+                  <option key={sp.id} value={sp.id}>
+                    {sp.icon} {sp.name}
+                  </option>
+                ))}
+              </optgroup>
+              {customSavedPluginsList.length > 0 && (
+                <optgroup label="自建/自制插件">
+                  {customSavedPluginsList.map((p: any) => (
+                    <option key={p.id} value={p.id}>
+                      {p.icon || '📦'} {p.name}
+                    </option>
+                  ))}
+                </optgroup>
+              )}
             </select>
+          </div>
+        ) : (
+          <div className="flex items-center space-x-3 flex-1 justify-end text-xs text-slate-500 font-semibold select-none">
+            🔌 支持标准 Extension 插件规范
           </div>
         )}
       </div>
 
-      {activeTab !== 'workshop' ? (
+      {activeTab === 'browse' || activeTab === 'all' ? (
         /* Grid view content */
         <div className="flex-1 overflow-y-auto p-8">
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6 animate-in fade-in duration-300">
@@ -768,7 +1007,7 @@ root.render(<App />);`);
                   </span>
 
                    <div className="flex items-center space-x-1.5">
-                    {(!skill.isSystem || user?.role === 'admin') && (
+                    {(!skill.isSystem || SYSTEM_PLUGINS.some(sp => sp.id === skill.id) || user?.role === 'admin') && (
                       <button
                         onClick={() => {
                           setActiveTab('workshop');
@@ -824,7 +1063,7 @@ root.render(<App />);`);
             )}
           </div>
         </div>
-      ) : (
+      ) : activeTab === 'workshop' ? (
         /* AI Plugin Workshop Panel */
         <div className="flex-1 overflow-hidden flex flex-col md:flex-row bg-[#f8fafc] animate-in fade-in duration-300">
           {/* Workshop Control Sidebar */}
@@ -888,14 +1127,6 @@ root.render(<App />);`);
 
             {/* Prompt Input & Presets */}
             <div className="space-y-2.5 pt-2 border-t border-slate-100/50">
-              <div className="flex items-center justify-between">
-                <label className="text-xs font-bold text-slate-700">
-                  开发构想提示词
-                </label>
-                <span className="text-[10px] text-indigo-600 font-bold bg-indigo-50 px-1.5 py-0.5 rounded-md">
-                  支持多次迭代对话
-                </span>
-              </div>
               <textarea
                 value={workshopPrompt}
                 onChange={(e) => setWorkshopPrompt(e.target.value)}
@@ -908,62 +1139,6 @@ root.render(<App />);`);
                 className="w-full text-xs p-3 border border-slate-200 rounded-xl focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 focus:outline-none resize-none leading-relaxed disabled:opacity-50 disabled:cursor-not-allowed"
                 disabled={isGenerating || !canModifySelectedWorkshopPlugin}
               />
-              
-              {/* Quick Launch Presets */}
-              <div className="space-y-1.5">
-                <span className="text-[10px] font-bold text-slate-400 block">推荐快速启动预设：</span>
-                <div className="flex flex-wrap gap-1.5">
-                  {[
-                    { label: '🎨 精美色卡生成', prompt: '制作一个配色卡生成器，随机生成5种相近色卡，点击一键复制Hex，同时使用Recharts显示色彩饱和雷达图。' },
-                    { label: '✏️ 白板涂鸦本', prompt: '制作一个画布涂鸦画板。支持鼠标拖动或触控绘画，提供5个高级预设颜色，可以调粗细，支持清空和撤销。' },
-                    { label: '📊 销售大盘看板', prompt: '使用Recharts制作一个精美的公司业务销售看板。包含趋势折线图 and 产品销量占比饼图。内置随机波动刷新。' }
-                  ].map((preset, idx) => (
-                    <button
-                      key={idx}
-                      type="button"
-                      disabled={!canModifySelectedWorkshopPlugin}
-                      onClick={() => setWorkshopPrompt(preset.prompt)}
-                      className={`text-[9px] font-semibold px-2 py-1 border border-slate-200/60 rounded-lg transition-all ${
-                        !canModifySelectedWorkshopPlugin
-                          ? 'bg-slate-50 text-slate-400 cursor-not-allowed border-slate-100'
-                          : 'bg-slate-100 text-slate-600 hover:bg-indigo-50 hover:text-indigo-600 cursor-pointer'
-                      }`}
-                    >
-                      {preset.label}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              {/* Model Slot Selector */}
-              <div className="space-y-2 pt-2 border-t border-slate-100/50">
-                <label className="text-xs font-bold text-slate-700 flex items-center">
-                  <Cpu className="w-3.5 h-3.5 mr-1 text-slate-500" />
-                  <span>选择大模型提供商</span>
-                </label>
-                <div className="relative">
-                  <select
-                    value={selectedModelSlot}
-                    onChange={(e) => setSelectedModelSlot(e.target.value)}
-                    disabled={!canModifySelectedWorkshopPlugin}
-                    className="w-full text-xs px-3.5 py-2.5 border border-slate-200 rounded-xl focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 focus:outline-none bg-white cursor-pointer font-bold text-slate-700 appearance-none shadow-xs disabled:opacity-50 disabled:cursor-not-allowed"
-                  >
-                    <option value="script">主力通用模型 (Gemini / 推荐)</option>
-                    <option value="claudeSonnet">高阶推理大模型 (Claude Sonnet)</option>
-                    <option value="gptImage">兼容架构模型 (GPT / 兼容渠道)</option>
-                  </select>
-                  <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center px-3.5 text-slate-400">
-                    <svg className="fill-current h-4 w-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20">
-                      <path d="M9.293 12.95l.707.707L15.657 8l-1.414-1.414L10 10.828 5.757 6.586 4.343 8z"/>
-                    </svg>
-                  </div>
-                </div>
-                <p className="text-[10px] text-slate-400 bg-slate-50/80 p-2.5 rounded-lg border border-slate-100/80 leading-normal">
-                  {selectedModelSlot === 'script' && '💡 高效，高鲁棒性，运行流畅，推荐日常开发使用'}
-                  {selectedModelSlot === 'claudeSonnet' && '🧠 深度编程，逻辑完美，适合处理复杂机制与算法'}
-                  {selectedModelSlot === 'gptImage' && '⚙️ 兼容标准 API 架构，支持第三方自定义通道与代理配置'}
-                </p>
-              </div>
 
               {workshopError && (
                 <div className="p-3 bg-red-50 text-red-700 text-[11px] rounded-xl border border-red-100 flex items-start space-x-1.5">
@@ -989,6 +1164,27 @@ root.render(<App />);`);
                   </>
                 )}
               </button>
+
+              {/* Model Slot Selector */}
+              <div className="space-y-2 pt-2 border-t border-slate-100/50">
+                <div className="relative">
+                  <select
+                    value={selectedModelSlot}
+                    onChange={(e) => setSelectedModelSlot(e.target.value)}
+                    disabled={!canModifySelectedWorkshopPlugin}
+                    className="w-full text-xs px-3.5 py-2.5 border border-slate-200 rounded-xl focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 focus:outline-none bg-white cursor-pointer font-bold text-slate-700 appearance-none shadow-xs disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    <option value="script">主力通用模型 (Gemini / 推荐)</option>
+                    <option value="claudeSonnet">高阶推理大模型 (Claude Sonnet)</option>
+                    <option value="gptText">兼容架构模型 (GPT / 兼容渠道)</option>
+                  </select>
+                  <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center px-3.5 text-slate-400">
+                    <svg className="fill-current h-4 w-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20">
+                      <path d="M9.293 12.95l.707.707L15.657 8l-1.414-1.414L10 10.828 5.757 6.586 4.343 8z"/>
+                    </svg>
+                  </div>
+                </div>
+              </div>
             </div>
           </div>
 
@@ -1019,7 +1215,7 @@ root.render(<App />);`);
                   value={workshopCode}
                   onChange={(e) => setWorkshopCode(e.target.value)}
                   readOnly={!canModifySelectedWorkshopPlugin}
-                  className={`flex-1 w-full p-4 font-mono text-[11px] leading-relaxed text-slate-350 bg-slate-950 border-none outline-none resize-none focus:ring-0 overflow-y-auto selection:bg-slate-800 selection:text-white ${
+                  className={`flex-1 w-full p-4 font-mono text-[11px] leading-relaxed text-slate-355 bg-slate-950 border-none outline-none resize-none focus:ring-0 overflow-y-auto selection:bg-slate-800 selection:text-white ${
                     !canModifySelectedWorkshopPlugin ? 'cursor-not-allowed opacity-80' : ''
                   }`}
                   style={{ color: '#cbd5e1' }}
@@ -1059,7 +1255,190 @@ root.render(<App />);`);
             </div>
           </div>
         </div>
+      ) : (
+        /* Manifest Page Panel */
+        <div className="flex-1 overflow-y-auto p-8 max-w-6xl mx-auto w-full space-y-8 animate-in fade-in duration-300">
+          <div className="bg-white border border-slate-200/60 rounded-3xl p-6 shadow-sm">
+            <h2 className="text-base font-bold text-slate-900 flex items-center space-x-2">
+              <span>🔌 导入新插件 Extension 清单 (Manifest JSON)</span>
+            </h2>
+            <p className="text-xs text-slate-500 mt-1 leading-relaxed">
+              根据标准扩展规范，粘贴 ExtensionManifest 格式的 JSON 进行动态插件与功能贡献项的安装与即插即用部署。
+            </p>
+
+            <div className="mt-4 flex flex-wrap gap-2">
+              <button
+                onClick={() => {
+                  setManifestInput(creativeWriterJson);
+                  setManifestError(null);
+                  setManifestSuccess(false);
+                }}
+                className="px-3.5 py-2 text-xs font-semibold text-indigo-700 bg-indigo-50 hover:bg-indigo-100 rounded-xl transition-all cursor-pointer border-0"
+              >
+                📝 载入《创意写作助手》清单示例 (Prompt Skill)
+              </button>
+              <button
+                onClick={() => {
+                  setManifestInput(assetNamerJson);
+                  setManifestError(null);
+                  setManifestSuccess(false);
+                }}
+                className="px-3.5 py-2 text-xs font-semibold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 rounded-xl transition-all cursor-pointer border-0"
+              >
+                🏷️ 载入《资产自动命名器》清单示例 (Executable Skill)
+              </button>
+            </div>
+
+            <div className="mt-4">
+              <textarea
+                value={manifestInput}
+                onChange={(e) => setManifestInput(e.target.value)}
+                placeholder="在此粘贴 JSON 清单代码..."
+                rows={12}
+                className="w-full font-mono text-xs p-4 bg-slate-950 text-slate-300 border border-slate-200 rounded-2xl focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500/30 focus:outline-none leading-relaxed"
+              />
+            </div>
+
+            {manifestError && (
+              <div className="mt-3 p-4 bg-rose-50 text-rose-800 text-xs font-medium rounded-2xl border border-rose-100 whitespace-pre-wrap leading-relaxed">
+                ❌ {manifestError}
+              </div>
+            )}
+
+            {manifestSuccess && (
+              <div className="mt-3 p-4 bg-emerald-50 text-emerald-800 text-xs font-medium rounded-2xl border border-emerald-100 leading-relaxed flex items-center space-x-1.5">
+                <Check className="w-4 h-4 text-emerald-600 shrink-0" />
+                <span>🎉 扩展清单验证通过并成功安装到内核注册表中！该扩展包含的技能也已同步动态激活。</span>
+              </div>
+            )}
+
+            <div className="mt-4 flex items-center justify-between">
+              <button
+                onClick={() => {
+                  setManifestInput('');
+                  setManifestError(null);
+                  setManifestSuccess(false);
+                }}
+                className="px-4 py-2 text-xs font-bold text-slate-600 hover:bg-slate-50 border border-slate-200 rounded-xl transition-all cursor-pointer bg-white"
+              >
+                清空输入
+              </button>
+              <button
+                onClick={handleImportManifest}
+                disabled={!manifestInput.trim()}
+                className="px-5 py-2 text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-700 disabled:opacity-40 disabled:cursor-not-allowed rounded-xl transition-all cursor-pointer flex items-center space-x-1 shadow-sm active:scale-98 border-0"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                <span>导入并安装该扩展</span>
+              </button>
+            </div>
+          </div>
+
+          {/* Installed Manifests Management List */}
+          <div className="space-y-4">
+            <h3 className="text-sm font-bold text-slate-800 flex items-center space-x-2 select-none">
+              <Layers className="w-4 h-4 text-slate-400" />
+              <span>已安装的清单插件（{manifests.length} 个）</span>
+            </h3>
+
+            {manifests.length === 0 ? (
+              <div className="py-12 text-center bg-white border border-slate-200/50 rounded-3xl p-6">
+                <Bot className="w-12 h-12 text-slate-350 mx-auto stroke-1" />
+                <p className="text-xs text-slate-400 mt-3 font-medium">
+                  当前尚无任何通过 JSON 清单导入的扩展。请在上方贴入清单并点击导入。
+                </p>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {manifests.map((manifest) => {
+                  const status = getExtensionStatus(manifest.id);
+                  const isEnabled = status.state === 'enabled';
+                  return (
+                    <div
+                      key={manifest.id}
+                      className="p-5 bg-white border border-slate-200/60 rounded-2xl flex flex-col justify-between shadow-xs hover:shadow-sm hover:border-slate-350 transition-all"
+                    >
+                      <div>
+                        <div className="flex items-start justify-between">
+                          <div className="truncate pr-2">
+                            <h4 className="text-sm font-bold text-slate-900 flex items-center space-x-1.5 truncate">
+                              <span className="text-lg shrink-0">{manifest.icon || '🔌'}</span>
+                              <span className="truncate">{manifest.name}</span>
+                            </h4>
+                            <p className="text-[10px] text-slate-400 font-medium mt-0.5">
+                              ID: {manifest.id} | v{manifest.version}
+                            </p>
+                          </div>
+
+                          <div className="flex items-center space-x-1.5 shrink-0">
+                            {status.state === 'error' ? (
+                              <span className="text-[9px] font-bold text-red-600 bg-red-50 border border-red-100 rounded-md px-1.5 py-0.5" title={status.error || ''}>
+                                ERROR
+                              </span>
+                            ) : isEnabled ? (
+                              <span className="text-[9px] font-bold text-emerald-600 bg-emerald-50 border border-emerald-100 rounded-md px-1.5 py-0.5">
+                                ENABLED
+                              </span>
+                            ) : (
+                              <span className="text-[9px] font-bold text-amber-600 bg-amber-50 border border-amber-100 rounded-md px-1.5 py-0.5">
+                                DISABLED
+                              </span>
+                            )}
+                          </div>
+                        </div>
+
+                        <p className="text-xs text-slate-600 mt-3 leading-relaxed bg-slate-50 border border-slate-100/60 p-3 rounded-xl min-h-[50px] block">
+                          {manifest.description || '暂无描述信息。'}
+                        </p>
+
+                        {/* Contribution Summary */}
+                        {manifest.contributes?.skills && manifest.contributes.skills.length > 0 && (
+                          <div className="mt-3.5 space-y-1.5 border-t border-slate-100 pt-3 select-none">
+                            <div className="text-[10px] font-bold text-indigo-600 flex items-center space-x-1">
+                              <span>🛠️ 贡献的技能 ({manifest.contributes.skills.length})</span>
+                            </div>
+                            <div className="flex flex-wrap gap-1.5">
+                              {manifest.contributes.skills.map((s: any) => (
+                                <span key={s.id} className="text-[9px] px-2 py-0.5 font-medium bg-slate-100 border border-slate-200/40 text-slate-600 rounded-md" title={s.description}>
+                                  {s.name}
+                                </span>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="flex items-center justify-between border-t border-slate-100/65 mt-4 pt-3 shrink-0 select-none">
+                        <button
+                          onClick={() => handleUninstallExtension(manifest.id)}
+                          className="px-3 py-1.5 text-[11px] font-bold text-rose-600 hover:bg-rose-50 rounded-xl transition-all cursor-pointer border-0 bg-transparent"
+                        >
+                          卸载 (Uninstall)
+                        </button>
+
+                        <button
+                          onClick={() => handleToggleExtension(manifest.id, status.state)}
+                          disabled={status.state === 'error'}
+                          className={`px-3.5 py-1.5 text-[11px] font-bold rounded-xl border transition-all cursor-pointer ${
+                            status.state === 'error'
+                              ? 'bg-slate-50 text-slate-300 border-slate-100 cursor-not-allowed'
+                              : isEnabled
+                                ? 'bg-amber-50 text-amber-700 hover:bg-amber-100 border-amber-200/60'
+                                : 'bg-emerald-50 text-emerald-700 hover:bg-emerald-100 border-emerald-200/60'
+                          }`}
+                        >
+                          {isEnabled ? '禁用 (Disable)' : '启用 (Enable)'}
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </div>
       )}
+
 
       {/* Delete Confirmation Modal */}
       {deletingPluginId && (

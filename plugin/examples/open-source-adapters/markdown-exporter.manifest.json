@@ -1,0 +1,27 @@
+{
+  "id": "markdown-exporter",
+  "name": "Markdown Exporter",
+  "version": "1.0.0",
+  "description": "Convert doc structure and compile it as polished GitHub-Flavored Markdown assets",
+  "type": "plugin",
+  "author": "OS Tech Writer",
+  "permissions": ["access_files"],
+  "runtime": {
+    "kind": "node",
+    "entry": "dist/exporter.js"
+  },
+  "source": {
+    "license": "MIT",
+    "homepage": "https://github.com/opensource/markdown-exporter"
+  },
+  "contributes": {
+    "skills": [
+      {
+        "id": "export-markdown",
+        "name": "导出 Markdown 资产",
+        "description": "快速将文档大纲和工作流笔记一键导出为标准的 MD 文档",
+        "category": "text"
+      }
+    ]
+  }
+}

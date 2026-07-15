@@ -1,6 +1,6 @@
-# 🪐 Xiaoluo OS (小逻操作系统) 核心系统架构 & 目录蓝图
+# 🪐 XiaoLuo AI Intent OS核心系统架构 & 目录蓝图
 
-本指南旨在为开发者和系统架构师清晰呈现 **小逻 AI OS** 的全景四层技术架构。通过将工程代码映射至架构设计，使整个系统模块化、高内聚、低耦合，极易扩展与理解。
+本指南旨在为开发者和系统架构师清晰呈现 **XiaoLuo AI Intent OS** 的全景四层技术架构。通过将工程代码映射至架构设计，使整个系统模块化、高内聚、低耦合，极易扩展与理解。
 
 ---
 
@@ -46,20 +46,20 @@
 
 ## 📂 推荐系统目录结构 (Recommended Directory Blueprint)
 
-为了提升代码的可读性、模块化和维护效率，小逻 OS 采用如下 **领域驱动 (Domain-Driven)** 与 **分层架构 (Layered)** 相结合的目录结构：
+为了提升代码的可读性、模块化和维护效率，XiaoLuo AI Intent OS 采用如下 **领域驱动 (Domain-Driven)** 与 **分层架构 (Layered)** 相结合的目录结构：
 
 ```
-xiaoluo-ai-os/
+XiaoLuo AI Intent OS/
 ├── src/                          # 核心应用源码
 │   ├── components/               # 【Layer 4】交互与接入层 UI 组件
-│   │   └── os/                   # 小逻操作系统专属 UI 视图
+│   │   └── os/                   # XiaoLuo AI Intent OS专属 UI 视图
 │   │       ├── OSEngineTab.tsx       # 统一主控台、意图监控、实时运行看板
 │   │       ├── GenerativeUI.tsx      # 动态生成式 UI 交互卡片
 │   │       ├── PipelineTuning.tsx    # 运行管线、参数及沙盒调优面板
 │   │       └── WebSandbox.tsx        # 运行隔离沙盒与结果预览窗口
 │   │
 │   ├── lib/                      # 【Layer 3 & 2】核心运行时、调度内核与总线
-│   │   └── os/                   # 小逻操作系统运行时内核 (Kernel)
+│   │   └── os/                   # XiaoLuo AI Intent OS运行时内核 (Kernel)
 │   │       ├── IntentRuntime.ts      # 意图运行时协调器、双层状态机
 │   │       ├── DAGEngine.ts          # 目标引擎 (Goal Engine) ➔ DAG 解析、拆解与依赖树分析
 │   │       ├── EventBus.ts           # 异步/同步高频事件订阅发布中心
@@ -88,7 +88,7 @@ xiaoluo-ai-os/
 
 ## 💎 核心九大对象模型 (9 Core Object Models)
 
-小逻的数字世界由 **9 大核心对象** 相互驱动、链式流转：
+XiaoLuo AI Intent OS由 **9 大核心对象** 相互驱动、链式流转：
 
 1. **Intent (意图)**: 用户的原始表达，通过 `IntentRuntime` 解析并标准化。
 2. **Goal (目标)**: 系统努力达成的终极目标，由 `Goal Engine` 拆解为有向无环图 (DAG)。

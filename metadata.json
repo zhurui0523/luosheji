@@ -1,6 +1,6 @@
 {
-  "name": "AI意图控制台",
-  "description": "释放你的逻辑设计力",
+  "name": "XiaoLuo AI Intent OS",
+  "description": "多模态 AI 意图操作系统 / Multi-modal AI Intent Operating System",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

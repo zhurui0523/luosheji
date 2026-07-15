@@ -1,0 +1,26 @@
+{
+  "id": "timeline-editor",
+  "name": "Timeline Visual Editor",
+  "version": "1.0.4",
+  "description": "Visual timeline panel for precision frame-by-frame and keyframe tracking control",
+  "type": "plugin",
+  "author": "Creative OS team",
+  "permissions": ["read_canvas", "write_canvas"],
+  "runtime": {
+    "kind": "iframe",
+    "baseUrl": "http://localhost:3002/timeline-panel"
+  },
+  "source": {
+    "license": "Apache-2.0",
+    "homepage": "https://github.com/opensource/visual-timeline"
+  },
+  "contributes": {
+    "uiPanels": [
+      {
+        "id": "timeline-panel",
+        "name": "时间轴微调面板",
+        "mount": "canvas"
+      }
+    ]
+  }
+}

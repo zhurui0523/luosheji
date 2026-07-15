@@ -58,15 +58,15 @@ const INLINE_GRID_MODES_SKILLS = [
     icon: <ClipboardList className="w-3.5 h-3.5 text-rose-400" />,
     desc: "自动分析剧情并生成故事分镜大面板",
   },
+];
+
+const INLINE_GRID_MODES_PLUGINS = [
   {
     label: "VR全景世界",
     value: "panorama",
     icon: <Compass className="w-3.5 h-3.5 text-orange-500" />,
     desc: "生成专业级 720° 全景 VR 素材",
   },
-];
-
-const INLINE_GRID_MODES_PLUGINS = [
   {
     label: "3D导演台",
     value: "perspective-sim",
@@ -561,6 +561,47 @@ export const InlineGenerationConsole: React.FC<InlineGenerationConsoleProps> = (
       const nextIndex = (currentIndex + 1) % resolutions.length;
       setVideoConfig((prev: any) => ({ ...prev, resolution: resolutions[nextIndex] }));
     }
+  };
+
+  const resolveModelConfigByValue = (modelValue: string, modelType: "image" | "video") => {
+    if (!config) return null;
+    const keys: (keyof Config)[] = modelType === "image"
+      ? ["image", "gptImage"]
+      : ["video", "videoVeoFast", "videoSeedance", "videoSeedanceMini"];
+
+    for (const key of keys) {
+      const section = config[key] as any;
+      if (section && (modelValue === key || modelValue === section.model)) {
+        return section;
+      }
+    }
+
+    const customInterfaces = config.customInterfaces || {};
+    return (customInterfaces as any)[modelValue]
+      || Object.values(customInterfaces).find((section: any) => section?.model === modelValue && section?.modelType === modelType)
+      || null;
+  };
+
+  const applyModelDefaultsToImageConfig = (modelValue: string, previous: any) => {
+    const defaults = resolveModelConfigByValue(modelValue, "image")?.defaultGenerationSettings?.image || {};
+    return {
+      ...previous,
+      model: modelValue,
+      aspectRatio: defaults.aspectRatio || previous.aspectRatio,
+      imageSize: defaults.imageSize || previous.imageSize,
+    };
+  };
+
+  const applyModelDefaultsToVideoConfig = (modelValue: string, previous: any) => {
+    const defaults = resolveModelConfigByValue(modelValue, "video")?.defaultGenerationSettings?.video || {};
+    return {
+      ...previous,
+      model: modelValue,
+      videoMode: defaults.videoMode || previous.videoMode,
+      duration: defaults.duration || previous.duration,
+      aspectRatio: defaults.aspectRatio || previous.aspectRatio,
+      resolution: defaults.resolution || previous.resolution,
+    };
   };
 
   // Helper to resolve clean labels for model values
@@ -1246,7 +1287,7 @@ export const InlineGenerationConsole: React.FC<InlineGenerationConsoleProps> = (
                           key={m.value}
                           onClick={() => {
                             if (isImage) {
-                              setImageConfig((prev: any) => ({ ...prev, model: m.value }));
+                              setImageConfig((prev: any) => applyModelDefaultsToImageConfig(m.value, prev));
                               if (config) {
                                 const customInterface = config.customInterfaces?.[m.value] || Object.values(config.customInterfaces || {}).find((ci: any) => ci.model === m.value);
                                 if (customInterface) {
@@ -1282,7 +1323,7 @@ export const InlineGenerationConsole: React.FC<InlineGenerationConsoleProps> = (
                                 }
                               }
                             } else {
-                              setVideoConfig((prev: any) => ({ ...prev, model: m.value }));
+                              setVideoConfig((prev: any) => applyModelDefaultsToVideoConfig(m.value, prev));
                               if (config) {
                                 const customInterface = config.customInterfaces?.[m.value] || Object.values(config.customInterfaces || {}).find((ci: any) => ci.model === m.value);
                                 if (customInterface) {
@@ -1761,6 +1802,16 @@ export const InlineGenerationConsole: React.FC<InlineGenerationConsoleProps> = (
                           </div>
 
                           {[
+                            {
+                              id: "panorama",
+                              name: "VR全景世界",
+                              icon: <Compass className="w-3.5 h-3.5 text-orange-500" />,
+                              desc: "生成专业级 720° 全景 VR 素材",
+                              onClick: () => {
+                                setImageConfig((prev: any) => ({ ...prev, gridMode: "panorama" }));
+                              },
+                              isSelected: imageConfig.gridMode === "panorama",
+                            },
                             {
                               id: "perspective-sim",
                               name: "3D导演台",

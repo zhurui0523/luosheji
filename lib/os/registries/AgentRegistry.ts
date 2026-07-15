@@ -1,9 +1,11 @@
-import { AgentDefinition, Task, CapabilityKind, RuntimeTask, RuntimeContext } from '../types';
+import { AgentDefinition, UserAgentDefinition, Task, CapabilityKind, RuntimeTask, RuntimeContext } from '../types';
 import { directorAgent } from '../../../components/agents/directorAgent';
 import { imageAgent } from '../../../components/agents/imageAgent';
 import { videoAgent } from '../../../components/agents/videoAgent';
 import { aiDramaAgent } from '../../../components/agents/aiDramaAgent';
 import { assetAgent } from '../../../components/agents/assetAgent';
+import { normalizeUserAgent, toAgentDefinition } from '../agents/userAgentUtils';
+import { ModelRegistry } from './ModelRegistry';
 
 class AgentRegistryService {
   private agents: Map<string, AgentDefinition> = new Map();
@@ -40,8 +42,12 @@ class AgentRegistryService {
         skills: ['create-script', 'analyze-script', 'rewrite-script'],
         modelPreference: 'gemini-3.5-flash',
         execute: async (task: Task, context: any) => {
-          const model = context.config?.script?.model || 'gemini-3.5-flash';
-          const response = await directorAgent.callApi('script', 'generateContent', {
+          const provider = ModelRegistry.selectBest('text', { ...context, task });
+          const model = (task as any).modelId || provider?.id || context.config?.script?.model || 'gemini-3.5-flash';
+          const call = provider?.call
+            ? provider.call.bind(provider)
+            : directorAgent.callApi.bind(directorAgent, 'script');
+          const response = await call('generateContent', {
             model,
             contents: [{ role: 'user', parts: [{ text: task.prompt }] }],
             config: { systemInstruction: context.systemInstruction || '', temperature: 0.7 }
@@ -61,7 +67,8 @@ class AgentRegistryService {
         skills: ['six-view', 'scene-plan', 'grid-storyboard', 'panorama', 'camera-control'],
         modelPreference: 'gemini-3.1-flash-image-preview',
         execute: async (task: Task, context: any) => {
-          const model = context.config?.image?.model || 'gemini-3.1-flash-image-preview';
+          const provider = ModelRegistry.selectBest('image', { ...context, task });
+          const model = (task as any).modelId || provider?.id || context.config?.image?.model || 'gemini-3.1-flash-image-preview';
           const imageConfig = {
             prompt: task.prompt,
             aspectRatio: (context.aspectRatio || '16:9') as any,
@@ -86,7 +93,8 @@ class AgentRegistryService {
         skills: ['video-dissect'],
         modelPreference: 'seedance2.0',
         execute: async (task: Task, context: any) => {
-          const model = context.config?.videoSeedance?.model || context.config?.video?.model || 'seedance2.0';
+          const provider = ModelRegistry.selectBest('video', { ...context, task });
+          const model = (task as any).modelId || provider?.id || context.config?.videoSeedance?.model || context.config?.video?.model || 'seedance2.0';
           const options = context.videoOptions || {
             aspectRatio: context.aspectRatio || '16:9',
             duration: context.duration || '5',
@@ -160,6 +168,16 @@ class AgentRegistryService {
     defaults.forEach(a => this.register(a));
   }
 
+  private userAgents: Map<string, UserAgentDefinition> = new Map();
+  private userAgentsLoaded = false;
+
+  private ensureUserAgentsLoaded() {
+    if (!this.userAgentsLoaded) {
+      this.userAgentsLoaded = true;
+      this.loadUserAgents();
+    }
+  }
+
   public register(agent: AgentDefinition) {
     this.agents.set(agent.id, agent);
   }
@@ -169,32 +187,81 @@ class AgentRegistryService {
   }
 
   public get(id: string): AgentDefinition | undefined {
+    this.ensureUserAgentsLoaded();
     return this.agents.get(id);
   }
 
   public list(): AgentDefinition[] {
+    this.ensureUserAgentsLoaded();
     return Array.from(this.agents.values());
   }
 
   public has(id: string): boolean {
+    this.ensureUserAgentsLoaded();
     return this.agents.has(id);
   }
 
   public findByCapability(capabilityId: string): AgentDefinition[] {
-    return this.list().filter(a => a.capabilities?.includes(capabilityId));
+    return this.list().filter(a => {
+      const extId = a.metadata?.extensionId;
+      if (extId) {
+        const reg = (globalThis as any).ExtensionRegistry;
+        if (reg && typeof reg.isEnabled === 'function' && !reg.isEnabled(extId)) {
+          return false;
+        }
+      }
+      if (a.enabled === false) {
+        return false;
+      }
+      return a.capabilities?.includes(capabilityId);
+    });
   }
 
   public findByCapabilityKind(kind: CapabilityKind): AgentDefinition[] {
-    return this.list().filter(a => a.capabilityKinds?.includes(kind));
+    return this.list().filter(a => {
+      const extId = a.metadata?.extensionId;
+      if (extId) {
+        const reg = (globalThis as any).ExtensionRegistry;
+        if (reg && typeof reg.isEnabled === 'function' && !reg.isEnabled(extId)) {
+          return false;
+        }
+      }
+      if (a.enabled === false) {
+        return false;
+      }
+      return a.capabilityKinds?.includes(kind);
+    });
   }
 
   public findBestAgent(task: RuntimeTask, context?: RuntimeContext): AgentDefinition | undefined {
     // 1. Specific agent assigned
     if (task.agentId && this.has(task.agentId)) {
-      return this.get(task.agentId);
+      const agent = this.get(task.agentId);
+      if (agent && agent.enabled === false) {
+        return undefined;
+      }
+      const extId = agent?.metadata?.extensionId;
+      if (extId) {
+        const reg = (globalThis as any).ExtensionRegistry;
+        if (reg && typeof reg.isEnabled === 'function' && !reg.isEnabled(extId)) {
+          return undefined; // Do not use if disabled
+        }
+      }
+      return agent;
     }
     if (task.assignedActorId && this.has(task.assignedActorId)) {
-      return this.get(task.assignedActorId);
+      const agent = this.get(task.assignedActorId);
+      if (agent && agent.enabled === false) {
+        return undefined;
+      }
+      const extId = agent?.metadata?.extensionId;
+      if (extId) {
+        const reg = (globalThis as any).ExtensionRegistry;
+        if (reg && typeof reg.isEnabled === 'function' && !reg.isEnabled(extId)) {
+          return undefined; // Do not use if disabled
+        }
+      }
+      return agent;
     }
 
     // 2. Map task type to CapabilityKind
@@ -217,6 +284,109 @@ class AgentRegistryService {
       return this.get('videoAgent');
     }
     return this.get('brainAgent') || this.list()[0];
+  }
+
+  public registerUserAgent(userAgent: UserAgentDefinition): AgentDefinition {
+    this.userAgents.set(userAgent.id, userAgent);
+    const agentDef = toAgentDefinition(userAgent);
+    this.register(agentDef);
+    return agentDef;
+  }
+
+  public unregisterUserAgent(id: string) {
+    this.userAgents.delete(id);
+    this.unregister(id);
+  }
+
+  public updateUserAgent(id: string, patch: Partial<UserAgentDefinition>): AgentDefinition {
+    const existing = this.userAgents.get(id);
+    if (!existing) {
+      throw new Error(`User Agent with id ${id} not found`);
+    }
+    const updated: UserAgentDefinition = {
+      ...existing,
+      ...patch,
+      updatedAt: Date.now()
+    } as any;
+    return this.registerUserAgent(updated);
+  }
+
+  public enableUserAgent(id: string) {
+    const existing = this.userAgents.get(id);
+    if (existing) {
+      this.updateUserAgent(id, { enabled: true });
+    }
+  }
+
+  public disableUserAgent(id: string) {
+    const existing = this.userAgents.get(id);
+    if (existing) {
+      this.updateUserAgent(id, { enabled: false });
+    }
+  }
+
+  public listUserAgents(): UserAgentDefinition[] {
+    this.ensureUserAgentsLoaded();
+    return Array.from(this.userAgents.values());
+  }
+
+  public getUserAgent(id: string): UserAgentDefinition | undefined {
+    this.ensureUserAgentsLoaded();
+    return this.userAgents.get(id);
+  }
+
+  public loadUserAgents(config?: any) {
+    // 1. Clear previous custom agents from registry
+    for (const id of this.userAgents.keys()) {
+      this.unregister(id);
+    }
+    this.userAgents.clear();
+
+    // 2. Load from config if available
+    let customAgents: any[] = [];
+    if (config && Array.isArray(config.userAgents)) {
+      customAgents = config.userAgents;
+    } else if (config && config.global_api_config && Array.isArray(config.global_api_config.userAgents)) {
+      customAgents = config.global_api_config.userAgents;
+    } else {
+      // Browser compatibility fallback
+      if (typeof window !== 'undefined' && window.localStorage) {
+        try {
+          const savedAgentsStr = localStorage.getItem('user_agents');
+          if (savedAgentsStr) {
+            customAgents = JSON.parse(savedAgentsStr);
+          }
+        } catch (e) {
+          console.warn('Failed to parse localStorage user_agents:', e);
+        }
+
+        if (!Array.isArray(customAgents) || customAgents.length === 0) {
+          try {
+            const extensionIndexStr = localStorage.getItem('user_extension_index');
+            const extensionIndex = extensionIndexStr ? JSON.parse(extensionIndexStr) : [];
+            if (Array.isArray(extensionIndex)) {
+              customAgents = extensionIndex
+                .filter((record: any) => record?.kind === 'agent' && record?.state !== 'uninstalled')
+                .map((record: any) => record?.manifest?.contributes?.agents?.[0])
+                .filter(Boolean);
+            }
+          } catch (e) {
+            console.warn('Failed to parse localStorage agent extension index:', e);
+          }
+        }
+      }
+    }
+
+    if (Array.isArray(customAgents)) {
+      for (const rawAgent of customAgents) {
+        try {
+          const normalized = normalizeUserAgent(rawAgent);
+          this.registerUserAgent(normalized);
+        } catch (err) {
+          console.warn(`Failed to load custom user agent:`, err);
+        }
+      }
+    }
   }
 }
 

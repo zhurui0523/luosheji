@@ -1,0 +1,29 @@
+{
+  "id": "ffmpeg-trim",
+  "name": "FFmpeg Video Trimmer",
+  "version": "1.0.0",
+  "description": "Seamlessly trim or cut video clips using native CLI FFmpeg integration",
+  "type": "plugin",
+  "author": "Open Source Community",
+  "permissions": ["access_files", "run_code"],
+  "runtime": {
+    "kind": "cli",
+    "command": "ffmpeg",
+    "args": ["-i", "${input}", "-ss", "${start}", "-to", "${end}", "-c", "copy", "${output}"]
+  },
+  "source": {
+    "sourceUrl": "https://github.com/FFmpeg/FFmpeg",
+    "license": "LGPL/GPL depending on build",
+    "homepage": "https://ffmpeg.org"
+  },
+  "contributes": {
+    "skills": [
+      {
+        "id": "trim-video",
+        "name": "视频片段裁剪 (FFmpeg)",
+        "description": "裁剪无损视频片段，配置开始时间和结束时间",
+        "category": "video"
+      }
+    ]
+  }
+}

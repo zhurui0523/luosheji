@@ -549,8 +549,8 @@ const MessageItem = React.memo(({ msg, currentUserId, currentUserName, handleDow
                           isSkipped ? 'bg-gray-50/40 border-gray-100' :
                           'bg-gray-50/50 border-gray-100'
                         }`}>
-                          <div className="flex items-start justify-between min-w-0 w-full">
-                            <div className="flex items-start space-x-2 min-w-0 flex-1 mr-2 pt-0.5">
+                          <div className="flex flex-col gap-2 min-w-0 w-full">
+                            <div className="flex items-start gap-2 min-w-0 w-full pt-0.5">
                               {/* Checkbox for selection (only if not started) */}
                               {!hasStarted && (
                                 <input 
@@ -592,7 +592,7 @@ const MessageItem = React.memo(({ msg, currentUserId, currentUserName, handleDow
                                 {step.type === 'script' ? '✍️' : step.type === 'image' ? '🎨' : step.type === 'video' ? '🎬' : step.type === 'code' ? '💻' : step.type === 'ui' ? '✨' : '⚙️'}
                               </div>
                               <div className="flex flex-col min-w-0 flex-1">
-                                <span className={`text-[13px] font-bold whitespace-normal break-words ${
+                                <span className={`text-[13px] font-bold whitespace-normal break-words leading-snug [word-break:normal] ${
                                   !isEnabled ? 'text-gray-400 line-through' :
                                   isRunning ? 'text-indigo-900' :
                                   isCompleted ? 'text-emerald-900' :
@@ -616,7 +616,7 @@ const MessageItem = React.memo(({ msg, currentUserId, currentUserName, handleDow
                             </div>
                             
                             {/* Action Buttons & Status Pill */}
-                            <div className="flex flex-col items-end justify-start space-y-2 shrink-0 ml-2">
+                            <div className="flex flex-row flex-wrap items-center justify-end gap-1.5 w-full pl-9">
                               {isEnabled && !isRunning && (
                                 <div className="flex items-center space-x-1 opacity-65 hover:opacity-100 transition-opacity bg-white border border-indigo-100 shadow-sm rounded-md py-1 px-1.5">
                                   <button

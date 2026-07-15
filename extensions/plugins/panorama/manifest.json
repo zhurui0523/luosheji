@@ -1,0 +1,22 @@
+{
+  "id": "panorama",
+  "name": "VR全景世界",
+  "version": "1.0.0",
+  "description": "生成专业级720°全景VR素材",
+  "type": "plugin",
+  "author": "XiaoLuo Team",
+  "category": "image",
+  "icon": "🧭",
+  "permissions": ["call_model"],
+  "sandbox": "none",
+  "runtime": {
+    "kind": "prompt",
+    "entry": "./skill.ts"
+  },
+  "metadata": {
+    "builtin": true,
+    "independentPackage": true,
+    "packagePath": "extensions/plugins/panorama",
+    "entry": "index.ts"
+  }
+}

@@ -3,6 +3,7 @@ import { CapabilityBus } from './CapabilityBus';
 import { MemoryCore } from './MemoryCore';
 import { DAGEngine, DAGTask } from './DAGEngine';
 import { brainAgent } from '../../components/agents/brainAgent';
+import { ArtifactFactory } from './artifacts/ArtifactFactory';
 import { 
   Intent, 
   Goal, 
@@ -13,8 +14,10 @@ import {
   CanvasArtifact, 
   SkillDefinition, 
   AgentDefinition,
-  RuntimeArtifact
+  RuntimeArtifact,
+  ExecutionControlState
 } from './types';
+import { WorkflowExecutionController } from './WorkflowExecutionController';
 
 export interface SystemContext {
   brandName: string;
@@ -40,6 +43,7 @@ class IntentRuntimeCoordinator {
   private currentLifecycle: LifecycleState = 'CREATED';
   private currentBusiness: BusinessState = 'NONE';
   private historyList: WorkflowHistoryItem[] = [];
+  private controllers: Map<string, WorkflowExecutionController> = new Map();
   
   private systemContext: SystemContext = {
     brandName: '奇迹影业 (Miracle Pictures)',
@@ -194,14 +198,15 @@ class IntentRuntimeCoordinator {
       const taskId = step.id || 'task_' + Math.random().toString(36).substring(2, 7);
       taskIds.push(taskId);
 
-      const dependsOn: string[] = [];
-      // Sequential chain
+      const fallbackDependsOn: string[] = [];
+      // Sequential chain fallback only when planner did not provide explicit dependencies
       if (index > 0) {
         const prevStep = steps[index - 1];
         if (prevStep && prevStep.enabled !== false) {
-          dependsOn.push(prevStep.id);
+          fallbackDependsOn.push(prevStep.id);
         }
       }
+      const dependsOn: string[] = Array.isArray(step.dependsOn) ? step.dependsOn : fallbackDependsOn;
 
       const osTask: Task = {
         id: taskId,
@@ -210,15 +215,22 @@ class IntentRuntimeCoordinator {
         title: step.label,
         name: step.label,
         prompt: step.prompt,
+        input: step.input,
         status: 'pending',
         lifecycle: 'CREATED',
         businessState: 'NONE',
         dependsOn,
-        assignedActorId: step.type === 'script' ? 'directorAgent' : step.type === 'image' ? 'imageAgent' : step.type === 'video' ? 'videoAgent' : 'brainAgent',
+        assignedActorId: step.assignedActorId || step.agentId || (step.type === 'script' ? 'directorAgent' : step.type === 'image' ? 'imageAgent' : step.type === 'video' ? 'videoAgent' : 'brainAgent'),
+        agentId: step.agentId,
+        modelId: step.modelId,
+        pluginId: step.pluginId,
+        adapterId: step.adapterId,
+        toolId: step.toolId,
         createdAt: Date.now(),
         updatedAt: Date.now(),
         timestamp: Date.now(),
-        skillId: step.skillId
+        skillId: step.skillId,
+        config: step.config
       };
 
       runTasks.push(osTask);
@@ -243,7 +255,7 @@ class IntentRuntimeCoordinator {
   }
 
   /**
-   * Run standard Goal with DAG orchestrator
+   * Run standard Goal with DAG orchestrator using WorkflowExecutionController
    */
   public async runGoal(goalId: string, config?: any): Promise<void> {
     const goal = MemoryCore.get('Working', 'active_goal') as Goal;
@@ -252,60 +264,28 @@ class IntentRuntimeCoordinator {
     }
 
     const runTasks = MemoryCore.get('Working', 'active_tasks') as Task[] || [];
-    const outputs: Record<string, any> = {};
 
-    const dagTasks = runTasks.map((osTask) => {
-      return {
-        id: osTask.id,
-        name: osTask.title || osTask.name || 'Task',
-        dependsOn: osTask.dependsOn || [],
-        status: 'pending' as any,
-        execute: async () => {
-          const stepPreviousOutputs: Record<string, any> = {};
-          for (const [key, val] of Object.entries(outputs)) {
-            stepPreviousOutputs[key] = val;
-          }
+    const runtimeContext: RuntimeContext = {
+      brandName: this.systemContext.brandName,
+      videoRatio: this.systemContext.videoRatio,
+      resolution: this.systemContext.resolution,
+      sandboxEnabled: this.systemContext.sandboxEnabled,
+      maxRetries: this.systemContext.maxRetries,
+      safetyFilterLevel: this.systemContext.safetyFilterLevel,
+      modelProvider: this.systemContext.modelProvider,
+      config
+    };
 
-          const runtimeContext: RuntimeContext = {
-            brandName: this.systemContext.brandName,
-            videoRatio: this.systemContext.videoRatio,
-            resolution: this.systemContext.resolution,
-            sandboxEnabled: this.systemContext.sandboxEnabled,
-            maxRetries: this.systemContext.maxRetries,
-            safetyFilterLevel: this.systemContext.safetyFilterLevel,
-            modelProvider: this.systemContext.modelProvider,
-            config,
-            previousOutputs: stepPreviousOutputs
-          };
-
-          const result = await CapabilityBus.execute(osTask, runtimeContext);
-
-          if (!result.success) {
-            throw new Error(result.error);
-          }
-
-          outputs[osTask.id] = result.output;
-          outputs[osTask.type] = result.output;
-
-          return result.output;
-        }
-      };
-    });
-
-    const dagEngine = new DAGEngine(dagTasks, (tId, status) => {
-      const osTask = runTasks.find(t => t.id === tId);
-      if (osTask) {
-        osTask.lifecycle = status === 'running' ? 'RUNNING' : status === 'completed' ? 'COMPLETED' : status === 'failed' ? 'FAILED' : 'CREATED';
-        osTask.status = status;
-      }
-    });
+    const controller = new WorkflowExecutionController(goalId, runTasks, runtimeContext);
+    this.controllers.set(goalId, controller);
 
     try {
       goal.lifecycle = 'RUNNING';
       goal.status = 'running';
       this.transitionState('RUNNING', 'NONE', '开始通过 IntentRuntime 执行 DAG 任务');
       
-      await dagEngine.run();
+      controller.start();
+      await controller.waitForCompletion();
       
       goal.lifecycle = 'COMPLETED';
       goal.status = 'completed';
@@ -330,6 +310,66 @@ class IntentRuntimeCoordinator {
       throw err;
     }
   }
+
+  public pauseGoal(goalId: string) {
+    const controller = this.controllers.get(goalId);
+    if (controller) {
+      controller.pause();
+    }
+  }
+
+  public resumeGoal(goalId: string) {
+    const controller = this.controllers.get(goalId);
+    if (controller) {
+      controller.resume();
+    }
+  }
+
+  public cancelGoal(goalId: string) {
+    const controller = this.controllers.get(goalId);
+    if (controller) {
+      controller.cancel();
+    }
+  }
+
+  public rerunTask(taskId: string, config?: any) {
+    const runTasks = MemoryCore.get('Working', 'active_tasks') as Task[] || [];
+    const task = runTasks.find(t => t.id === taskId);
+    if (task) {
+      const controller = this.controllers.get(task.goalId);
+      if (controller) {
+        controller.rerunTask(taskId);
+      }
+    }
+  }
+
+  public rerunFromTask(taskId: string, config?: any) {
+    const runTasks = MemoryCore.get('Working', 'active_tasks') as Task[] || [];
+    const task = runTasks.find(t => t.id === taskId);
+    if (task) {
+      const controller = this.controllers.get(task.goalId);
+      if (controller) {
+        controller.rerunFromTask(taskId);
+      }
+    }
+  }
+
+  public updateTaskInput(taskId: string, patch: any) {
+    const runTasks = MemoryCore.get('Working', 'active_tasks') as Task[] || [];
+    const task = runTasks.find(t => t.id === taskId);
+    if (task) {
+      const controller = this.controllers.get(task.goalId);
+      if (controller) {
+        controller.markTaskDirty(taskId, patch);
+      }
+    }
+  }
+
+  public getExecutionState(goalId: string): ExecutionControlState | undefined {
+    const controller = this.controllers.get(goalId);
+    return controller ? controller.getExecutionState() : undefined;
+  }
+
 
   /**
    * Run individual task
@@ -363,18 +403,7 @@ class IntentRuntimeCoordinator {
    * Manual artifact helper
    */
   public createArtifact(task: Task, output: any): RuntimeArtifact {
-    const artifact: RuntimeArtifact = {
-      id: `result_${task.id}_${Date.now()}`,
-      taskId: task.id,
-      goalId: task.goalId,
-      type: task.type === 'script' ? 'code' : (task.type === 'image' || task.type === 'video' ? task.type : 'text') as any,
-      title: task.title || task.name,
-      content: output,
-      url: output?.url || output?.imageUrl || output?.videoUrl,
-      createdAt: Date.now(),
-      status: 'success',
-      timestamp: Date.now()
-    };
+    const artifact = ArtifactFactory.createFromTask(task, output);
     
     EventBus.publish('ARTIFACT_CREATED' as any, 'ArtifactEngine', artifact, `[资产引擎] 手动产生看板作品: ${artifact.title}`);
     return artifact;
@@ -430,13 +459,14 @@ class IntentRuntimeCoordinator {
       if (index < startStepIndex || step.enabled === false) return;
 
       const taskId = step.id;
-      const dependsOn: string[] = [];
+      const fallbackDependsOn: string[] = [];
       if (index > startStepIndex) {
         const prevStep = steps[index - 1];
         if (prevStep && prevStep.enabled !== false) {
-          dependsOn.push(prevStep.id);
+          fallbackDependsOn.push(prevStep.id);
         }
       }
+      const dependsOn: string[] = Array.isArray(step.dependsOn) ? step.dependsOn : fallbackDependsOn;
 
       const osTask: Task = {
         id: taskId,
@@ -445,15 +475,22 @@ class IntentRuntimeCoordinator {
         title: step.label,
         name: step.label,
         prompt: step.prompt,
+        input: step.input,
         status: 'pending',
         lifecycle: 'CREATED',
         businessState: 'NONE',
         dependsOn,
-        assignedActorId: step.type === 'script' ? 'directorAgent' : step.type === 'image' ? 'imageAgent' : step.type === 'video' ? 'videoAgent' : 'brainAgent',
+        assignedActorId: step.assignedActorId || step.agentId || (step.type === 'script' ? 'directorAgent' : step.type === 'image' ? 'imageAgent' : step.type === 'video' ? 'videoAgent' : 'brainAgent'),
+        agentId: step.agentId,
+        modelId: step.modelId,
+        pluginId: step.pluginId,
+        adapterId: step.adapterId,
+        toolId: step.toolId,
         createdAt: Date.now(),
         updatedAt: Date.now(),
         timestamp: Date.now(),
-        skillId: step.skillId
+        skillId: step.skillId,
+        config: step.config
       };
 
       runTasks.push(osTask);
@@ -527,9 +564,31 @@ class IntentRuntimeCoordinator {
       }
     });
 
+    const runtimeContext: RuntimeContext = {
+      brandName: this.systemContext.brandName,
+      videoRatio: this.systemContext.videoRatio,
+      resolution: this.systemContext.resolution,
+      sandboxEnabled: this.systemContext.sandboxEnabled,
+      maxRetries: this.systemContext.maxRetries,
+      safetyFilterLevel: this.systemContext.safetyFilterLevel,
+      modelProvider: this.systemContext.modelProvider,
+      config,
+      previousOutputs: outputs,
+      onTaskProgress: (taskId: string, progressMsg: string) => {
+        if (onStepProgress) onStepProgress(taskId, progressMsg);
+      },
+      onTaskCompleted: (taskId: string, output: any) => {
+        if (onStepCompleted) onStepCompleted(taskId, output);
+      }
+    } as RuntimeContext;
+
+    const controller = new WorkflowExecutionController(goalId, runTasks, runtimeContext);
+    this.controllers.set(goalId, controller);
+
     try {
       this.transitionState('RUNNING', 'NONE', '开始执行规划的工作流 DAG');
-      await dagEngine.run();
+      controller.start();
+      await controller.waitForCompletion();
       
       goal.lifecycle = 'COMPLETED';
       goal.status = 'completed';

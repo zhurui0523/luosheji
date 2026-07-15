@@ -1,0 +1,22 @@
+{
+  "id": "ai-creative-director",
+  "name": "AI 创意总监",
+  "version": "1.0.0",
+  "description": "全自研即插即用插件，负责自动剧本扩写与画风匹配",
+  "type": "plugin",
+  "author": "XiaoLuo Team",
+  "category": "text",
+  "icon": "🎨",
+  "permissions": ["call_model"],
+  "sandbox": "none",
+  "runtime": {
+    "kind": "prompt",
+    "entry": "./skill.ts"
+  },
+  "metadata": {
+    "builtin": true,
+    "independentPackage": true,
+    "packagePath": "extensions/plugins/ai-creative-director",
+    "entry": "index.ts"
+  }
+}
