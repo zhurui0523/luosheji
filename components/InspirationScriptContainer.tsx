@@ -289,7 +289,7 @@ export const InspirationScriptContainer: React.FC<InspirationScriptContainerProp
                           </div>
                           <div>
                             <div className="text-xs font-bold">制剧工厂</div>
-                            <p className="text-[9px] text-blue-400">半自动化生成流水线</p>
+                            <p className="text-[9px] text-blue-400">区块分类流生成流水线</p>
                           </div>
                         </button>
                       </motion.div>

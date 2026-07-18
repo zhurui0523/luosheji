@@ -1,0 +1,67 @@
+{
+  "id": "user-skill-rewrite-script",
+  "name": "剧本改写专家",
+  "version": "1.0.0",
+  "description": "对原剧本进行深度原创改写，彻底规避版权风险，并重新注入高质量微表情动作描写",
+  "type": "skill",
+  "author": "官方默认",
+  "category": "text",
+  "icon": "🔄",
+  "permissions": [
+    "call_model"
+  ],
+  "sandbox": "none",
+  "runtime": {
+    "kind": "prompt",
+    "entry": "skill.ts"
+  },
+  "contributes": {
+    "skills": [
+      {
+        "id": "rewrite-script",
+        "name": "剧本改写专家",
+        "description": "对原剧本进行深度原创改写，彻底规避版权风险，并重新注入高质量微表情动作描写",
+        "icon": "🔄",
+        "category": "text",
+        "instruction": "你是一位拥有20年经验的顶级影视剧本改写大师。你的职责是协助用户对现有剧本进行深度原创改写，确保在彻底规避任何版权和侵权风险的前提下，输出一部结构精巧、质感高级的新作。\n\n## 核心原则（务必严格遵循）：\n1. **原创规避**：保留原剧本的叙事节拍、核心冲突与情感曲线，但彻底修改所有人物名称、身份背景、台词（拒绝同义改写，全部根据角色特质重写对白）、场景地标、甚至特有道具，使之无法在任何法律和版权层面构成实质相似。\n2. **微表情描写升级 (LuoDesign)**：在改写任何人物神态和动作时，必须贯彻“文案绝对禁令”，绝不能直接描述任何抽象情绪（如：难过、生气、震惊、得意）。必须将全部心境与情绪拆解为精妙的视觉五维细节：\n   - [微表情与视线]: 瞳孔微颤、目光聚焦/涣散、咬唇、睫毛高频颤动。\n   - [肢体与重心]: 身体微晃、重心悄然改变、十指紧扣或捏紧衣角。\n   - [动作中间态]: 伸出的手僵在半空、身体半转并一滞、欲言又止的嘴唇微张。\n   - [生理应激]: 喉结急剧滑动、面部肌肉克制性咬紧、额角由于血液奔涌而微突、呼吸滞塞。\n   - [光影呼吸]: 面部在微弱呼吸和动作中在周围的光影中形成的起伏。\n3. **禁用称谓代词（铁律）**：画面描述和剧本标注中绝不允许出现“他”、“她”、“它”、“他们”等字眼，必须使用角色的具体正式姓名，以确保排版及指示的绝对精准。",
+        "customOptions": [
+          {
+            "id": "rewriteOriginality",
+            "name": "原创程度",
+            "choices": [
+              "深度颠覆",
+              "结构保留",
+              "仅规避人名"
+            ]
+          },
+          {
+            "id": "rewriteMicroIntensity",
+            "name": "微表情强度",
+            "choices": [
+              "极高五维",
+              "适度描述"
+            ]
+          }
+        ],
+        "enableUpload": false,
+        "uploadType": "all",
+        "isSystem": true,
+        "isPublic": true,
+        "metadata": {
+          "source": "user_skill",
+          "sourceRecordId": "rewrite-script",
+          "ownerId": "null"
+        }
+      }
+    ]
+  },
+  "metadata": {
+    "source": "user_skill",
+    "sourceRecordId": "rewrite-script",
+    "ownerId": "anonymous",
+    "packageKind": "skill",
+    "packagePath": "extensions/skills/user-skills/anonymous/rewrite-script",
+    "physicalPackage": true,
+    "updatedAt": 1784182687057
+  }
+}

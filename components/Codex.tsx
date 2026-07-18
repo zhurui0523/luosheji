@@ -95,6 +95,10 @@ import {
 } from '../services/utils';
 import { safeJson } from '../lib/fetch';
 import { ApiConfigKey, SmartImageConfig, SmartVideoConfig, GroupChat, Team, TeamMember, User as UserType } from '../types';
+import { getModelOptions } from '../lib/modelOptions';
+import { UserAgentStore } from '../lib/os/agents/UserAgentStore';
+import { AgentRegistry } from '../lib/os/registries/AgentRegistry';
+import type { UserAgentDefinition } from '../lib/os/types';
 
 interface Message {
   id: string;
@@ -122,6 +126,34 @@ interface Employee {
   apiConfigKey?: ApiConfigKey; // Legacy support
   isCustom?: boolean;
   type?: 'text' | 'image' | 'video';
+}
+
+const ACTIVE_CANVAS_STORAGE_KEY = "aistudio_active_canvas_id";
+
+function createCanvasPosition(x: number, y: number) {
+  const px = Math.round(x);
+  const py = Math.round(y);
+  return {
+    x: px,
+    y: py,
+    customX: px,
+    customY: py,
+    mindmap: { x: px, y: py },
+    bento: { x: px, y: py },
+    semi_auto: { x: px, y: py },
+  };
+}
+
+function getActiveCanvasId() {
+  return typeof localStorage !== 'undefined'
+    ? (localStorage.getItem(ACTIVE_CANVAS_STORAGE_KEY) || "default")
+    : "default";
+}
+
+function getCanvasSectionIdForType(type: string) {
+  if (type === "image" || type === "video" || type === "audio") return "media-zone";
+  if (type === "code" || type === "ui") return "interactive-zone";
+  return "text-planning";
 }
 
 interface CodexProps {
@@ -172,7 +204,23 @@ import { AI_SKILLS, AiSkill } from '../skills';
 import { PLUGINS } from '../plugin';
 import { SkillsModal } from './SkillsModal';
 
-const MessageItem = React.memo(({ msg, currentUserId, currentUserName, handleDownload, handleView, onQuote, onRecall, onImageClick, onJump, isSameSenderAsNext, isSameSenderAsPrev, setMessages, runPipelineSteps, editingStep, setEditingStep, onRetryStep, setHistory, setTuningPipelineMsgId, onConvertToPipeline, onSendQuickPrompt, chatTargetId, aiSkill }: { 
+const PLUGIN_ID_SET = new Set(PLUGINS.map((plugin) => plugin.id));
+
+function getCleanSkillName(skill: { id?: string; name?: string; icon?: string }) {
+  const rawName = (skill?.name || '').trim();
+  const icon = (skill?.icon || '').trim();
+  const withoutIcon = icon && rawName.startsWith(icon)
+    ? rawName.slice(icon.length).trim()
+    : rawName;
+  return withoutIcon.replace(/^[^\p{L}\p{N}]+/u, '').trim() || rawName || skill?.id || '未命名 SKILL';
+}
+
+function getSkillDisplayName(skill: { id?: string; name?: string; icon?: string }) {
+  const cleanName = getCleanSkillName(skill);
+  return skill?.icon ? `${skill.icon} ${cleanName}` : cleanName;
+}
+
+const MessageItem = React.memo(({ msg, currentUserId, currentUserName, handleDownload, handleView, onQuote, onRecall, onImageClick, onJump, isSameSenderAsNext, isSameSenderAsPrev, setMessages, runPipelineSteps, editingStep, setEditingStep, onRetryStep, setHistory, setTuningPipelineMsgId, onConvertToPipeline, onSendQuickPrompt, chatTargetId, aiSkill, availableSkills = [] }: { 
   msg: Message, 
   currentUserId?: string | number,
   currentUserName?: string,
@@ -194,7 +242,8 @@ const MessageItem = React.memo(({ msg, currentUserId, currentUserName, handleDow
   onConvertToPipeline?: (msg: Message) => void,
   onSendQuickPrompt?: (prompt: string) => void,
   chatTargetId?: string,
-  aiSkill?: string
+  aiSkill?: string,
+  availableSkills?: AiSkill[]
 }) => {
   const isImageMode = chatTargetId === 'image' || msg.id?.startsWith('image_') || msg.agentName === "灵境生图";
   const isVideoMode = chatTargetId === 'video' || msg.id?.startsWith('video_') || msg.agentName === "灵境视频";
@@ -345,22 +394,6 @@ const MessageItem = React.memo(({ msg, currentUserId, currentUserName, handleDow
                 </div>
               ) : null}
 
-              {!isUser && !isAttachment && !msg.pipelinePlan && msg.id !== 'welcome_ai' && msg.content && onConvertToPipeline && (
-                <div className="mt-3.5 pt-3 border-t border-dashed border-gray-100/80 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2.5 select-none">
-                  <div className="flex items-center space-x-1.5 text-[11px] text-gray-500 font-medium">
-                    <span className="text-[12px] animate-pulse">💡</span>
-                    <span>对当前创意方案满意？可一键升级为多模态执行流水线</span>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => onConvertToPipeline(msg)}
-                    className="px-2.5 py-1.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-600 border border-indigo-200 hover:border-indigo-300 rounded-lg text-[11px] font-bold transition-all active:scale-95 cursor-pointer flex items-center space-x-1 shrink-0 shadow-sm"
-                  >
-                    <span>🎨 生成意图作战沙盘</span>
-                  </button>
-                </div>
-              )}
-
               {msg.type === 'pipeline' && msg.pipelinePlan && (
                 <div className="mt-3 flex flex-col space-y-4 border border-indigo-100 rounded-xl bg-indigo-50/10 p-3 md:p-4 w-full max-w-[390px] sm:max-w-[450px] min-w-[240px]">
                   {/* Title & Explanation */}
@@ -502,40 +535,38 @@ const MessageItem = React.memo(({ msg, currentUserId, currentUserName, handleDow
                               </div>
                             )}
 
-                            {editingStep.type === 'script' && (
-                              <div>
-                                <label className="text-[11px] text-gray-500 font-medium">关联专业系统SKILL (可选)</label>
-                                <select
-                                  value={editingStep.skillId || ''}
-                                  onChange={(e) => setEditingStep({ ...editingStep, skillId: e.target.value || undefined })}
-                                  className="w-full text-[12px] px-1.5 py-1 border border-gray-200 rounded focus:border-indigo-500 bg-white"
-                                >
-                                  <option value="">无 (底层原生多模态大模型)</option>
-                                  <option value="create-script">编剧专家 (create-script)</option>
-                                  <option value="analyze-script">剧本分析专家 (analyze-script)</option>
-                                  <option value="rewrite-script">剧本改写专家 (rewrite-script)</option>
-                                  <option value="asset-prompt">资产提示词专家 (asset-prompt)</option>
-                                  <option value="shot-prompt">分镜提示词专家 (shot-prompt)</option>
-                                </select>
-                              </div>
-                            )}
-                            {editingStep.type === 'image' && (
-                              <div>
-                                <label className="text-[11px] text-gray-500 font-medium">关联专业系统SKILL (可选)</label>
-                                <select
-                                  value={editingStep.skillId || ''}
-                                  onChange={(e) => setEditingStep({ ...editingStep, skillId: e.target.value || undefined })}
-                                  className="w-full text-[12px] px-1.5 py-1 border border-gray-200 rounded focus:border-indigo-500 bg-white"
-                                >
-                                  <option value="">无 (底层原生多模态大模型)</option>
-                                  <option value="six-view">角色设定图 (six-view)</option>
-                                  <option value="scene-plan">场景方案 (scene-plan)</option>
-                                  <option value="grid-storyboard">九宫格分镜 (grid-storyboard)</option>
-                                  <option value="panorama">VR全景世界 (panorama)</option>
-                                  <option value="camera-control">相机调整 (camera-control)</option>
-                                </select>
-                              </div>
-                            )}
+                            {['script', 'image', 'video'].includes(editingStep.type) && (() => {
+                              const kind = editingStep.type === 'script' ? 'text' : editingStep.type;
+                              const noneLabel = editingStep.type === 'script'
+                                ? '无（文本）'
+                                : editingStep.type === 'image'
+                                  ? '无（图片）'
+                                  : '无（视频）';
+                              const options = availableSkills.filter((skill: any) => {
+                                const category = skill.category || 'text';
+                                return category === kind || category === 'all';
+                              });
+                              return (
+                                <div>
+                                  <label className="text-[11px] text-gray-500 font-medium">关联 SKILL (可选)</label>
+                                  <select
+                                    value={editingStep.skillId || ''}
+                                    onChange={(e) => setEditingStep({ ...editingStep, skillId: e.target.value || undefined })}
+                                    className="w-full text-[12px] px-1.5 py-1 border border-gray-200 rounded focus:border-indigo-500 bg-white"
+                                  >
+                                    <option value="">{noneLabel}</option>
+                                    {options.map((skill: any) => (
+                                      <option key={skill.id} value={skill.id}>
+                                        {getSkillDisplayName(skill)}
+                                      </option>
+                                    ))}
+                                  </select>
+                                  {options.length === 0 && (
+                                    <p className="mt-1 text-[10px] text-gray-400">当前没有已安装的 {kind === 'text' ? '文本' : kind === 'image' ? '图片' : '视频'} SKILL。</p>
+                                  )}
+                                </div>
+                              );
+                            })()}
                           </div>
                         );
                       }
@@ -1490,18 +1521,23 @@ export const Codex: React.FC<CodexProps> = ({
     };
   }, []);
 
-  const allSkills = [
-    ...(customSkills.length > 0 ? customSkills : AI_SKILLS),
-    ...PLUGINS
-  ];
+  const allSkills = React.useMemo(() => (
+    customSkills.length > 0 ? customSkills : AI_SKILLS
+  ).filter((skill: any) => !PLUGIN_ID_SET.has(skill.id)), [customSkills]);
 
-  const activeSkills = React.useMemo(() => [
-    ...(customSkills.length > 0 
-      ? customSkills.filter(s => s.isInstalled) 
+  const activeSkills = React.useMemo(() => (
+    customSkills.length > 0
+      ? customSkills.filter((skill: any) => skill.isInstalled)
       : AI_SKILLS
-    ).filter(s => s.tier !== 'heavy'),
-    ...PLUGINS
-  ], [customSkills]);
+  ).filter((skill: any) => skill.tier !== 'heavy' && !PLUGIN_ID_SET.has(skill.id)), [customSkills]);
+
+  useEffect(() => {
+    if (!chatTargetId.endsWith('_ai') || activeSkills.length === 0) return;
+    if (aiSkill === 'none') return;
+    if (!activeSkills.some((skill: any) => skill.id === aiSkill)) {
+      changeAiSkill(activeSkills[0].id);
+    }
+  }, [activeSkills, aiSkill, chatTargetId]);
 
   useEffect(() => {
     if (onActiveSkillsFetched) {
@@ -1764,6 +1800,8 @@ export const Codex: React.FC<CodexProps> = ({
   const [showSkillDropdown, setShowSkillDropdown] = useState(false);
   const [skillSearchQuery, setSkillSearchQuery] = useState('');
   const [skillDropdownIndex, setSkillDropdownIndex] = useState(0);
+  const [slashDropdownMode, setSlashDropdownMode] = useState<'skill' | 'agent'>('skill');
+  const [userAgents, setUserAgents] = useState<UserAgentDefinition[]>([]);
   const currentInputValue = externalInput !== undefined ? externalInput : inputValue;
   const handleInputValueChange = (val: string) => {
     if (onExternalInputChange) {
@@ -1787,6 +1825,29 @@ export const Codex: React.FC<CodexProps> = ({
   const [currentUser, setCurrentUser] = useState<UserType | null>(null);
   const [analyzerFiles, setAnalyzerFiles] = useState<File[]>([]);
   const [isDraggingFile, setIsDraggingFile] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    const ownerId = currentUser?.id || userId;
+
+    const loadUserAgents = async () => {
+      try {
+        const agents = await UserAgentStore.listUserAgents(ownerId ? String(ownerId) : undefined);
+        if (cancelled) return;
+        AgentRegistry.loadUserAgents({ userAgents: agents });
+        setUserAgents(agents.filter(agent => agent.enabled !== false));
+      } catch (error) {
+        console.warn('Failed to load user agents for Codex command picker:', error);
+      }
+    };
+
+    loadUserAgents();
+    window.addEventListener('agents-changed', loadUserAgents);
+    return () => {
+      cancelled = true;
+      window.removeEventListener('agents-changed', loadUserAgents);
+    };
+  }, [currentUser?.id, userId]);
 
   useEffect(() => {
     if (onExternalFilesCountChange) {
@@ -3227,8 +3288,8 @@ ${sourceMsg.content}`;
               parentId,
               prompt: step.prompt,
               revisedPrompt: step.prompt,
-              position: { x: nodeX, y: nodeY },
-              canvasId: typeof localStorage !== 'undefined' ? (localStorage.getItem("aistudio_active_canvas_id") || "default") : "default",
+              position: createCanvasPosition(nodeX, nodeY),
+              canvasId: getActiveCanvasId(),
               config: {
                 title: step.label,
                 prompt: step.prompt,
@@ -3237,7 +3298,8 @@ ${sourceMsg.content}`;
                 aspectRatio: step.aspectRatio || '1:1',
                 duration: step.duration || '5',
                 isPipelineNode: true,
-                pipelineId: pipelineMsgId
+                pipelineId: pipelineMsgId,
+                sectionId: "workflow-zone",
               }
             };
           });
@@ -3880,8 +3942,12 @@ ${sourceMsg.content}`;
           const imageM = config?.image?.model || "gemini-3.1-flash-image-preview";
           const videoM = config?.videoSeedance?.model || config?.video?.model || "seedance2.0";
 
-          const imageMLabel = config?.image?.displayName || (imageM === "gemini-3.1-flash-image-preview" ? "nano banana 2" : "GPT-Image-2");
-          const videoMLabel = videoM === "seedance-mini" ? "RH-SD2.0mini" : "RH-SD2.0";
+          const imageMLabel = getModelOptions(config, [], "image").find(
+            (model) => model.value === imageM || model.apiConfig?.model === imageM,
+          )?.label || config?.image?.displayName || imageM;
+          const videoMLabel = getModelOptions(config, [], "video").find(
+            (model) => model.value === videoM || model.apiConfig?.model === videoM,
+          )?.label || videoM;
 
           return {
             ...m,
@@ -4248,6 +4314,16 @@ ${sourceMsg.content}`;
     });
   }, [activeSkills, skillSearchQuery]);
 
+  const filteredUserAgents = React.useMemo(() => {
+    const query = skillSearchQuery.toLowerCase().replace(/^agent\s*/i, '').trim();
+    return userAgents.filter(agent => {
+      const fields = [agent.name, agent.id, agent.role, agent.description || ''].join(' ').toLowerCase();
+      return fields.includes(query);
+    });
+  }, [userAgents, skillSearchQuery]);
+
+  const slashDropdownCount = slashDropdownMode === 'agent' ? filteredUserAgents.length : filteredSkills.length;
+
   const handleInputChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     const text = e.target.value;
     handleInputValueChange(text);
@@ -4258,7 +4334,19 @@ ${sourceMsg.content}`;
 
     if (lastSlashIndex !== -1) {
       const afterTrigger = textBeforeCursor.slice(lastSlashIndex + 1);
+      if (!afterTrigger.includes('\n')) {
+        const lowerTrigger = afterTrigger.toLowerCase();
+        if (lowerTrigger === 'agent' || lowerTrigger.startsWith('agent ')) {
+          setSlashDropdownMode('agent');
+          setShowSkillDropdown(true);
+          setSkillSearchQuery(afterTrigger);
+          setSkillDropdownIndex(0);
+          return;
+        }
+      }
+
       if (!afterTrigger.includes(' ') && !afterTrigger.includes('\n')) {
+        setSlashDropdownMode('skill');
         setShowSkillDropdown(true);
         setSkillSearchQuery(afterTrigger);
         setSkillDropdownIndex(0);
@@ -4268,7 +4356,7 @@ ${sourceMsg.content}`;
     setShowSkillDropdown(false);
   };
 
-  const handleSelectSkill = (skill: any) => {
+  const insertSlashSelection = (inserted: string) => {
     const text = currentInputValue;
     const selStart = textareaRef.current ? textareaRef.current.selectionStart : text.length;
     const textBeforeCursor = text.slice(0, selStart);
@@ -4277,13 +4365,10 @@ ${sourceMsg.content}`;
     if (lastSlashIndex !== -1) {
       const prefix = text.slice(0, lastSlashIndex);
       const suffix = text.slice(selStart);
-      const cleanSkillName = skill.name.replace(/[\uD800-\uDBFF][\uDC00-\uDFFF]/g, '').trim(); // strip emojis
-      const inserted = `/${cleanSkillName} `;
       const newValue = prefix + inserted + suffix;
       handleInputValueChange(newValue);
       setShowSkillDropdown(false);
 
-      // Refocus and place caret after inserted skill
       setTimeout(() => {
         if (textareaRef.current) {
           textareaRef.current.focus();
@@ -4294,8 +4379,38 @@ ${sourceMsg.content}`;
     }
   };
 
+  const handleSelectSkill = (skill: any) => {
+    const cleanSkillName = getCleanSkillName(skill);
+    insertSlashSelection(`/${cleanSkillName} `);
+  };
+
+  const handleSelectAgent = (agent: UserAgentDefinition) => {
+    insertSlashSelection(`@${agent.name} `);
+  };
+
+  const normalizeAgentSlashCommand = (rawText: string) => {
+    const leadingWhitespace = rawText.match(/^\s*/)?.[0] || '';
+    const trimmed = rawText.trimStart();
+    if (!trimmed.toLowerCase().startsWith('/agent ')) return rawText;
+
+    const afterCommand = trimmed.slice('/agent '.length).trim();
+    if (!afterCommand) return rawText;
+
+    const candidates = [...userAgents].sort((a, b) => b.name.length - a.name.length);
+    const matched = candidates.find(agent => {
+      const names = [agent.name, agent.id].filter(Boolean);
+      return names.some(name => afterCommand === name || afterCommand.startsWith(`${name} `));
+    });
+
+    if (!matched) return rawText;
+    const matchedToken = afterCommand.startsWith(matched.name) ? matched.name : matched.id;
+    const rest = afterCommand.slice(matchedToken.length).trim();
+    return `${leadingWhitespace}@${matched.name}${rest ? ` ${rest}` : ''}`;
+  };
+
   const handleSend = async (overrideText?: string) => {
-    const textToSend = overrideText !== undefined ? overrideText : currentInputValue;
+    const rawTextToSend = overrideText !== undefined ? overrideText : currentInputValue;
+    const textToSend = normalizeAgentSlashCommand(rawTextToSend);
     if ((!textToSend.trim() && analyzerFiles.length === 0) || isGenerating) return;
 
     const userMsg: Message = {
@@ -4596,9 +4711,9 @@ ${sourceMsg.content}`;
       let msgType: 'text' | 'image' | 'video' | 'list' | 'thinking' | 'pipeline' | 'audio' | 'file' = 'text';
       let url = '';
       
-      const selectedSkillObj = allSkills.find(s => s.id === aiSkill) || AI_SKILLS[0];
+      const selectedSkillObj = aiSkill === 'none' ? null : (allSkills.find(s => s.id === aiSkill) || AI_SKILLS[0]);
       let systemInstruction = chatTargetId.endsWith('_ai')
-        ? selectedSkillObj.instruction
+        ? (selectedSkillObj?.instruction || '')
         : getAgentSystemInstruction(chatTargetId, {
             scriptType: SCRIPT_GENRES.find(g => g.id === scriptType)?.name || scriptType,
             scriptAuthor,
@@ -4978,8 +5093,8 @@ ${sourceMsg.content}`;
                   parentId,
                   prompt: step.prompt,
                   revisedPrompt: step.prompt,
-                  position: { x: nodeX, y: nodeY },
-                  canvasId: typeof localStorage !== 'undefined' ? (localStorage.getItem("aistudio_active_canvas_id") || "default") : "default",
+                  position: createCanvasPosition(nodeX, nodeY),
+                  canvasId: getActiveCanvasId(),
                   config: {
                     title: step.label,
                     prompt: step.prompt,
@@ -4988,7 +5103,8 @@ ${sourceMsg.content}`;
                     aspectRatio: step.aspectRatio || '1:1',
                     duration: step.duration || '5',
                     isPipelineNode: true,
-                    pipelineId: pipelineMsgId
+                    pipelineId: pipelineMsgId,
+                    sectionId: "workflow-zone",
                   }
                 };
               });
@@ -5217,6 +5333,7 @@ ${sourceMsg.content}`;
                       onSendQuickPrompt={(prompt) => handleSend(prompt)}
                       chatTargetId={chatTargetId}
                       aiSkill={aiSkill}
+                      availableSkills={activeSkills}
                     />
                   </React.Fragment>
                 );
@@ -5923,11 +6040,11 @@ ${sourceMsg.content}`;
 
                     return (
                       <>
+                        <option value="none">无</option>
                         {textSkills.length > 0 && (
                           <optgroup label="✍️ 文本场景 (灵境文造)">
                             {textSkills.map(skill => {
-                              const hasIconEmoji = skill.icon && skill.name.startsWith(skill.icon);
-                              const displayName = hasIconEmoji ? skill.name : (skill.icon ? `${skill.icon} ${skill.name}` : skill.name);
+                              const displayName = getSkillDisplayName(skill);
                               return (
                                 <option key={skill.id} value={skill.id}>
                                   {displayName}
@@ -5939,8 +6056,7 @@ ${sourceMsg.content}`;
                         {imageSkills.length > 0 && (
                           <optgroup label="🎨 图片场景 (灵境生图)">
                             {imageSkills.map(skill => {
-                              const hasIconEmoji = skill.icon && skill.name.startsWith(skill.icon);
-                              const displayName = hasIconEmoji ? skill.name : (skill.icon ? `${skill.icon} ${skill.name}` : skill.name);
+                              const displayName = getSkillDisplayName(skill);
                               return (
                                 <option key={skill.id} value={skill.id}>
                                   {displayName}
@@ -5952,8 +6068,7 @@ ${sourceMsg.content}`;
                         {videoSkills.length > 0 && (
                           <optgroup label="🎬 视频场景 (灵境视频)">
                             {videoSkills.map(skill => {
-                              const hasIconEmoji = skill.icon && skill.name.startsWith(skill.icon);
-                              const displayName = hasIconEmoji ? skill.name : (skill.icon ? `${skill.icon} ${skill.name}` : skill.name);
+                              const displayName = getSkillDisplayName(skill);
                               return (
                                 <option key={skill.id} value={skill.id}>
                                   {displayName}
@@ -6237,8 +6352,8 @@ ${sourceMsg.content}`;
                     parentId, // link them sequentially!
                     prompt: step.prompt,
                     revisedPrompt: step.prompt,
-                    position: { x: nodeX, y: nodeY },
-                    canvasId: typeof localStorage !== 'undefined' ? (localStorage.getItem("aistudio_active_canvas_id") || "default") : "default",
+                    position: createCanvasPosition(nodeX, nodeY),
+                    canvasId: getActiveCanvasId(),
                     config: {
                       title: step.label,
                       prompt: step.prompt,
@@ -6247,7 +6362,8 @@ ${sourceMsg.content}`;
                       aspectRatio: step.aspectRatio || '1:1',
                       duration: step.duration || '5',
                       isPipelineNode: true,
-                      pipelineId: tuningPipelineMsgId
+                      pipelineId: tuningPipelineMsgId,
+                      sectionId: "workflow-zone",
                     }
                   };
                 });
@@ -6647,11 +6763,11 @@ ${sourceMsg.content}`;
 
                             return (
                               <>
+                                <option value="none">无</option>
                                 {textSkills.length > 0 && (
                                   <optgroup label="✍️ 文本场景 (灵境文造)">
                                     {textSkills.map(skill => {
-                                      const hasIconEmoji = skill.icon && skill.name.startsWith(skill.icon);
-                                      const displayName = hasIconEmoji ? skill.name : (skill.icon ? `${skill.icon} ${skill.name}` : skill.name);
+                                      const displayName = getSkillDisplayName(skill);
                                       return (
                                         <option key={skill.id} value={skill.id}>
                                           {displayName}
@@ -6663,8 +6779,7 @@ ${sourceMsg.content}`;
                                 {imageSkills.length > 0 && (
                                   <optgroup label="🎨 图片场景 (灵境生图)">
                                     {imageSkills.map(skill => {
-                                      const hasIconEmoji = skill.icon && skill.name.startsWith(skill.icon);
-                                      const displayName = hasIconEmoji ? skill.name : (skill.icon ? `${skill.icon} ${skill.name}` : skill.name);
+                                      const displayName = getSkillDisplayName(skill);
                                       return (
                                         <option key={skill.id} value={skill.id}>
                                           {displayName}
@@ -6676,8 +6791,7 @@ ${sourceMsg.content}`;
                                 {videoSkills.length > 0 && (
                                   <optgroup label="🎬 视频场景 (灵境视频)">
                                     {videoSkills.map(skill => {
-                                      const hasIconEmoji = skill.icon && skill.name.startsWith(skill.icon);
-                                      const displayName = hasIconEmoji ? skill.name : (skill.icon ? `${skill.icon} ${skill.name}` : skill.name);
+                                      const displayName = getSkillDisplayName(skill);
                                       return (
                                         <option key={skill.id} value={skill.id}>
                                           {displayName}
@@ -6809,16 +6923,47 @@ ${sourceMsg.content}`;
                 </div>
               )}
 
-              {showSkillDropdown && filteredSkills.length > 0 && (
+              {showSkillDropdown && (
                 <div className="absolute bottom-[100%] left-4 mb-2 z-50 w-80 bg-white border border-gray-100 rounded-xl shadow-[0_8px_30px_rgb(0,0,0,0.12)] p-2 max-h-64 overflow-y-auto animate-in fade-in slide-in-from-bottom-2 duration-150">
                   <div className="px-2.5 py-1 text-[10px] font-black tracking-wider text-gray-400 uppercase border-b border-gray-50 mb-1 flex items-center justify-between select-none">
-                    <span>💡 智选 & 调用 SKILL</span>
-                    <span className="text-[9px] lowercase text-gray-300">/ skill</span>
+                    <span>{slashDropdownMode === 'agent' ? '🤖 调用 AGENT' : '💡 智选 & 调用 SKILL'}</span>
+                    <span className="text-[9px] lowercase text-gray-300">{slashDropdownMode === 'agent' ? '/agent' : '/ skill'}</span>
                   </div>
-                  {filteredSkills.map((skill, idx) => {
+                  {slashDropdownMode === 'agent' && filteredUserAgents.length === 0 && (
+                    <div className="px-2.5 py-3 text-xs leading-relaxed text-gray-400">
+                      暂无可调用的自定义 Agent。请先在 AGENT 页面创建并启用专业智能体。
+                    </div>
+                  )}
+                  {slashDropdownMode === 'agent' && filteredUserAgents.map((agent, idx) => {
                     const isSelected = idx === skillDropdownIndex;
-                    const hasIconEmoji = skill.icon && skill.name.startsWith(skill.icon);
-                    const displayName = hasIconEmoji ? skill.name : (skill.icon ? `${skill.icon} ${skill.name}` : skill.name);
+                    const capabilities = (agent.capabilityKinds || ['text']).join(' / ');
+
+                    return (
+                      <div
+                        key={agent.id}
+                        onClick={() => handleSelectAgent(agent)}
+                        onMouseEnter={() => setSkillDropdownIndex(idx)}
+                        className={`flex flex-col px-2.5 py-1.5 rounded-lg cursor-pointer transition-colors ${
+                          isSelected
+                            ? 'bg-indigo-50 text-indigo-900'
+                            : 'hover:bg-gray-50 text-gray-700'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="truncate text-xs font-bold">@{agent.name}</span>
+                          <span className="shrink-0 rounded border border-amber-100 bg-amber-50 px-1.5 py-0.5 text-[8px] font-black text-amber-600">
+                            {capabilities}
+                          </span>
+                        </div>
+                        <span className="mt-0.5 truncate text-[10px] text-gray-400">
+                          {agent.role}{agent.description ? ` · ${agent.description}` : ''}
+                        </span>
+                      </div>
+                    );
+                  })}
+                  {slashDropdownMode === 'skill' && filteredSkills.map((skill, idx) => {
+                    const isSelected = idx === skillDropdownIndex;
+                    const displayName = getSkillDisplayName(skill);
                     
                     return (
                       <div
@@ -6859,16 +7004,18 @@ ${sourceMsg.content}`;
                 value={inputValue}
                 onChange={handleInputChange}
                 onKeyDown={(e) => {
-                  if (showSkillDropdown && filteredSkills.length > 0) {
+                  if (showSkillDropdown && slashDropdownCount > 0) {
                     if (e.key === 'ArrowDown') {
                       e.preventDefault();
-                      setSkillDropdownIndex(prev => (prev + 1) % filteredSkills.length);
+                      setSkillDropdownIndex(prev => (prev + 1) % slashDropdownCount);
                     } else if (e.key === 'ArrowUp') {
                       e.preventDefault();
-                      setSkillDropdownIndex(prev => (prev - 1 + filteredSkills.length) % filteredSkills.length);
+                      setSkillDropdownIndex(prev => (prev - 1 + slashDropdownCount) % slashDropdownCount);
                     } else if (e.key === 'Enter' || e.key === 'Tab') {
                       e.preventDefault();
-                      if (filteredSkills[skillDropdownIndex]) {
+                      if (slashDropdownMode === 'agent' && filteredUserAgents[skillDropdownIndex]) {
+                        handleSelectAgent(filteredUserAgents[skillDropdownIndex]);
+                      } else if (slashDropdownMode === 'skill' && filteredSkills[skillDropdownIndex]) {
                         handleSelectSkill(filteredSkills[skillDropdownIndex]);
                       }
                     } else if (e.key === 'Escape') {
@@ -6904,9 +7051,11 @@ ${sourceMsg.content}`;
                 placeholder={
                   chatTargetId.endsWith('_ai') 
                     ? (() => {
+                        if (aiSkill === 'none') {
+                          return `[无] 输入“/”即可使用技能，或向 小逻 提问、上传媒体进行深度分析...`;
+                        }
                         const currentSkill = allSkills.find(s => s.id === aiSkill) || AI_SKILLS[0];
-                        const hasIconEmoji = currentSkill.icon && currentSkill.name.startsWith(currentSkill.icon);
-                        const displayName = hasIconEmoji ? currentSkill.name : (currentSkill.icon ? `${currentSkill.icon} ${currentSkill.name}` : currentSkill.name);
+                        const displayName = getSkillDisplayName(currentSkill);
                         return `[${displayName}] 输入“/”即可使用技能，或向 小逻 提问、上传媒体进行深度分析...`;
                       })()
                     : "在此输入消息或需求，或输入“/”使用技能..."
@@ -7452,6 +7601,8 @@ ${sourceMsg.content}`;
                               }
                             }
 
+                            const canvasId = getActiveCanvasId();
+                            const sectionId = getCanvasSectionIdForType(itemType);
                             const newItem = {
                               id: `forwarded_${Date.now()}`,
                               type: itemType,
@@ -7463,10 +7614,23 @@ ${sourceMsg.content}`;
                               config: {
                                 prompt: selectedMedia.content || '转发自协同创作',
                                 aspectRatio: '16:9',
+                                sectionId,
                               },
-                              position: { x: Math.random() * 500, y: Math.random() * 500 }
+                              canvasId,
+                              position: createCanvasPosition(150, 180),
                             };
-                            if (setHistory) setHistory(prev => [newItem as any, ...prev]);
+                            if (setHistory) {
+                              setHistory(prev => {
+                                const slot = prev.filter((item: any) => (item.canvasId || "default") === canvasId).length;
+                                return [{
+                                  ...newItem,
+                                  position: createCanvasPosition(
+                                    150 + (slot % 3) * 420,
+                                    180 + Math.floor(slot / 3) * 520,
+                                  ),
+                                } as any, ...prev];
+                              });
+                            }
                             if (onNavigate) onNavigate('space', { ...newItem, type: itemType });
                             handleCloseMedia();
                           }}

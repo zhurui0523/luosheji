@@ -1,4 +1,4 @@
-import { AiSkill } from "../../skills/types.ts";
+import { AiSkill } from "../../../skills/types.ts";
 
 export const panoramaSkill: AiSkill = {
   id: "panorama",

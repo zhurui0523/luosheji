@@ -31,6 +31,9 @@ class PluginRegistryService {
     if (typeof window === 'undefined') return;
 
     try {
+      this.plugins.clear();
+      this.registerDefaultPlugins();
+
       // 1. Read deleted system plugins
       const deletedIds = JSON.parse(localStorage.getItem('deleted_system_plugins') || '[]');
       deletedIds.forEach((id: string) => {
@@ -179,6 +182,36 @@ class PluginRegistryService {
       }
     });
     return loaded;
+  }
+
+  public async refreshFromServer(): Promise<boolean> {
+    if (typeof window === 'undefined' || !window.localStorage) return false;
+
+    const token = window.localStorage.getItem('token');
+    if (!token || token === 'guest') return false;
+
+    try {
+      const res = await fetch('/api/extensions/packages?kind=plugin', {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (!res.ok) return false;
+
+      const data = await res.json();
+      const manifests = Array.isArray(data?.packages)
+        ? data.packages
+            .map((pkg: any) => pkg?.manifest)
+            .filter((manifest: any) => manifest?.id && manifest?.name && manifest?.version)
+        : [];
+
+      localStorage.setItem('user_extension_manifests', JSON.stringify(manifests));
+      localStorage.setItem('user_plugins_v2', '[]');
+      this.loadCustomAndUserPlugins();
+      this.saveUserPluginsV2();
+      return true;
+    } catch (err) {
+      console.warn('[PluginRegistry] Failed to refresh cloud plugin packages:', err);
+      return false;
+    }
   }
 
   public unregister(id: string) {

@@ -116,6 +116,23 @@ const getMysqlConfig = () => {
   );
 };
 
+const isTruthyEnv = (value?: string) => ['1', 'true', 'yes', 'on'].includes(String(value || '').toLowerCase());
+const isFalsyEnv = (value?: string) => ['0', 'false', 'no', 'off'].includes(String(value || '').toLowerCase());
+
+export const requiresCloudStorage = () => {
+  const explicit = process.env.REQUIRE_CLOUD_STORAGE || process.env.XIAOLUO_REQUIRE_CLOUD_STORAGE;
+  if (isTruthyEnv(explicit)) return true;
+  if (isFalsyEnv(explicit)) return false;
+  return true;
+};
+
+export const allowsLocalDatabaseFallback = () => {
+  const explicit = process.env.ALLOW_LOCAL_DATABASE_FALLBACK || process.env.XIAOLUO_ALLOW_LOCAL_DATABASE_FALLBACK;
+  if (isTruthyEnv(explicit)) return true;
+  if (isFalsyEnv(explicit)) return false;
+  return !requiresCloudStorage();
+};
+
 let lastConnectionError: any = null;
 export const getLastError = () => lastConnectionError;
 
@@ -131,6 +148,11 @@ class DatabaseWrapper {
     const config = getMysqlConfig();
     
     if (!config.host || !config.user) {
+      if (!allowsLocalDatabaseFallback()) {
+        const error = new Error('MySQL configuration is required for cloud persistence. Set DB_HOST, DB_USER, DB_PASSWORD and DB_NAME, or explicitly enable ALLOW_LOCAL_DATABASE_FALLBACK for local development.');
+        lastConnectionError = error;
+        throw error;
+      }
       console.warn('⚠️ MySQL configuration is missing. Falling back to SQLite.');
       this.initSqlite();
       return;
@@ -150,6 +172,10 @@ class DatabaseWrapper {
       });
       this.mode = 'mysql';
     } catch (e) {
+      if (!allowsLocalDatabaseFallback()) {
+        lastConnectionError = e;
+        throw e;
+      }
       console.error('Failed to create MySQL pool, falling back to SQLite:', e);
       this.initSqlite();
     }
@@ -240,6 +266,9 @@ class DatabaseWrapper {
     }
 
     if (!this.mysqlPool) {
+      if (!allowsLocalDatabaseFallback()) {
+        throw new Error('MySQL connection is unavailable while cloud persistence is required.');
+      }
       this.mode = 'offline';
       return mockOfflineQueryResult(sql);
     }
@@ -629,6 +658,7 @@ export const initDb = async () => {
       \`hidden_from_canvas\` BOOLEAN,
       \`parent_id\` VARCHAR(255),
       \`canvas_id\` VARCHAR(255) DEFAULT 'default',
+      \`operation_id\` VARCHAR(255),
       FOREIGN KEY(\`user_id\`) REFERENCES users(\`id\`) ON DELETE CASCADE
     )`);
 
@@ -696,6 +726,58 @@ export const initDb = async () => {
       } catch (err) {
         console.warn('SQLite migration for history table canvas_id failed:', err);
       }
+    }
+
+    // Migration: Add operation_id if not exists
+    if (!isSqlite) {
+      try {
+        const [columns]: any = await connection.query(`SHOW COLUMNS FROM history LIKE 'operation_id'`);
+        if (columns.length === 0) {
+          await connection.query(`ALTER TABLE history ADD COLUMN \`operation_id\` VARCHAR(255) AFTER canvas_id`);
+        }
+      } catch (err) {
+        console.warn('Migration for history table operation_id failed:', err);
+      }
+    } else {
+      try {
+        const info: any = await connection.query(`PRAGMA table_info(history)`);
+        const hasColumn = info[0].some((c: any) => c.name === 'operation_id');
+        if (!hasColumn) {
+          await connection.query(`ALTER TABLE history ADD COLUMN \`operation_id\` TEXT`);
+        }
+      } catch (err) {
+        console.warn('SQLite migration for history table operation_id failed:', err);
+      }
+    }
+
+    // Generation job ledger: server-owned source of truth for in-flight canvas tasks.
+    await connection.query(`CREATE TABLE IF NOT EXISTS generation_jobs (
+      \`id\` VARCHAR(255) PRIMARY KEY,
+      \`user_id\` INT NOT NULL,
+      \`history_id\` VARCHAR(255) NOT NULL,
+      \`kind\` VARCHAR(50) NOT NULL,
+      \`status\` VARCHAR(30) NOT NULL,
+      \`external_task_id\` VARCHAR(255),
+      \`request_payload\` ${isSqlite ? 'TEXT' : 'LONGTEXT'},
+      \`result_payload\` ${isSqlite ? 'TEXT' : 'LONGTEXT'},
+      \`error\` TEXT,
+      \`created_at_ms\` BIGINT,
+      \`updated_at_ms\` BIGINT,
+      \`created_at\` DATETIME DEFAULT CURRENT_TIMESTAMP,
+      \`updated_at\` DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY(\`user_id\`) REFERENCES users(\`id\`) ON DELETE CASCADE
+    )`);
+
+    if (!isSqlite) {
+      try {
+        await connection.query(`CREATE INDEX idx_generation_jobs_user_status ON generation_jobs (user_id, status)`);
+      } catch (e) {}
+      try {
+        await connection.query(`CREATE INDEX idx_generation_jobs_user_history ON generation_jobs (user_id, history_id)`);
+      } catch (e) {}
+      try {
+        await connection.query(`CREATE INDEX idx_generation_jobs_external_task ON generation_jobs (external_task_id)`);
+      } catch (e) {}
     }
 
     // Update existing invitation codes to be single-use
@@ -836,6 +918,33 @@ export const initDb = async () => {
       FOREIGN KEY(\`user_id\`) REFERENCES users(\`id\`) ON DELETE CASCADE,
       UNIQUE(\`user_id\`, \`pref_key\`)
     )`);
+
+    // Cloud package registry: formal source of truth for user-installed extension packages.
+    await connection.query(`CREATE TABLE IF NOT EXISTS user_extension_packages (
+      \`id\` ${intPk},
+      \`user_id\` INT NOT NULL,
+      \`kind\` VARCHAR(50) NOT NULL,
+      \`package_id\` VARCHAR(255) NOT NULL,
+      \`manifest_id\` VARCHAR(255),
+      \`package_path\` VARCHAR(500),
+      \`manifest\` ${isSqlite ? 'TEXT' : 'LONGTEXT'} NOT NULL,
+      \`files\` ${isSqlite ? 'TEXT' : 'LONGTEXT'},
+      \`storage_backend\` VARCHAR(50) DEFAULT 'database',
+      \`storage_uri\` TEXT,
+      \`created_at\` DATETIME DEFAULT CURRENT_TIMESTAMP,
+      \`updated_at\` DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY(\`user_id\`) REFERENCES users(\`id\`) ON DELETE CASCADE,
+      UNIQUE(\`user_id\`, \`kind\`, \`package_id\`)
+    )`);
+
+    if (!isSqlite) {
+      try {
+        await connection.query(`CREATE INDEX idx_user_extension_packages_user_kind ON user_extension_packages (user_id, kind)`);
+      } catch (e) {}
+      try {
+        await connection.query(`CREATE INDEX idx_user_extension_packages_manifest ON user_extension_packages (manifest_id)`);
+      } catch (e) {}
+    }
 
     // System learnings memory table
     await connection.query(`CREATE TABLE IF NOT EXISTS system_learnings (

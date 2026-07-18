@@ -15,6 +15,11 @@ export function normalizeUserModelConnection(input: any): UserModelConnection {
   const model = input.model || "";
   const apiKey = input.apiKey || "";
   const apiKeyRef = input.apiKeyRef || "";
+  const defaultGenerationSettings =
+    input.defaultGenerationSettings ||
+    input.config?.defaultGenerationSettings ||
+    input.metadata?.defaultGenerationSettings ||
+    input.metadata?.userConnection?.defaultGenerationSettings;
   
   // modelType compatibility
   let capabilityKinds: any[] = [];
@@ -37,6 +42,7 @@ export function normalizeUserModelConnection(input: any): UserModelConnection {
       capabilityKinds = ["text"];
     }
   }
+  const modelType = input.modelType || capabilityKinds[0] || "text";
 
   const enabled = input.enabled !== undefined ? !!input.enabled : true;
   const isCustom = input.isCustom !== undefined ? !!input.isCustom : true;
@@ -50,6 +56,7 @@ export function normalizeUserModelConnection(input: any): UserModelConnection {
     endpoint,
     path,
     model,
+    modelType,
     apiKey,
     apiKeyRef,
     capabilityKinds,
@@ -57,9 +64,14 @@ export function normalizeUserModelConnection(input: any): UserModelConnection {
     state,
     isCustom,
     displayName: input.displayName || name,
+    defaultGenerationSettings,
     headers: input.headers,
     requestMapping: input.requestMapping,
     responseMapping: input.responseMapping,
+    metadata: {
+      ...(input.metadata || {}),
+      ...(defaultGenerationSettings ? { defaultGenerationSettings } : {})
+    },
     createdAt: input.createdAt || Date.now(),
     updatedAt: input.updatedAt || Date.now(),
     lastTestedAt: input.lastTestedAt,
@@ -134,7 +146,14 @@ export function toModelProviderDefinition(connection: UserModelConnection): Mode
       requestMapping: connection.requestMapping,
       responseMapping: connection.responseMapping,
       path: connection.path,
-      apiKey: connection.apiKey
+      apiKey: connection.apiKey,
+      defaultGenerationSettings: connection.defaultGenerationSettings,
+      metadata: connection.metadata
+    },
+    metadata: {
+      ...(connection.metadata || {}),
+      defaultGenerationSettings: connection.defaultGenerationSettings,
+      userConnection: connection
     },
     capabilities: {
       text: capKinds.includes("text"),
@@ -158,7 +177,10 @@ export function toModelProviderDefinition(connection: UserModelConnection): Mode
           requestMapping: connection.requestMapping,
           responseMapping: connection.responseMapping,
           isCustom: connection.isCustom !== false,
-          modelType: capKinds[0] || "text",
+          modelType: connection.modelType || capKinds[0] || "text",
+          capabilityKinds: capKinds,
+          defaultGenerationSettings: connection.defaultGenerationSettings,
+          enabled: connection.enabled !== false,
           title: connection.name
         }
       };

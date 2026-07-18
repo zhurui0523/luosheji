@@ -52,6 +52,34 @@ export interface IntentPlan {
   steps?: IntentStep[];
 }
 
+function getApiConfigLabel(config: any, keys: string[], fallback: string) {
+  for (const key of keys) {
+    const section = config?.[key];
+    if (section?.model) {
+      return section.displayName || section.title || section.model;
+    }
+  }
+
+  const customInterfaces = config?.customInterfaces || {};
+  for (const [key, section] of Object.entries(customInterfaces) as any[]) {
+    if (keys.includes(key) && section?.model) {
+      return section.displayName || section.title || section.model;
+    }
+  }
+
+  return fallback;
+}
+
+function getModelLabel(config: any, model: string, fallback?: string) {
+  if (!model) return fallback || "";
+  const sections = [
+    ...Object.values(config || {}),
+    ...Object.values(config?.customInterfaces || {}),
+  ] as any[];
+  const matched = sections.find((section) => section?.model === model);
+  return matched?.displayName || matched?.title || model || fallback || "";
+}
+
 // Maps skillId to its name and instruction set
 const SKILL_INSTRUCTIONS: Record<string, { name: string; instruction: string }> = {
   "create-script": {
@@ -120,20 +148,20 @@ const SKILL_INSTRUCTIONS: Record<string, { name: string; instruction: string }> 
   }
 };
 
-const BRAIN_AGENT_SYSTEM_INSTRUCTION = `
+export const BRAIN_AGENT_SYSTEM_INSTRUCTION = `
 你是 **小逻-多模态AI意图操作系统 (AI Intent OS)** 的核心调度、执行链规划大脑与智能意图引导者 (BrainAgent)。
-你精通协同、项目、创意和规划。你作为操作系统的大脑，能协助团队进行分析、解答疑问、整理创意概念，并统筹管理所有的专业智能体与底层 SKILL 技能。请尽量用亲切、靠谱、专业的语气回答用户。
+你精通协同、项目、创意和规划。你作为操作系统的大脑，能协助团队进行分析、解答疑问、整理创意概念，并统筹管理用户安装的 Agent、模型接口、SKILL 与插件能力。请尽量用亲切、靠谱、专业的语气回答用户。
 
-作为操作系统的系统大脑，你的核心职责是遵循 **「系统大脑 (BrainAgent) —— 专业智能体 (Agents) —— 技能特长 (Skills)」** 的三层系统架构进行统筹管理与任务规划。
+作为操作系统的系统大脑，你的核心职责是遵循 **「系统大脑 (BrainAgent) —— 可插拔 Agent / SKILL / Plugin —— 模型接口」** 的系统架构进行统筹管理与任务规划。
 
-你掌管着以下 4 个顶尖的专业智能体空间（虚拟专业工作室）：
+你掌管着以下 4 个创作能力空间（虚拟专业工作室）：
 1. **🎬 奇迹影业/制剧工作室 (Miracle Pictures Studio)** (companyId: "miracle-pictures", companyName: "奇迹影业")：
    - **核心职责**: 提供从创意开发、剧本撰写、分镜镜头规划、电影级原画绘制到视效视频合成的全栈影片制作服务。
    - **技能特长 (Skills)**:
      * ✍️ 编剧专家 (create-script)：编写具有微表情五维动作描述的电影级剧本，彻底禁用人称代词。
      * 🎬 分镜导演 (shot-prompt)：设计专业级电影镜头、画幅景别与高级机位控制词。
-     * 🎨 原画美术 (imageAgent)：绘制极具光影氛围的分镜场景与核心角色原画。
-     * 🎥 视效总监 (videoAgent)：图生视频 (I2V)，合成电影感极佳的动态高精短片。
+     * 🎨 原画美术（图片模型接口 + 生图 SKILL/插件）：绘制极具光影氛围的分镜场景与核心角色原画。
+     * 🎥 视效总监（视频模型接口 + 视频 SKILL/插件）：图生视频 (I2V)，合成电影感极佳的动态高精短片。
      * 🔍 剧本审计 (analyze-script)：进行深度拉片、结构节拍及代词禁用合规审计。
       
 2. **📊 极客营销与商业咨询公司 (Geek Marketing & Consulting Co.)** (companyId: "geek-marketing", companyName: "极客营销")：
@@ -173,16 +201,11 @@ const BRAIN_AGENT_SYSTEM_INSTRUCTION = `
    - **增量演进与一致性原则**：当上下文输入中包含【当前/上一次规划的执行流水线步骤】并且用户提出修改时，你必须在保持未受影响步骤的 \`id\` 和已有成果不变的前提下，对现有步骤进行智能的「修改、增加、删除、调整顺序或参数微调」，并返回修改后的完整流水线！千万不要全盘重置未修改的步骤 \`id\`，这样能保护用户已经运行出的节点数据。
 
 一、你的系统目前支持并掌控的底层专业大模型动力舱：
-1. **创意剧本/文案大模型**: 
-   - \`gemini-3.5-flash\`：极速、高度富有创意与逻辑性，最适合剧本创作、创意文案、日常交流及各类文本深度理解与审计。
-2. **灵境生图/原画大模型**:
-   - \`gemini-3.1-flash-image-preview\` (平台代号: **nano banana 2**)：画质顶级，完美支持 16:9、9:16、1:1、2.35:1 等电影级和广域画幅，支持复杂的视觉创意与垫图。
-   - \`gpt-image-2\` (平台代号: **GPT-Image-2**)：色彩华丽细腻，适合高精细度的角色设计与立绘设计。
-3. **高精视频合成大模型**:
-   - \`seedance2.0\` (平台代号: **RH-SD2.0**)：顶尖视频大模型，运动物理真实感好、镜头一致性佳，支持 4s、8s、15s 的视频时长及图生视频 (I2V) 动画合成。
-   - \`seedance-mini\` (平台代号: **RH-SD2.0mini**)：轻量极速，适合快速效果预览。
+1. **模型来源必须动态读取**：文本、图片、视频模型都来自「模型接口」中启用的配置，不要假设固定模型名称，也不要在用户选择某个模型失败时自动切换为其他模型。
+2. **规划只声明能力类型**：文本节点使用文本模型，图片节点使用图片模型，视频节点使用视频模型；具体模型名称由运行时配置、节点选择或用户选择决定。
+3. **执行必须尊重用户选择**：如果某个模型接口不可用，直接返回该模型不可用/配置错误，而不是静默替换成默认模型。
 
-二、你的系统预置的专业SKILL库（技能与插件）：
+二、你的系统预置/安装的专业能力库（Skill 与 Plugin 分开注册）：
 1. **相机调整 (id: "camera-control")**: 配置相机机型 (Sony Venice, Arri Alexa 35, Red, IMAX 等)、镜头、焦段、光圈、色调等专业参数，生成电影级原画。
 2. **角色设定图 (id: "six-view")**: 生成专业角色设定与转面图 (三视图)，包含肖像、正/侧/背三视角，支持灰色背景及中文标注，100%还原人脸与服饰。
 3. **场景方案 (id: "scene-plan")**: 场景空间设计与专业布局方案（上下等分，上面 4 个内景角度，下面透视图布局，禁止 CAD 线条图）。
@@ -198,17 +221,17 @@ const BRAIN_AGENT_SYSTEM_INSTRUCTION = `
 13. **智能变装与资产扩展 (id: "asset-library")**: 智能维护和深度优化全局资产库，自动生成符合上下文视觉一致性的角色变装方案与多维状态扩展。
 
 三、你的职责、交互与决策流程：
-1. **优先进行通用对话或直接大模型回答**：
+1. **A 系统：快系统，优先进行通用对话或直接大模型回答**：
    - 如果用户只是在进行概念探讨、日常提问、闲聊、编写纯文案/广告词/剧本/脚本/文案策划、或进行文本类的多维度对比/分析，并且**其指令中没有明确提出要求生成『流水线』、『工作流』、『作战沙盘』，也不属于必须渲染图像或视频等多模态并行的复杂制作场景**：
-     * 你**必须**选择通用对话，直接进行文本回复。
-     * 你必须展示【小逻·操作系统大模型与SKILL画像】仪表盘，方便用户了解。
-     * 返回格式：\`{"isPipeline": false, "response": "仪表盘Markdown + 你的详细文本回答"}\`
-     * **绝对严禁**自作主张地将用户单纯索要文字、广告词、文案或剧本的需求（例如“帮我写10份广告文案”）自动规划为包含多步节点（如 Strategy, Concept, Copywriting, Image, Video 等）的 \`isPipeline: true\` 流水线！对于此类纯文本创作或日常疑问，必须以 \`isPipeline: false\` 返回，并在 \`response\` 字段中提供原本高品质的文案或解答内容！
-2. **动态规划“自动化执行链流水线” (isPipeline: true)**：
+      * 你**必须**选择通用对话，直接进行文本回复。
+      * 你**不要**展示模型画像、SKILL 清单、升级按钮、作战沙盘建议或多模态流水线提示。
+      * 返回格式：\`{"isPipeline": false, "response": "直接、简洁、有帮助的自然语言回答"}\`
+      * **绝对严禁**自作主张地将用户单纯索要文字、广告词、文案或剧本的需求（例如“帮我写10份广告文案”）自动规划为包含多步节点（如 Strategy, Concept, Copywriting, Image, Video 等）的 \`isPipeline: true\` 流水线！对于此类纯文本创作或日常疑问，必须以 \`isPipeline: false\` 返回，并在 \`response\` 字段中提供原本高品质的文案或解答内容！
+2. **B 系统：慢系统，动态规划“自动化执行链流水线” (isPipeline: true)**：
    - 只有当用户的指令包含明确要求创建、部署或转换「流水线/工作流/作战沙盘/连线图」，或者其最新输入包含明确的多模态制作需求（例如“帮我把这个故事生成配套的图片和视频”、“生成带有原画和视频的流水线工作流”等）时，你才可以规划并返回多模态流水线执行计划。
    - 编排精细合理的步骤。每个步骤可以是一个 \`script\`(文本撰写/分析/策略)、\`image\`(原画绘制/资产设计) 或 \`video\`(视频合成)。
    - 在步骤中合理设置 \`skillId\`。如果是特定的生图技能，记得映射其 \`skillId\` (例如：三视图映射 \`six-view\`，场景映射 \`scene-plan\`，九宫格映射 \`grid-storyboard\`，全景映射 \`panorama\`，相机参数映射 \`camera-control\`)。
-   - 在 \`rationale\` 字段中，用一两句话对你本次的独家定制步骤设计进行解释（说明所调度的底层动力大模型和匹配到的SKILL）。
+    - 在 \`rationale\` 字段中，用一两句话对你本次的独家定制步骤设计进行解释（说明所调度的底层动力大模型，以及匹配到的 SKILL 或插件）。
    - 在微调和演进中：若用户给出了“修改意见”，例如“不要第二步的角色设定，直接生成场景”，则你需要返回修改后的流水线 steps（保留上一次的某些 step id，移除角色设定，加入场景）。
 
 四、返回格式规范：
@@ -282,6 +305,13 @@ export class BrainAgent extends BaseAgent {
   public async innerAnalyzeUserIntent(prompt: string, config?: Config): Promise<IntentPlan> {
     const globalConfig = (config || {}) as any;
     const scriptModel = globalConfig.script?.model || "gemini-3.5-flash";
+    const scriptModelLabel = getApiConfigLabel(globalConfig, ["script", "gptText", "claudeSonnet"], scriptModel);
+    const imageModelLabel = getApiConfigLabel(globalConfig, ["image", "gptImage"], "图片模型");
+    const videoModelLabel = getApiConfigLabel(
+      globalConfig,
+      ["videoSeedance", "video", "videoVeoFast", "videoSeedanceMini", "videoOmni"],
+      "视频模型"
+    );
 
     const lowerPrompt = prompt.toLowerCase();
 
@@ -368,7 +398,8 @@ export class BrainAgent extends BaseAgent {
       }
     }
 
-    let modifiedSystemInstruction = BRAIN_AGENT_SYSTEM_INSTRUCTION;
+    const brainAgentOverride = AgentRegistry.get('brainAgent')?.systemInstruction?.trim();
+    let modifiedSystemInstruction = brainAgentOverride || BRAIN_AGENT_SYSTEM_INSTRUCTION;
     if (userPlugins.length > 0) {
       let customPluginsDesc = "\n\n四、用户贡献及已启用的自定义即插即用插件（Plugins）列表：\n";
       userPlugins.forEach((p: any, idx: number) => {
@@ -548,13 +579,13 @@ export class BrainAgent extends BaseAgent {
       const errorMsg = err.message || String(err);
       return {
         isPipeline: false,
-        response: `#### ⚠️ 无法连接到选定大模型 (${scriptModel})
-您当前选择的底层文本大模型为 **${scriptModel}**，但在尝试连接该模型进行意图引导时发生了错误：
+        response: `#### ⚠️ 无法连接到选定大模型 (${scriptModelLabel})
+您当前选择的底层文本大模型为 **${scriptModelLabel}**，但在尝试连接该模型进行意图引导时发生了错误：
 
 > **${errorMsg}**
 
 **💡 建议您检查以下配置：**
-1. **API 密钥配置**：请点击页面右上角的 **[设置 / 大模型 API 设置]**，确保已正确填写了 **${scriptModel}** 的 API Key 以及对应的 Endpoint (接口端点)。
+1. **API 密钥配置**：请打开 **模型接口**，确保已正确填写 **${scriptModelLabel}** 的 API Key 以及对应的 Endpoint (接口端点)。
 2. **网络与中转接口**：如果您使用的是第三方中转服务，请确认该中转端点及模型路径是否配置正确，且账户配额是否充沛。
 3. **切换回系统推荐模型**：在底部下拉菜单中，将文本大模型切换回系统原生集成的 **Gemini 1.5 Pro**。该推荐模型在平台内已预置默认的高速通道，无需任何配置即可即开即用！`
       };
@@ -583,7 +614,7 @@ export class BrainAgent extends BaseAgent {
     if (lowerPrompt.includes("资产提示词") || (lowerPrompt.includes("资产") && lowerPrompt.includes("提示词")) || lowerPrompt.includes("asset-prompt") || lowerPrompt.includes("asset prompt")) {
       return {
         isPipeline: true,
-        rationale: `🎯 已为您精确匹配系统预置SKILL：**资产提示词 (asset-prompt)**。我们将调用底层 **${scriptModel}** 剧本/文案大模型与 **nano banana 2** 灵境生图大模型为您规划制作资产提示词及原画效果（已自动为您排除不需要的视频合成步骤）。`,
+        rationale: `🎯 已为您精确匹配系统预置SKILL：**资产提示词 (asset-prompt)**。我们将调用底层 **${scriptModelLabel}** 剧本/文案大模型与 **${imageModelLabel}** 灵境生图大模型为您规划制作资产提示词及原画效果（已自动为您排除不需要的视频合成步骤）。`,
         steps: [
           {
             id: "step_1_asset_prompt",
@@ -614,7 +645,7 @@ export class BrainAgent extends BaseAgent {
     if (lowerPrompt.includes("角色设定图") || lowerPrompt.includes("角色设定") || lowerPrompt.includes("转面") || lowerPrompt.includes("三视图")) {
       return {
         isPipeline: true,
-        rationale: `🎯 已为您匹配系统预置SKILL：**角色设定图 (six-view)**。同时将调用底层 **${scriptModel}** 与 **gpt-image-2** 大模型协同创作！`,
+        rationale: `🎯 已为您匹配系统预置SKILL：**角色设定图 (six-view)**。同时将调用底层 **${scriptModelLabel}** 与 **${imageModelLabel}** 大模型协同创作！`,
         steps: [
           {
             id: "step_1_concept",
@@ -646,7 +677,7 @@ export class BrainAgent extends BaseAgent {
     if (lowerPrompt.includes("场景方案") || lowerPrompt.includes("布局图") || lowerPrompt.includes("内景")) {
       return {
         isPipeline: true,
-        rationale: `🎯 已为您匹配系统预置SKILL：**场景方案 (scene-plan)**。同时将调用底层 **${scriptModel}** 与 **nano banana 2** 大模型协同创作！`,
+        rationale: `🎯 已为您匹配系统预置SKILL：**场景方案 (scene-plan)**。同时将调用底层 **${scriptModelLabel}** 与 **${imageModelLabel}** 大模型协同创作！`,
         steps: [
           {
             id: "step_1_layout",
@@ -678,7 +709,7 @@ export class BrainAgent extends BaseAgent {
     if (lowerPrompt.includes("九宫格分镜") || lowerPrompt.includes("九宫格")) {
       return {
         isPipeline: true,
-        rationale: `🎯 已为您匹配系统预置SKILL：**九宫格分镜 (grid-storyboard)**。同时将调用底层 **${scriptModel}** 与 **nano banana 2** 大模型协同制作！`,
+        rationale: `🎯 已为您匹配系统预置SKILL：**九宫格分镜 (grid-storyboard)**。同时将调用底层 **${scriptModelLabel}** 与 **${imageModelLabel}** 大模型协同制作！`,
         steps: [
           {
             id: "step_1_shots",
@@ -710,7 +741,7 @@ export class BrainAgent extends BaseAgent {
     if (lowerPrompt.includes("全景") || lowerPrompt.includes("vr") || lowerPrompt.includes("panorama")) {
       return {
         isPipeline: true,
-        rationale: `🎯 已为您匹配系统预置SKILL：**VR全景世界 (panorama)**。同时将调用底层 **${scriptModel}** 与 **nano banana 2** 大模型协同生成！`,
+        rationale: `🎯 已为您匹配系统预置插件：**VR全景世界 (panorama)**。同时将调用底层 **${scriptModelLabel}** 与 **${imageModelLabel}** 大模型协同生成！`,
         steps: [
           {
             id: "step_1_pano_prompt",
@@ -742,7 +773,7 @@ export class BrainAgent extends BaseAgent {
     if (lowerPrompt.includes("相机") || lowerPrompt.includes("镜头") || lowerPrompt.includes("光圈") || lowerPrompt.includes("venice") || lowerPrompt.includes("alexa") || lowerPrompt.includes("arri")) {
       return {
         isPipeline: true,
-        rationale: `🎯 已为您匹配系统预置SKILL：**相机调整 (camera-control)**。同时将调用底层 **${scriptModel}** 与 **nano banana 2** 大模型协同生成！`,
+        rationale: `🎯 已为您匹配系统预置插件：**相机调整 (camera-control)**。同时将调用底层 **${scriptModelLabel}** 与 **${imageModelLabel}** 大模型协同生成！`,
         steps: [
           {
             id: "step_1_cam_prompt",
@@ -900,7 +931,7 @@ export class BrainAgent extends BaseAgent {
 
       return {
         isPipeline: true,
-        rationale: `检测到商业广告/营销策划创作需求，已自动为您启用『全链路商业广告策划全栈流水线』！\n动力舱：${scriptModel} + nano banana 2 + RH-SD2.0`,
+        rationale: `检测到商业广告/营销策划创作需求，已自动为您启用『全链路商业广告策划全栈流水线』！\n动力舱：${scriptModelLabel} + ${imageModelLabel} + ${videoModelLabel}`,
         steps
       };
     }
@@ -953,26 +984,15 @@ export class BrainAgent extends BaseAgent {
 
       return {
         isPipeline: true,
-        rationale: `检测到复合创作需求，已为您启动『标准创意故事创作流水线』。\n动力舱：${scriptModel} + nano banana 2 + RH-SD2.0`,
+        rationale: `检测到复合创作需求，已为您启动『标准创意故事创作流水线』。\n动力舱：${scriptModelLabel} + ${imageModelLabel} + ${videoModelLabel}`,
         steps
       };
     }
 
-    // Default general conversation response displaying the OS Model & SKILL Portrait dashboard
+    // Default A-system response: direct conversation, no workflow upsell or capability dashboard.
     return {
       isPipeline: false,
-      response: `#### 🚀 小逻·操作系统大模型与SKILL画像
-- ⚡ **底层动力模型**: \`${scriptModel}\` (创意剧本/大模型，当前会话的核心理解引擎)
-- 🧠 **核心调度大脑**: \`小逻智能意图引导 (BrainAgent)\` - 自动分析并调度微观生成模型及场景技能
-- 💡 **小逻建议**: 您好！我是小逻。我已经为您加载并准备好了系统的多模态大模型动力舱以及全部 SKILL 技能（包括：**相机调整**、**角色设定图**、**场景方案**、**九宫格分镜**、**VR全景世界**、**编剧专家**、**剧本分析** 等）。
-
-如果您需要我执行具体的专业任务，请直接下达指令，例如：
-* “*帮我设计一个太空战士的**角色设定图**，需要竖屏*” (直接匹配角色三视图SKILL)
-* “*做一个极简中式茶室的**场景方案**设计*” (直接匹配场景四视角 and 透视SKILL)
-* “*用九宫格形式，拍一拍黄昏时的海滩*” (直接匹配九宫格分镜SKILL)
-* “*分析以下短片剧本...*” (调用剧本拉片审计SKILL)
-
-现在，请问有什么我可以协助您的创意构想吗？`
+      response: `你好，我是小逻。你可以直接告诉我想聊什么、想写什么，或者想让我帮你判断一个想法是否值得继续做。`
     };
   }
 
@@ -1060,6 +1080,7 @@ export class BrainAgent extends BaseAgent {
 
     if (step.type === "image") {
       const selectedImageModel = globalConfig.image?.model || "gemini-3.1-flash-image-preview";
+      const selectedImageModelLabel = getModelLabel(globalConfig, selectedImageModel, selectedImageModel);
       let skillName = "灵境原画";
       let userPluginInstruction = "";
       let isUserPlugin = false;
@@ -1083,7 +1104,7 @@ export class BrainAgent extends BaseAgent {
           }
         }
       }
-      if (onProgress) onProgress(`🎨 正在提取特征并调用大模型生成原画 [${selectedImageModel === "gemini-3.1-flash-image-preview" ? "nano banana 2" : "GPT-Image-2"}] - 当前技能: [${skillName}]...`);
+      if (onProgress) onProgress(`🎨 正在提取特征并调用图片模型 [${selectedImageModelLabel}] - 当前技能: [${skillName}]...`);
       
       let enrichedPrompt = step.prompt;
       let prevScriptText = "";
@@ -1181,7 +1202,7 @@ export class BrainAgent extends BaseAgent {
 
     if (step.type === "video") {
       const selectedVideoModel = globalConfig.videoSeedance?.model || globalConfig.video?.model || "seedance2.0";
-      const modelLabel = selectedVideoModel === "seedance-mini" ? "RH-SD2.0mini" : "RH-SD2.0";
+      const modelLabel = getModelLabel(globalConfig, selectedVideoModel, selectedVideoModel);
       if (onProgress) onProgress(`🎬 正在使用生成的角色原画进行图生视频(I2V)动画合成，调用顶级视频大模型 [${modelLabel}]...`);
       
       let enrichedPrompt = step.prompt;

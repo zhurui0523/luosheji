@@ -386,6 +386,7 @@ export const GlobalApiConfigTab: React.FC<GlobalApiConfigTabProps> = ({ onUserUp
         setGlobalApiConfig(savedConfig);
         await UserModelStore.saveConfig(savedConfig, getCurrentUserId());
         ModelRegistry.loadUserConnections(savedConfig);
+        window.dispatchEvent(new CustomEvent('api-config-changed'));
         if (onUserUpdate) onUserUpdate();
       } else if (data) {
         alert(data.error || '保存失败');
@@ -470,7 +471,7 @@ export const GlobalApiConfigTab: React.FC<GlobalApiConfigTabProps> = ({ onUserUp
     }
 
     if (!sectionConfig.apiKey) {
-      setTestStatus(prev => ({ ...prev, [type]: { loading: false, error: '璇峰厛濉啓 API KEY' } }));
+      setTestStatus(prev => ({ ...prev, [type]: { loading: false, error: '请先填写 API KEY' } }));
       return;
     }
 
@@ -628,13 +629,41 @@ export const GlobalApiConfigTab: React.FC<GlobalApiConfigTabProps> = ({ onUserUp
     );
   }
 
+  const looksBrokenLabel = (value?: string) => {
+    if (!value) return false;
+    return /�|锟|Ã|Â|â€|鎴|鏄|涓|绋|瀹|傚|勫|姝|滆|熷|犳|藉|撴|堢/.test(value);
+  };
+
+  const safeLabel = (value: string | undefined, fallback: string) => {
+    const label = (value || "").trim();
+    return label && !looksBrokenLabel(label) ? label : fallback;
+  };
+
+  const formatDefaultGenerationSettings = (modelType: 'text' | 'image' | 'video', settings?: ApiConfig['defaultGenerationSettings']) => {
+    if (modelType === 'image') {
+      const image = {
+        ...DEFAULT_IMAGE_GENERATION_SETTINGS,
+        ...(settings?.image || {}),
+      };
+      return `比例 ${image.aspectRatio} / 画质 ${image.imageSize}`;
+    }
+    if (modelType === 'video') {
+      const video = {
+        ...DEFAULT_VIDEO_GENERATION_SETTINGS,
+        ...(settings?.video || {}),
+      };
+      return `模式 ${video.videoMode} / 时长 ${video.duration}s / 比例 ${video.aspectRatio} / 画质 ${video.resolution}`;
+    }
+    return '';
+  };
+
   // Construct our unified cards list
   const cardsList = [
     ...STANDARD_INTERFACES.map(std => {
       const configVal = globalApiConfig[std.key] || DEFAULT_CONFIG[std.key as keyof Config] || {};
       return {
         key: std.key,
-        title: configVal.displayName || std.title,
+        title: safeLabel(configVal.displayName, std.title),
         desc: std.desc,
         modelType: std.modelType as 'text' | 'image' | 'video',
         isCustom: false,
@@ -660,8 +689,8 @@ export const GlobalApiConfigTab: React.FC<GlobalApiConfigTabProps> = ({ onUserUp
       }
       return {
         key,
-        title: cust.displayName || cust.title || key,
-        desc: `自定义接口，服务商：${cust.provider || '未指定'}，动态扩充系统模型能力。`,
+        title: safeLabel(cust.displayName || cust.title, cust.model || key),
+        desc: `自定义接口，服务商：${safeLabel(cust.provider, '未指定')}，动态扩充系统模型能力。`,
         modelType: (cust.modelType || 'text') as 'text' | 'image' | 'video',
         isCustom: true,
         config: cust,
@@ -1046,6 +1075,17 @@ export const GlobalApiConfigTab: React.FC<GlobalApiConfigTabProps> = ({ onUserUp
                           {getApiTypeFromConfig(card.config)}
                         </span>
                       </div>
+                      {card.modelType !== 'text' && (
+                        <div className="flex items-center justify-between text-xs py-2.5 border-b border-dashed border-slate-100">
+                          <span className="text-slate-400 font-medium">默认生成参数</span>
+                          <span
+                            className="font-bold text-slate-600 bg-slate-50 px-2.5 py-1 rounded-lg border border-slate-200/30 max-w-[320px] truncate"
+                            title={formatDefaultGenerationSettings(card.modelType, card.config.defaultGenerationSettings)}
+                          >
+                            {formatDefaultGenerationSettings(card.modelType, card.config.defaultGenerationSettings)}
+                          </span>
+                        </div>
+                      )}
                       <div className="flex items-center justify-between text-xs py-2.5 border-b border-dashed border-slate-100">
                         <span className="text-slate-400 font-medium">密钥 (API KEY)</span>
                         {card.config.apiKey ? (

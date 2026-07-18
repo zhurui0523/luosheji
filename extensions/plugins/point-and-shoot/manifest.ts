@@ -17,7 +17,7 @@ export const pointAndShootPluginManifest: ExtensionManifest = {
     entry: './skill.ts'
   },
   contributes: {
-    skills: [pointAndShootSkill]
+    skills: [{ ...pointAndShootSkill, description: pointAndShootSkill.desc, category: pointAndShootSkill.category || 'image' }]
   },
   metadata: {
     builtin: true,

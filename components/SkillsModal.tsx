@@ -32,6 +32,8 @@ interface SkillsModalProps {
   onSelectSkill: (id: string) => void;
 }
 
+const PLUGIN_ID_SET = new Set(PLUGINS.map(plugin => plugin.id));
+
 export const SkillsModal: React.FC<SkillsModalProps> = ({
   isOpen,
   onClose,
@@ -77,7 +79,6 @@ export const SkillsModal: React.FC<SkillsModalProps> = ({
   const [formCustomOptions, setFormCustomOptions] = useState<CustomSkillOption[]>([]);
   const [formEnableUpload, setFormEnableUpload] = useState(false);
   const [formUploadType, setFormUploadType] = useState<'all' | 'text' | 'image' | 'video'>('all');
-  const [isEmojiPickerOpen, setIsEmojiPickerOpen] = useState(false);
 
   const [loading, setLoading] = useState(false);
   const [errorMess, setErrorMessRaw] = useState('');
@@ -90,12 +91,7 @@ export const SkillsModal: React.FC<SkillsModalProps> = ({
   const [successMess, setSuccessMess] = useState('');
 
   // Built-in pre-coded skills for general default showcase
-  const defaultShowcaseSystemSkills: AiSkill[] = AI_SKILLS;
-
-  const EMOJI_OPTIONS = [
-    '🧠', '✍️', '🎬', '📊', '🎨', '🚀', '🔬', '💡', '🔥', '⚙️', 
-    '📝', '📅', '🛒', '🎙️', '🤖', '🎮', '🔋', '🌍', '❤️', '💼'
-  ];
+  const defaultShowcaseSystemSkills: AiSkill[] = AI_SKILLS.filter(skill => !PLUGIN_ID_SET.has(skill.id));
 
   useEffect(() => {
     if (isOpen) {
@@ -249,7 +245,7 @@ export const SkillsModal: React.FC<SkillsModalProps> = ({
     if (removedSystemSkillIds.includes(skill.id)) {
       return false;
     }
-    if (PLUGINS.some(m => m.id === skill.id)) {
+    if (PLUGIN_ID_SET.has(skill.id)) {
       return false;
     }
     const q = searchQuery.toLowerCase();
@@ -260,7 +256,7 @@ export const SkillsModal: React.FC<SkillsModalProps> = ({
     ? customSkills 
     : PLUGINS
   ).filter(skill => {
-    if (!PLUGINS.some(m => m.id === skill.id)) {
+    if (!PLUGIN_ID_SET.has(skill.id)) {
       return false;
     }
     const q = searchQuery.toLowerCase();
@@ -268,6 +264,9 @@ export const SkillsModal: React.FC<SkillsModalProps> = ({
   });
 
   const exploreList = customSkills.filter(s => {
+    if (PLUGIN_ID_SET.has(s.id)) {
+      return false;
+    }
     if (s.isSystem && !removedSystemSkillIds.includes(s.id)) {
       return false;
     }
@@ -809,62 +808,8 @@ export const SkillsModal: React.FC<SkillsModalProps> = ({
                 {isEditing ? '修改技能参数 (全员联动)' : '构建专属 AI 提示词技能'}
               </h3>
               
-              <div className="flex gap-4">
-                <div className="w-20 shrink-0">
-                  <label className="block text-xs font-bold text-gray-700 mb-1.5">表情徽标</label>
-                  <div className="relative">
-                    <button
-                      type="button"
-                      onClick={() => setIsEmojiPickerOpen(!isEmojiPickerOpen)}
-                      className={`w-full flex items-center justify-center text-xl h-[42px] bg-gray-50 border rounded-xl cursor-pointer transition-all duration-200 outline-none ${
-                        isEmojiPickerOpen 
-                          ? 'border-indigo-500 ring-2 ring-indigo-500/10 bg-white shadow-xs' 
-                          : 'border-gray-100 hover:border-gray-300 hover:bg-gray-100/50'
-                      }`}
-                    >
-                      {formIcon}
-                    </button>
-
-                    <AnimatePresence>
-                      {isEmojiPickerOpen && (
-                        <>
-                          {/* Backdrop to close the picker */}
-                          <div 
-                            className="fixed inset-0 z-40" 
-                            onClick={() => setIsEmojiPickerOpen(false)} 
-                          />
-                          <motion.div
-                            initial={{ opacity: 0, y: 6, scale: 0.95 }}
-                            animate={{ opacity: 1, y: 0, scale: 1 }}
-                            exit={{ opacity: 0, y: 6, scale: 0.95 }}
-                            transition={{ duration: 0.15, ease: "easeOut" }}
-                            className="absolute left-0 top-full mt-2 w-52 bg-white border border-gray-100 rounded-2xl shadow-xl p-2.5 z-50 grid grid-cols-5 gap-1"
-                          >
-                            {EMOJI_OPTIONS.map(emo => (
-                              <button
-                                key={emo}
-                                type="button"
-                                onClick={() => {
-                                  setFormIcon(emo);
-                                  setIsEmojiPickerOpen(false);
-                                }}
-                                className={`w-8 h-8 flex items-center justify-center text-lg rounded-lg transition-all duration-150 ${
-                                  formIcon === emo 
-                                    ? 'bg-indigo-50 border border-indigo-200 scale-105 shadow-2xs font-bold' 
-                                    : 'hover:bg-gray-50 border border-transparent hover:scale-105 active:scale-95'
-                                }`}
-                              >
-                                {emo}
-                              </button>
-                            ))}
-                          </motion.div>
-                        </>
-                      )}
-                    </AnimatePresence>
-                  </div>
-                </div>
-
-                <div className="flex-1">
+              <div>
+                <div>
                   <label className="block text-xs font-bold text-gray-700 mb-1.5">技能名称 <span className="text-red-500">*</span></label>
                   <input
                     type="text"

@@ -26,6 +26,7 @@ import {
 } from 'lucide-react';
 import { AiSkill, CustomSkillOption } from '../skills/types';
 import { SYSTEM_SKILLS } from '../skills/definitions';
+import { PLUGINS } from '../plugin';
 import { WorkflowPage } from './WorkflowPage';
 import { PluginPage } from './PluginPage';
 import { GlobalApiConfigTab } from './GlobalApiConfigTab';
@@ -36,6 +37,8 @@ interface SkillsPageProps {
   user: any;
   onUserUpdate?: () => void;
 }
+
+const PLUGIN_ID_SET = new Set(PLUGINS.map(plugin => plugin.id));
 
 export const SkillsPage: React.FC<SkillsPageProps> = ({ user, onUserUpdate }) => {
   const [category, setCategory] = useState<'skill' | 'agent' | 'workflow' | 'ai-studio' | 'api'>('skill');
@@ -60,7 +63,6 @@ export const SkillsPage: React.FC<SkillsPageProps> = ({ user, onUserUpdate }) =>
   const [formEnableUpload, setFormEnableUpload] = useState(false);
   const [formUploadType, setFormUploadType] = useState<'all' | 'text' | 'image' | 'video'>('all');
   const [filterCategory, setFilterCategory] = useState<'all' | 'text' | 'image' | 'video'>('all');
-  const [isEmojiPickerOpen, setIsEmojiPickerOpen] = useState(false);
 
   const [loading, setLoading] = useState(false);
   const [errorMess, setErrorMessRaw] = useState('');
@@ -110,11 +112,6 @@ export const SkillsPage: React.FC<SkillsPageProps> = ({ user, onUserUpdate }) =>
       fileInputRef.current.value = '';
     }
   };
-
-  const EMOJI_OPTIONS = [
-    '🧠', '✍️', '🎬', '📊', '🎨', '🚀', '🔬', '💡', '🔥', '⚙️', 
-    '📝', '📅', '🛒', '🎙️', '🤖', '🎮', '🔋', '🌍', '❤️', '💼'
-  ];
 
   const fetchSkills = async () => {
     const token = localStorage.getItem('token');
@@ -334,7 +331,8 @@ export const SkillsPage: React.FC<SkillsPageProps> = ({ user, onUserUpdate }) =>
     }
   };
 
-  const baseList = customSkills.length > 0 ? customSkills : SYSTEM_SKILLS;
+  const baseList = (customSkills.length > 0 ? customSkills : SYSTEM_SKILLS)
+    .filter(skill => !PLUGIN_ID_SET.has(skill.id));
 
   const mySkillsList = baseList.filter(skill => {
     if (removedSystemSkillIds.includes(skill.id)) {
@@ -351,14 +349,14 @@ export const SkillsPage: React.FC<SkillsPageProps> = ({ user, onUserUpdate }) =>
       return false;
     }
     
-    if (skill.id === 'perspective-sim' || skill.id === 'point-and-shoot') {
-      return false;
-    }
     const q = searchQuery.toLowerCase();
     return skill.name.toLowerCase().includes(q) || skill.desc.toLowerCase().includes(q);
   });
 
   const exploreList = customSkills.filter(s => {
+    if (PLUGIN_ID_SET.has(s.id)) {
+      return false;
+    }
     if (s.isSystem && !removedSystemSkillIds.includes(s.id)) {
       return false;
     }
@@ -946,62 +944,8 @@ export const SkillsPage: React.FC<SkillsPageProps> = ({ user, onUserUpdate }) =>
                     {isEditing ? '修改技能参数 (全员联动机能)' : '构建专属 AI 提示词技能'}
                   </h3>
 
-                  <div className="flex gap-4">
-                    <div className="w-24 shrink-0">
-                      <label className="block text-xs font-bold text-gray-700 mb-2">表情徽标</label>
-                      <div className="relative">
-                        <button
-                          type="button"
-                          onClick={() => setIsEmojiPickerOpen(!isEmojiPickerOpen)}
-                          className={`w-full flex items-center justify-center text-xl h-[46px] bg-gray-50 border rounded-xl cursor-pointer transition-all duration-200 outline-none ${
-                            isEmojiPickerOpen 
-                              ? 'border-indigo-500 ring-2 ring-indigo-500/10 bg-white shadow-xs' 
-                              : 'border-gray-100 hover:border-gray-300 hover:bg-gray-100/50'
-                          }`}
-                        >
-                          {formIcon}
-                        </button>
-
-                        <AnimatePresence>
-                          {isEmojiPickerOpen && (
-                            <>
-                              {/* Backdrop to close the picker */}
-                              <div 
-                                className="fixed inset-0 z-40" 
-                                onClick={() => setIsEmojiPickerOpen(false)} 
-                              />
-                              <motion.div
-                                initial={{ opacity: 0, y: 6, scale: 0.95 }}
-                                animate={{ opacity: 1, y: 0, scale: 1 }}
-                                exit={{ opacity: 0, y: 6, scale: 0.95 }}
-                                transition={{ duration: 0.15, ease: "easeOut" }}
-                                className="absolute left-0 top-full mt-2 w-56 bg-white border border-gray-100 rounded-2xl shadow-xl p-2.5 z-50 grid grid-cols-5 gap-1"
-                              >
-                                {EMOJI_OPTIONS.map(em => (
-                                  <button
-                                    key={em}
-                                    type="button"
-                                    onClick={() => {
-                                      setFormIcon(em);
-                                      setIsEmojiPickerOpen(false);
-                                    }}
-                                    className={`w-9 h-9 flex items-center justify-center text-lg rounded-lg transition-all duration-150 ${
-                                      formIcon === em 
-                                        ? 'bg-indigo-50 border border-indigo-200 scale-105 shadow-2xs font-bold' 
-                                        : 'hover:bg-gray-50 border border-transparent hover:scale-105 active:scale-95'
-                                    }`}
-                                  >
-                                    {em}
-                                  </button>
-                                ))}
-                              </motion.div>
-                            </>
-                          )}
-                        </AnimatePresence>
-                      </div>
-                    </div>
-
-                    <div className="flex-1">
+                  <div>
+                    <div>
                       <label className="block text-xs font-bold text-gray-700 mb-2">技能名称 <span className="text-red-500">*</span></label>
                       <input 
                         type="text"

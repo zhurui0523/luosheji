@@ -1,0 +1,76 @@
+{
+  "id": "user-model-script",
+  "name": "gemini-3.5-flash",
+  "version": "1.0.0",
+  "description": "gemini-3.5-flash user model interface package.",
+  "type": "model",
+  "author": "zhurui",
+  "category": "text",
+  "icon": "MODEL",
+  "permissions": [
+    "call_model",
+    "use_network"
+  ],
+  "sandbox": "server",
+  "runtime": {
+    "kind": "http",
+    "entry": "model.ts",
+    "baseUrl": "https://api.vectorengine.ai/v1beta/models/gemini-3.5-flash:generateContent"
+  },
+  "contributes": {
+    "models": [
+      {
+        "id": "script",
+        "name": "gemini-3.5-flash",
+        "provider": "Google gemini",
+        "protocol": "google",
+        "capabilityKinds": [
+          "text"
+        ],
+        "modelType": "text",
+        "endpoint": "https://api.vectorengine.ai/v1beta/models/gemini-3.5-flash:generateContent",
+        "model": "gemini-3.5-flash",
+        "apiKeyRef": "user:1:api_config:script",
+        "config": {
+          "path": ""
+        },
+        "metadata": {
+          "userConnection": {
+            "id": "script",
+            "name": "gemini-3.5-flash",
+            "displayName": "gemini-3.5-flash",
+            "provider": "Google gemini",
+            "protocol": "google",
+            "endpoint": "https://api.vectorengine.ai/v1beta/models/gemini-3.5-flash:generateContent",
+            "path": "",
+            "model": "gemini-3.5-flash",
+            "apiKeyRef": "user:1:api_config:script",
+            "capabilityKinds": [
+              "text"
+            ],
+            "modelType": "text",
+            "enabled": true,
+            "isCustom": false,
+            "metadata": {
+              "secretStoredIn": "user_preferences.api_config",
+              "sourceConfigKey": "script"
+            }
+          },
+          "source": "user_model_connection",
+          "sourceConfigKey": "script",
+          "secretStoredIn": "user_preferences.api_config"
+        }
+      }
+    ]
+  },
+  "metadata": {
+    "source": "user_model_connection",
+    "sourceConfigKey": "script",
+    "apiKeyStoredSeparately": true,
+    "ownerId": "1",
+    "packageKind": "model",
+    "packagePath": "extensions/models/user-models/1/user-model-script",
+    "physicalPackage": true,
+    "updatedAt": 1784352437387
+  }
+}

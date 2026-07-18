@@ -16,7 +16,6 @@ import {
   Search,
   Quote,
   Share2,
-  ShoppingBag,
   Info,
   Plus,
   ArrowUp,
@@ -70,14 +69,12 @@ import {
   SquarePen,
   Undo,
   CheckSquare,
-  ClipboardPaste,
   ChevronRight,
   Workflow,
   Cpu,
   Wrench,
   ChevronsRight,
   Puzzle,
-  Code,
 } from "lucide-react";
 import { motion, AnimatePresence, Reorder } from "motion/react";
 import { TransformWrapper, TransformComponent } from "react-zoom-pan-pinch";
@@ -93,6 +90,14 @@ import {
   VideoHistoryItem,
   Asset,
 } from "../types";
+import {
+  applyImageGenerationDefaults,
+  applyVideoGenerationDefaults,
+  getModelOptions,
+  resolveApiConfigByModelValue,
+  resolveImageGenerationSettings,
+  resolveVideoGenerationSettings,
+} from "../lib/modelOptions";
 import { ScriptGenerator } from "./ScriptGenerator";
 import {
   SCRIPT_GENRES,
@@ -128,6 +133,7 @@ import { clsx, type ClassValue } from "clsx";
 import { twMerge } from "tailwind-merge";
 import { SYSTEM_SKILLS } from "../skills/definitions";
 import { PLUGINS } from "../plugin";
+import { PluginRegistry } from "../lib/os/registries/PluginRegistry";
 import * as Icons from "lucide-react";
 import { EventBus } from "../lib/os/EventBus";
 
@@ -212,6 +218,529 @@ function findAssetByLabel(assets: any[], searchLabel: string) {
   };
   const target = normalize(searchLabel);
   return assets.find(a => normalize(a.label) === target);
+}
+
+type SavedCanvas = {
+  id: string;
+  name: string;
+  history: HistoryItem[];
+  thumbnailUrl?: string;
+  createdAt: number;
+};
+
+type Canvas = SavedCanvas;
+
+type CanvasSectionId =
+  | "text-planning"
+  | "asset-zone"
+  | "shot-zone"
+  | "media-zone"
+  | "document-zone"
+  | "interactive-zone"
+  | "workflow-zone";
+
+type CanvasSectionDefinition = {
+  id: CanvasSectionId;
+  title: string;
+  emptyHint: string;
+  baseBounds: { x: number; y: number; width: number; height: number };
+  colorClass: string;
+  borderColor: string;
+  tagColor: string;
+  accentClass: string;
+};
+
+const CANVAS_SECTION_DEFINITIONS: CanvasSectionDefinition[] = [
+  {
+    id: "text-planning",
+    title: "文本策划区",
+    emptyHint: "普通文本、剧本、商业简报和营销脚本会归到这里",
+    baseBounds: { x: 120, y: 120, width: 1720, height: 500 },
+    colorClass: "from-amber-500/8 to-yellow-500/2",
+    borderColor: "border-amber-300/55",
+    tagColor: "bg-amber-100 text-amber-800 border-amber-200/80",
+    accentClass: "ring-amber-300/70",
+  },
+  {
+    id: "asset-zone",
+    title: "资产设定区",
+    emptyHint: "角色、场景、道具、DNA 和资产提示词会归到这里",
+    baseBounds: { x: 120, y: 700, width: 820, height: 520 },
+    colorClass: "from-emerald-500/8 to-teal-500/2",
+    borderColor: "border-emerald-300/55",
+    tagColor: "bg-emerald-100 text-emerald-800 border-emerald-200/80",
+    accentClass: "ring-emerald-300/70",
+  },
+  {
+    id: "shot-zone",
+    title: "分镜规划区",
+    emptyHint: "分镜卡片、故事板和镜头拆解会归到这里",
+    baseBounds: { x: 1020, y: 700, width: 820, height: 520 },
+    colorClass: "from-sky-500/8 to-blue-500/2",
+    borderColor: "border-sky-300/55",
+    tagColor: "bg-sky-100 text-sky-800 border-sky-200/80",
+    accentClass: "ring-sky-300/70",
+  },
+  {
+    id: "media-zone",
+    title: "媒体生成区",
+    emptyHint: "图片、视频、音频和媒体占位卡会归到这里",
+    baseBounds: { x: 120, y: 1300, width: 820, height: 560 },
+    colorClass: "from-violet-500/8 to-purple-500/2",
+    borderColor: "border-violet-300/55",
+    tagColor: "bg-violet-100 text-violet-800 border-violet-200/80",
+    accentClass: "ring-violet-300/70",
+  },
+  {
+    id: "document-zone",
+    title: "文档输出区",
+    emptyHint: "PPT、表格、Excel 和可下载文档会归到这里",
+    baseBounds: { x: 1020, y: 1300, width: 820, height: 560 },
+    colorClass: "from-indigo-500/8 to-blue-500/2",
+    borderColor: "border-indigo-300/55",
+    tagColor: "bg-indigo-100 text-indigo-800 border-indigo-200/80",
+    accentClass: "ring-indigo-300/70",
+  },
+  {
+    id: "interactive-zone",
+    title: "交互代码区",
+    emptyHint: "代码、UI、网页和沙箱组件会归到这里",
+    baseBounds: { x: 120, y: 1940, width: 820, height: 520 },
+    colorClass: "from-cyan-500/8 to-teal-500/2",
+    borderColor: "border-cyan-300/55",
+    tagColor: "bg-cyan-100 text-cyan-800 border-cyan-200/80",
+    accentClass: "ring-cyan-300/70",
+  },
+  {
+    id: "workflow-zone",
+    title: "工作流节点区",
+    emptyHint: "专业文本节点、图片节点、视频节点和插件节点会归到这里",
+    baseBounds: { x: 1020, y: 1940, width: 820, height: 520 },
+    colorClass: "from-slate-500/8 to-indigo-500/2",
+    borderColor: "border-slate-400/55",
+    tagColor: "bg-slate-100 text-slate-800 border-slate-200/80",
+    accentClass: "ring-slate-300/70",
+  },
+];
+
+const CANVAS_SECTION_IDS = new Set<CanvasSectionId>(
+  CANVAS_SECTION_DEFINITIONS.map((section) => section.id),
+);
+
+function isCanvasSectionId(value: unknown): value is CanvasSectionId {
+  return typeof value === "string" && CANVAS_SECTION_IDS.has(value as CanvasSectionId);
+}
+
+function getCanvasSectionDefinition(sectionId: CanvasSectionId) {
+  return (
+    CANVAS_SECTION_DEFINITIONS.find((section) => section.id === sectionId) ||
+    CANVAS_SECTION_DEFINITIONS[0]
+  );
+}
+
+function getCanvasTextCardSectionId(
+  kind: "plain" | "script" | "shot" | "asset" | "ppt" | "table" | "brief" | "marketing",
+): CanvasSectionId {
+  if (kind === "asset") return "asset-zone";
+  if (kind === "shot") return "shot-zone";
+  if (kind === "ppt" || kind === "table") return "document-zone";
+  return "text-planning";
+}
+
+function inferCanvasSectionId(item: HistoryItem): CanvasSectionId {
+  const config = item.config || {};
+  if (isCanvasSectionId(config.sectionId)) {
+    return config.sectionId;
+  }
+
+  if (config.isPipelineNode || config.isSkillNode || config.isIntegratedModelNode) {
+    return "workflow-zone";
+  }
+
+  if (item.type === "code" || item.type === "ui") {
+    return "interactive-zone";
+  }
+
+  const documentKind = String(config.documentKind || "").toLowerCase();
+  const skillId = String(config.skillId || "").toLowerCase();
+  const title = String(config.title || config.originalName || item.id || "").toLowerCase();
+  const rawText = String(config.prompt || item.revisedPrompt || item.prompt || "").toLowerCase();
+  const isDocumentOutput =
+    documentKind === "ppt" ||
+    documentKind === "table" ||
+    skillId.includes("office-pitch") ||
+    skillId.includes("office-excel") ||
+    title.includes("ppt") ||
+    title.includes("excel") ||
+    title.includes("表格") ||
+    title.includes(".xlsx") ||
+    title.includes(".xls") ||
+    title.includes(".csv");
+
+  if (isDocumentOutput) {
+    return "document-zone";
+  }
+
+  if (item.type === "gen_script") {
+    const cls = getHistoryItemClassification(item);
+    if (documentKind === "asset" || cls === "text_asset" || skillId.includes("asset")) {
+      return "asset-zone";
+    }
+    if (
+      documentKind === "shot" ||
+      documentKind === "shot_prompt" ||
+      cls === "shot_prompt" ||
+      skillId.includes("shot")
+    ) {
+      return "shot-zone";
+    }
+    return "text-planning";
+  }
+
+  if (item.type === "image") {
+    if (config.isPlaceholder || config.isManualPlaceholder || item.status === "draft_new") {
+      return "media-zone";
+    }
+
+    const cls = getHistoryItemClassification(item);
+    if (cls === "storyboard" || rawText.includes("storyboard") || rawText.includes("分镜")) {
+      return "shot-zone";
+    }
+    if (cls === "character" || cls === "scene" || cls === "prop") {
+      return "asset-zone";
+    }
+    return "media-zone";
+  }
+
+  if (item.type === "video" || item.type === "audio") {
+    return "media-zone";
+  }
+
+  return "text-planning";
+}
+
+function withCanvasSection(item: HistoryItem, sectionId?: CanvasSectionId): HistoryItem {
+  const nextSectionId = sectionId || inferCanvasSectionId(item);
+  return {
+    ...item,
+    config: {
+      ...(item.config || {}),
+      sectionId: nextSectionId,
+    },
+  };
+}
+
+function createCanvasPosition(x: number, y: number) {
+  const px = Math.round(x);
+  const py = Math.round(y);
+  return {
+    x: px,
+    y: py,
+    customX: px,
+    customY: py,
+    mindmap: { x: px, y: py },
+    bento: { x: px, y: py },
+    semi_auto: { x: px, y: py },
+  };
+}
+
+function mergeSyncedCanvasItem(localItem: HistoryItem, syncedPatch: Partial<HistoryItem>): HistoryItem {
+  const mergedConfig = {
+    ...(localItem.config || {}),
+    ...(syncedPatch.config || {}),
+  };
+  const localSectionId = (localItem.config as any)?.sectionId;
+  const patchSectionId = (syncedPatch.config as any)?.sectionId;
+  if (isCanvasSectionId(localSectionId) && !isCanvasSectionId(patchSectionId)) {
+    (mergedConfig as any).sectionId = localSectionId;
+  }
+
+  return {
+    ...localItem,
+    ...syncedPatch,
+    position: syncedPatch.position || localItem.position,
+    parentId: syncedPatch.parentId ?? localItem.parentId,
+    canvasId: syncedPatch.canvasId || localItem.canvasId,
+    hiddenFromCanvas: syncedPatch.hiddenFromCanvas ?? localItem.hiddenFromCanvas,
+    config: mergedConfig,
+  };
+}
+
+function getCloudSyncFingerprint(item: HistoryItem) {
+  return JSON.stringify({
+    id: item.id,
+    type: item.type,
+    status: item.status,
+    imageUrl: item.imageUrl || "",
+    videoUrl: item.videoUrl || "",
+    ossUrl: (item as any).ossUrl || "",
+    arkOriginalUrl: item.arkOriginalUrl || "",
+    revisedPrompt: item.revisedPrompt || "",
+    prompt: (item as any).prompt || "",
+    error: item.error || "",
+    config: item.config || {},
+    position: item.position || null,
+    hiddenFromCanvas: Boolean(item.hiddenFromCanvas),
+    parentId: item.parentId || null,
+    canvasId: item.canvasId || DEFAULT_CANVAS_ID,
+  });
+}
+
+const DEFAULT_CANVAS_ID = "default";
+const DEFAULT_CANVAS_NAME = "默认创作";
+const CANVAS_INDEX_STORAGE_KEY = "aistudio_canvases";
+const ACTIVE_CANVAS_STORAGE_KEY = "aistudio_active_canvas_id";
+const CANVAS_INDEX_PREF_KEY = "aistudio_canvases_v2";
+
+const normalizeCanvasId = (id?: string | null) => id || DEFAULT_CANVAS_ID;
+
+function isCloudCanvasStorageEnabled() {
+  if (typeof localStorage === "undefined") return false;
+  const token = localStorage.getItem("token");
+  return Boolean(token && token !== "guest" && localStorage.getItem("isGuest") !== "true");
+}
+
+const readPreferenceJson = <T,>(value: any, fallback: T): T => {
+  if (value === undefined || value === null || value === "") return fallback;
+  if (typeof value !== "string") return value as T;
+  try {
+    return JSON.parse(value) as T;
+  } catch {
+    return fallback;
+  }
+};
+
+async function loadCloudPreferenceMap() {
+  if (typeof localStorage === "undefined") return new Map<string, any>();
+  const token = localStorage.getItem("token");
+  if (!token || token === "guest") return new Map<string, any>();
+
+  try {
+    const res = await fetch("/api/user/preferences", {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!res.ok) return new Map<string, any>();
+    const data = await safeJson(res);
+    const map = new Map<string, any>();
+    if (Array.isArray(data?.preferences)) {
+      data.preferences.forEach((pref: any) => map.set(pref.pref_key, pref.pref_value));
+    }
+    return map;
+  } catch (err) {
+    console.warn("Failed to load cloud preferences:", err);
+    return new Map<string, any>();
+  }
+}
+
+async function saveCloudPreference(prefKey: string, prefValue: any) {
+  if (typeof localStorage === "undefined") return;
+  const token = localStorage.getItem("token");
+  if (!token || token === "guest") return;
+
+  try {
+    await fetch("/api/user/preferences", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        pref_key: prefKey,
+        pref_value: typeof prefValue === "string" ? prefValue : JSON.stringify(prefValue),
+      }),
+    });
+  } catch (err) {
+    console.warn(`Failed to save cloud preference "${prefKey}":`, err);
+  }
+}
+
+const GENERIC_CANVAS_NAMES = new Set([
+  "",
+  "canvas",
+  "add-canvas",
+  "new-canvas",
+  "untitled-canvas",
+  "添加画布",
+  "新增画布",
+  "新建画布",
+]);
+
+function isGenericCanvasName(name?: string) {
+  return GENERIC_CANVAS_NAMES.has(String(name || "").trim().toLowerCase());
+}
+
+function getCanvasMediaThumbnail(items: HistoryItem[]) {
+  const firstWithMedia = items.find((h) => h.imageUrl || h.videoUrl || h.ossUrl || h.arkOriginalUrl);
+  return firstWithMedia
+    ? (firstWithMedia.imageUrl || firstWithMedia.videoUrl || firstWithMedia.ossUrl || firstWithMedia.arkOriginalUrl)
+    : undefined;
+}
+
+function inferCanvasName(canvasId: string, items: HistoryItem[], existingName?: string) {
+  if (existingName && !isGenericCanvasName(existingName)) return existingName;
+  if (canvasId === DEFAULT_CANVAS_ID) return existingName || DEFAULT_CANVAS_NAME;
+
+  const seed = items.find((item) => {
+    const title = String(item.config?.title || "").trim();
+    const prompt = String(item.revisedPrompt || item.config?.prompt || item.prompt || "").trim();
+    return title || prompt;
+  });
+  const candidate = String(
+    seed?.config?.title ||
+      seed?.revisedPrompt ||
+      seed?.config?.prompt ||
+      seed?.prompt ||
+      ""
+  ).trim();
+
+  if (candidate) return candidate.slice(0, 15);
+  return "画布 " + canvasId.slice(-6);
+}
+
+function getCanvasHistory(items: HistoryItem[], canvasId: string) {
+  const normalizedId = normalizeCanvasId(canvasId);
+  return (items || [])
+    .filter(Boolean)
+    .filter((item) => normalizeCanvasId(item.canvasId) === normalizedId)
+    .filter((item) => !isGenericEmptyCanvasNode(item));
+}
+
+function buildCanvasIndexFromHistory(items: HistoryItem[], previous: Canvas[]) {
+  const previousById = new Map(previous.map((canvas) => [canvas.id, canvas]));
+  const ids = new Set<string>([DEFAULT_CANVAS_ID]);
+
+  previous.forEach((canvas) => ids.add(normalizeCanvasId(canvas.id)));
+  (items || []).forEach((item) => ids.add(normalizeCanvasId(item.canvasId)));
+
+  const orderedIds = [
+    ...previous.map((canvas) => normalizeCanvasId(canvas.id)),
+    ...Array.from(ids).filter((id) => !previousById.has(id)),
+  ].filter((id, index, all) => all.indexOf(id) === index);
+
+  return orderedIds.map((id) => {
+    const existing = previousById.get(id);
+    const canvasHistory = getCanvasHistory(items, id);
+    const createdFromHistory = canvasHistory.reduce((min, item) => {
+      const ts = Number(item.timestamp || 0);
+      return ts > 0 ? Math.min(min, ts) : min;
+    }, Number.POSITIVE_INFINITY);
+
+    return {
+      id,
+      name: inferCanvasName(id, canvasHistory, existing?.name),
+      history: canvasHistory,
+      thumbnailUrl: getCanvasMediaThumbnail(canvasHistory) || existing?.thumbnailUrl,
+      createdAt:
+        existing?.createdAt ||
+        (Number.isFinite(createdFromHistory) ? createdFromHistory : Date.now()),
+    };
+  });
+}
+
+function toLightweightCanvasIndex(canvases: Canvas[]) {
+  return canvases.map((canvas) => ({
+    id: canvas.id,
+    name: canvas.name,
+    thumbnailUrl: canvas.thumbnailUrl,
+    createdAt: canvas.createdAt,
+    history: [],
+  }));
+}
+
+function areCanvasIndexesEqual(a: Canvas[], b: Canvas[]) {
+  const compact = (list: Canvas[]) =>
+    list.map((canvas) => ({
+      id: canvas.id,
+      name: canvas.name,
+      thumbnailUrl: canvas.thumbnailUrl,
+      createdAt: canvas.createdAt,
+      historyIds: (canvas.history || []).map((item) => item.id + ":" + item.status + ":" + (item.imageUrl || item.videoUrl || "")),
+    }));
+  return JSON.stringify(compact(a)) === JSON.stringify(compact(b));
+}
+
+function mergeCanvasMetadata(localCanvases: Canvas[], cloudCanvases: Partial<Canvas>[]) {
+  if (!Array.isArray(cloudCanvases) || cloudCanvases.length === 0) return localCanvases;
+
+  const merged = new Map<string, Canvas>();
+  localCanvases.forEach((canvas) => merged.set(canvas.id, canvas));
+  cloudCanvases.forEach((canvas) => {
+    const id = normalizeCanvasId(canvas.id);
+    const existing = merged.get(id);
+    merged.set(id, {
+      id,
+      name: String(canvas.name || existing?.name || (id === DEFAULT_CANVAS_ID ? DEFAULT_CANVAS_NAME : "画布 " + id.slice(-6))),
+      thumbnailUrl: canvas.thumbnailUrl || existing?.thumbnailUrl,
+      createdAt: Number(canvas.createdAt || existing?.createdAt || Date.now()),
+      history: existing?.history || [],
+    });
+  });
+
+  return Array.from(merged.values());
+}
+
+function isGenericEmptyCanvasNode(item: HistoryItem) {
+  if (!item) return false;
+  const config = item.config || {};
+  const title = String(config.title || "").trim();
+  const normalizedTitle = title.toLowerCase();
+  const hasGenericTitle =
+    !title ||
+    title === "新建节点" ||
+    title === "意图执行节点" ||
+    normalizedTitle === "script gen" ||
+    normalizedTitle === "new node" ||
+    normalizedTitle === "untitled node";
+
+  const hasProfessionalIdentity = Boolean(
+    config.isIntegratedModelNode ||
+    config.isSkillNode ||
+    config.isPipelineNode ||
+    config.isPlaceholder ||
+    config.isUpload ||
+    config.isManualPlaceholder ||
+    config.isManualNode ||
+    String(item.id || "").startsWith("upl_")
+  );
+  if (hasProfessionalIdentity) return false;
+
+  const textContent = String(
+    config.prompt ||
+      item.revisedPrompt ||
+      (item as any).prompt ||
+      (item as any).text ||
+      ""
+  ).trim();
+  const codeContent = String((item as any).code || config.code || "").trim();
+  const hasMedia = Boolean(
+    item.imageUrl ||
+      item.videoUrl ||
+      (item as any).url ||
+      (item as any).ossUrl ||
+      (item as any).arkOriginalUrl
+  );
+  if (textContent || codeContent || hasMedia) return false;
+
+  const isPlainEmptyTextNode =
+    item.type === "gen_script" &&
+    (
+      item.status === "draft_new" ||
+      item.status === "pending" ||
+      item.status === "pipeline_pending" ||
+      item.status === "running" ||
+      item.status === "success" ||
+      hasGenericTitle
+    );
+
+  if (isPlainEmptyTextNode) return true;
+  if (!hasGenericTitle) return false;
+
+  return (
+    item.type === "gen_script" ||
+    item.status === "draft_new" ||
+    item.status === "pending" ||
+    item.status === "pipeline_pending"
+  );
 }
 
 interface SmartImageGeneratorProps {
@@ -358,14 +887,14 @@ const getAspectFromGptSize = (
 const IMAGE_SIZES = [
   { label: "512px", value: "512px" },
   { label: "1K (标准)", value: "1K" },
-  { label: "2K (超清)", value: "2K" },
-  { label: "4K (极清)", value: "4K" },
+  { label: "2K (高清)", value: "2K" },
+  { label: "4K (超清)", value: "4K" },
 ];
 
 const GPT_IMAGE_SIZES = [
   { label: "1K (标准)", value: "1k" },
-  { label: "2K (超清)", value: "2k" },
-  { label: "4K (极清)", value: "4k" },
+  { label: "2K (高清)", value: "2k" },
+  { label: "4K (超清)", value: "4k" },
 ];
 
 const IMAGE_MODELS = [
@@ -378,14 +907,14 @@ const GRID_MODES = [
     label: "标准模式",
     value: "none",
     icon: <ImageIcon className="w-3 h-3" />,
-    desc: "单图及多参模式",
+    desc: "单图及多参考模式",
     placeholder: "请输入你想生成的图片描述...",
   },
   {
-    label: "3D导演台",
+    label: "3D 导演台",
     value: "perspective-sim",
     icon: <Box className="w-3 h-3 text-blue-500" />,
-    desc: "精准控制3D场景与角色位置",
+    desc: "精准控制 3D 场景与角色位置",
     placeholder: "引导 3D 舞台进行深度渲染...",
   },
   {
@@ -394,7 +923,7 @@ const GRID_MODES = [
     icon: <Box className="w-3 h-3" />,
     desc: "生成专业角色设定及转面图",
     prompt:
-      "参考图（图1）是核心角色形象依据。生成该角色的专业转面设定图（Turnaround Character Sheet），必须 100% 还原参考图中的面部特征（五官形状、比例、眼神）、发型、发色及肤色。生成图需包含：该角色的肖像写真、全身的正/侧/背转面三视图、核心服装细节。写实摄影，影棚纯净白背景。",
+      "参考图（图1）是核心角色形象依据。生成该角色的专业转面设定图，需保持面部特征、发型、发色、肤色和服装细节一致，包含正面、侧面、背面等关键视图。",
     placeholder: "请输入角色名称或描述...",
   },
   {
@@ -403,7 +932,7 @@ const GRID_MODES = [
     icon: <Palette className="w-3 h-3" />,
     desc: "生成专业场景布局方案图",
     prompt:
-      "你是一位顶级场景设计师。请在保持与参考图（图1）视觉风格、材质、光影及配色完全一致的前提下，生成该场景的专业布局方案。图片布局严格分为上下各 1/2：上面各展示该场景的四个关键内景角度；下面展示透视布局图。核心要求：电影级写实摄影质感，真实材质表现，严禁生成 CAD 黑白线条稿。",
+      "你是专业场景设计师。请保持参考图的视觉风格、材质、光影和配色一致，生成该场景的布局方案图，包含关键内景角度与透视布局。",
     placeholder: "请输入场景名称或描述...",
   },
   {
@@ -411,16 +940,16 @@ const GRID_MODES = [
     value: "point-and-shoot",
     icon: <Target className="w-3 h-3 text-red-500" />,
     desc: "在场景中标记人物位置",
-    prompt: "图1是角色，请根据图2的构图比例进行构图，角色是图2的红色块位置",
-    placeholder: "请在此输入动作描述（例如：侧面角度看着桌子上的蜡烛）",
+    prompt: "图1是角色，请根据图2的构图比例进行构图，角色位于图2的红色块位置。",
+    placeholder: "请输入动作、位置或构图描述...",
   },
   {
     label: "九宫格分镜",
     value: "grid-storyboard",
     icon: <LayoutDashboard className="w-3 h-3 text-indigo-400" />,
-    desc: "生成 3X3 九宫格分镜",
+    desc: "生成 3x3 九宫格分镜",
     prompt:
-      "基于这张图，改变摄影机角度，生成不同角度的分镜，平视视角，以3X3九宫格。",
+      "基于这张图，改变摄影机角度，生成不同角度的分镜，保持平视视觉，以 3x3 九宫格呈现。",
     placeholder: "请输入场景描述...",
   },
   {
@@ -429,22 +958,22 @@ const GRID_MODES = [
     icon: <ClipboardList className="w-3 h-3 text-red-400" />,
     desc: "自动分析剧情并生成故事分镜大面板",
     prompt:
-      "你是一位专业的分镜设计师。请根据用户输入的剧本/画面描述，自动分析并设计出一个结构完善、排版工整的故事分镜面板图（Storyboard Table）。整个表格必须以一个干净整洁的横向分镜线稿表格形式呈现，背景为纯白色。表格上方需带有精美的中文列标题：“镜头序号”、“景别”、“运镜”、“分镜素描图 (医院/日常场景，人物A用粗重干净的蓝色马克笔线条勾勒，人物B用红色马克笔线条勾勒，场景和多余物件用炭黑或浅灰线勾勒，手绘素描风格)”、“提示词（剧情与分镜提示，使用工整排版的中文小黑体字）”、“时长 (s)”。最关键要求：表格表格内所有镜头的“时长 (s)”之和（累计总时长）必须严格控制在15秒以内（例如分散为2s, 3s, 2s, 3s, 3s等，总和不可超过15s）。线条挺拔利落，构图精美饱满，文字清晰端正，绝无模糊乱码。\n\n剧情内容：",
-    placeholder: "请输入您希望生成故事面板的剧本内容、剧情梗概或台词片段...",
+      "你是专业分镜设计师。请根据用户输入的剧本或画面描述，生成结构完整、排版工整的故事分镜面板。画面应清晰、文字端正、分镜逻辑连贯。",
+    placeholder: "请输入剧本、剧情梗概或台词片段...",
   },
   {
     label: "VR全景世界",
     value: "panorama",
     icon: <Compass className="w-3 h-3 text-orange-500" />,
     desc: "生成专业级 720° 全景 VR 素材",
-    prompt: "360度全景，等距柱状投影，无缝水平漫游，建筑写实摄影。场景：",
+    prompt: "360 度全景，等距柱状投影，无缝水平漫游，建筑写实摄影。场景：",
     placeholder: "描述你想要探索的全景场景...",
   },
 ];
 
 const VIDEO_RESOLUTIONS = [
-  { label: "标清 480P", value: "480p" },
-  { label: "高清 720P", value: "720p" },
+  { label: "标清 480p", value: "480p" },
+  { label: "高清 720p", value: "720p" },
 ];
 
 const VIDEO_ASPECT_RATIOS = [
@@ -487,8 +1016,8 @@ const VIDEO_DURATIONS = [
 
 const VIDEO_MODELS = [
   { label: "RH-SD2.0", value: "seedance2.0" },
-  { label: "RH-SD2.0mini", value: "seedance-mini" },
-  { label: "SD.25即将上线", value: "seedance2.5" },
+  { label: "RH-SD2.0 mini", value: "seedance-mini" },
+  { label: "SD 2.5 即将上线", value: "seedance2.5" },
 ];
 
 const VIDEO_MODES: Record<string, { label: string; value: string }[]> = {
@@ -637,7 +1166,7 @@ const MagneticModeButton = ({
           ? "bg-indigo-600 text-white border-indigo-500 hover:bg-indigo-700"
           : "bg-white text-slate-700 border-slate-200/80 hover:bg-slate-50"
       )}
-      title={isSelectMode ? "当前：多选模式" : "当前：拖拽模式"}
+      title={isSelectMode ? "切换到平移模式" : "切换到选择模式"}
     >
       <div className="relative w-4 h-4">
         <div className={cn(
@@ -688,7 +1217,7 @@ export const SmartImageGenerator: React.FC<SmartImageGeneratorProps> = ({
     length: SCRIPT_LENGTHS[0],
     duration: SCRIPT_DURATIONS[1],
     prompt: "",
-    activeSubTab: "create" as "create" | "analyze" | "video" | "rewrite",
+    activeSubTab: "none" as "none" | "create" | "analyze" | "video" | "rewrite",
     creationType: "new" as "new" | "continue",
     referenceFile: null as {
       name: string;
@@ -729,22 +1258,18 @@ export const SmartImageGenerator: React.FC<SmartImageGeneratorProps> = ({
   const collabQuote = isAiChat ? collabAiQuote : collabTeamQuote;
 
   const resolveModelConfigByValue = React.useCallback((modelValue: string, modelType: "image" | "video") => {
-    if (!config) return null;
-    const keys: (keyof Config)[] = modelType === "image"
-      ? ["image", "gptImage"]
-      : ["video", "videoVeoFast", "videoSeedance", "videoSeedanceMini"];
+    return resolveApiConfigByModelValue(config, modelValue, modelType);
+  }, [config]);
 
-    for (const key of keys) {
-      const section = config[key] as any;
-      if (section && (modelValue === key || modelValue === section.model)) {
-        return section;
-      }
+  const getActiveImageDefaultsModel = React.useCallback((modelValue?: string) => {
+    if (!modelValue || modelValue === "gemini-3.1-flash-image-preview") {
+      return config?.image?.model || "gemini-3.1-flash-image-preview";
     }
+    return modelValue;
+  }, [config]);
 
-    const customInterfaces = config.customInterfaces || {};
-    return (customInterfaces as any)[modelValue]
-      || Object.values(customInterfaces).find((section: any) => section?.model === modelValue && section?.modelType === modelType)
-      || null;
+  const getActiveVideoDefaultsModel = React.useCallback((modelValue?: string) => {
+    return modelValue || config?.videoSeedance?.model || config?.video?.model || "seedance2.0";
   }, [config]);
 
   const setCollabQuote = React.useCallback((val: any | null) => {
@@ -841,31 +1366,23 @@ export const SmartImageGenerator: React.FC<SmartImageGeneratorProps> = ({
 
   const handleSelectTextModel = (modelId: string) => {
     if (config && config.script) {
-      // Find the custom interface if modelId is a custom interface key
-      const customInterface = config.customInterfaces?.[modelId];
-      
-      if (customInterface) {
-        config.script.model = customInterface.model;
-        config.script.endpoint = customInterface.endpoint;
-        config.script.apiKey = customInterface.apiKey || '';
-        config.script.provider = customInterface.provider || 'Third Party';
-        config.script.path = customInterface.path || '';
-        config.script.protocolType = customInterface.protocolType || 'openai';
-        config.script.displayName = customInterface.displayName || customInterface.title || modelId;
+      const selectedApiConfig = resolveApiConfigByModelValue(config, modelId, "text");
+
+      if (selectedApiConfig) {
+        config.script.model = selectedApiConfig.model;
+        config.script.endpoint = selectedApiConfig.endpoint || '';
+        config.script.apiKey = selectedApiConfig.apiKey || '';
+        config.script.provider = selectedApiConfig.provider || 'Third Party';
+        config.script.path = selectedApiConfig.path || '';
+        config.script.protocolType = selectedApiConfig.protocolType || 'openai';
+        config.script.displayName = selectedApiConfig.displayName || (selectedApiConfig as any).title || modelId;
       } else {
         config.script.model = modelId;
         
         // Find the model in customModels
         const customM = customModels.find((m: any) => (m.model || m.id || m.name) === modelId);
         
-        if (modelId === (config?.claudeSonnet?.model || "claude-sonnet-5")) {
-          config.script.endpoint = config?.claudeSonnet?.endpoint || 'https://api.vectorengine.ai';
-          config.script.apiKey = config?.claudeSonnet?.apiKey || '';
-          config.script.provider = config?.claudeSonnet?.provider || 'Third Party';
-          config.script.path = config?.claudeSonnet?.path || '';
-          config.script.protocolType = config?.claudeSonnet?.protocolType || 'openai';
-          config.script.displayName = config?.claudeSonnet?.displayName || 'Claude-sonnet-5';
-        } else if (customM && customM.endpoint) {
+        if (customM && customM.endpoint) {
           config.script.endpoint = customM.endpoint;
           config.script.apiKey = customM.apiKey || '';
           config.script.provider = customM.provider || 'Third Party';
@@ -931,22 +1448,35 @@ export const SmartImageGenerator: React.FC<SmartImageGeneratorProps> = ({
               return item;
             });
           } else if (task.lifecycle === 'RUNNING' || task.lifecycle === 'COMPLETED') {
-            const newNode: any = {
+            const canvasId = localStorage.getItem(ACTIVE_CANVAS_STORAGE_KEY) || DEFAULT_CANVAS_ID;
+            const draftNode: HistoryItem & { url?: string } = {
               id: task.id,
-              type: task.type === 'script' ? 'gen_script' : task.type,
+              type: (task.type === 'script' ? 'gen_script' : task.type) as HistoryItem["type"],
               status: task.lifecycle === 'COMPLETED' ? 'success' : 'running',
               prompt: task.prompt,
               timestamp: task.timestamp || Date.now(),
-              position: {
-                x: (Math.random() - 0.5) * 200,
-                y: (Math.random() - 0.5) * 200,
-              },
+              position: createCanvasPosition(0, 0),
+              canvasId,
               config: {
                 title: task.name,
                 prompt: task.prompt
               }
             };
-            return [newNode, ...prev];
+            const sectionId = inferCanvasSectionId(draftNode);
+            const sectionBounds = getCanvasSectionDefinition(sectionId).baseBounds;
+            const siblingsInSection = prev.filter((item) =>
+              normalizeCanvasId(item.canvasId) === normalizeCanvasId(canvasId) &&
+              inferCanvasSectionId(item) === sectionId
+            );
+            const slot = siblingsInSection.length;
+            const positionedNode = withCanvasSection({
+              ...draftNode,
+              position: createCanvasPosition(
+                sectionBounds.x + 56 + (slot % 2) * 420,
+                sectionBounds.y + 86 + Math.floor(slot / 2) * 520,
+              ),
+            }, sectionId);
+            return [positionedNode, ...prev];
           }
           return prev;
         });
@@ -973,9 +1503,10 @@ export const SmartImageGenerator: React.FC<SmartImageGeneratorProps> = ({
               return item;
             });
           } else {
-            const newNode: any = {
+            const canvasId = localStorage.getItem(ACTIVE_CANVAS_STORAGE_KEY) || DEFAULT_CANVAS_ID;
+            const draftNode: HistoryItem & { url?: string } = {
               id: artifact.id,
-              type: artifact.type,
+              type: artifact.type as HistoryItem["type"],
               status: 'success',
               prompt: artifact.prompt,
               revisedPrompt: artifact.revisedPrompt,
@@ -983,13 +1514,25 @@ export const SmartImageGenerator: React.FC<SmartImageGeneratorProps> = ({
               videoUrl: artifact.videoUrl,
               url: artifact.imageUrl || artifact.videoUrl,
               timestamp: artifact.timestamp || Date.now(),
-              position: {
-                x: (Math.random() - 0.5) * 200,
-                y: (Math.random() - 0.5) * 200,
-              },
+              position: createCanvasPosition(0, 0),
+              canvasId,
               config: artifact.config || {}
             };
-            return [newNode, ...prev];
+            const sectionId = inferCanvasSectionId(draftNode);
+            const sectionBounds = getCanvasSectionDefinition(sectionId).baseBounds;
+            const siblingsInSection = prev.filter((item) =>
+              normalizeCanvasId(item.canvasId) === normalizeCanvasId(canvasId) &&
+              inferCanvasSectionId(item) === sectionId
+            );
+            const slot = siblingsInSection.length;
+            const positionedNode = withCanvasSection({
+              ...draftNode,
+              position: createCanvasPosition(
+                sectionBounds.x + 56 + (slot % 2) * 420,
+                sectionBounds.y + 86 + Math.floor(slot / 2) * 520,
+              ),
+            }, sectionId);
+            return [positionedNode, ...prev];
           }
         });
       }
@@ -1051,29 +1594,24 @@ export const SmartImageGenerator: React.FC<SmartImageGeneratorProps> = ({
   };
 
   // --- Canvas List Management Integration (New Chat & Historical Projects Sidebar) ---
-  interface Canvas {
-    id: string;
-    name: string;
-    history: HistoryItem[];
-    thumbnailUrl?: string;
-    createdAt: number;
-  }
-
-  const [canvases, setCanvases] = useState<Canvas[]>(() => {
+  const [canvases, setCanvases] = useState(() => {
+    const useCloudStorage = isCloudCanvasStorageEnabled();
     try {
-      const saved = localStorage.getItem("aistudio_canvases");
+      const saved = localStorage.getItem(CANVAS_INDEX_STORAGE_KEY);
       if (saved) {
         const parsed = JSON.parse(saved);
         if (Array.isArray(parsed) && parsed.length > 0) {
           return parsed.map((canvas: any) => {
             let historyData = canvas.history || [];
             try {
-              const individualSaved = localStorage.getItem(`aistudio_canvas_history_${canvas.id}`);
+              const individualSaved = useCloudStorage ? null : localStorage.getItem(`aistudio_canvas_history_${canvas.id}`);
               if (individualSaved) {
                 historyData = JSON.parse(individualSaved);
               } else if (historyData && historyData.length > 0) {
                 // Migrate to individual key
-                localStorage.setItem(`aistudio_canvas_history_${canvas.id}`, JSON.stringify(historyData));
+                if (!useCloudStorage) {
+                  localStorage.setItem(`aistudio_canvas_history_${canvas.id}`, JSON.stringify(historyData));
+                }
               }
             } catch (innerErr) {
               console.error(`Failed to parse individual history for canvas ${canvas.id}`, innerErr);
@@ -1091,30 +1629,22 @@ export const SmartImageGenerator: React.FC<SmartImageGeneratorProps> = ({
 
     let initialHistory: HistoryItem[] = [];
     try {
-      const savedDefaultHist = localStorage.getItem("aistudio_canvas_history_default");
+      const savedDefaultHist = useCloudStorage ? null : localStorage.getItem("aistudio_canvas_history_default");
       if (savedDefaultHist) {
         initialHistory = JSON.parse(savedDefaultHist);
       } else {
         initialHistory = history || [];
       }
-      // Filter out unwanted placeholder cards
-      initialHistory = initialHistory.filter(item => {
-        const prompt = item.revisedPrompt || "";
-        if (prompt === "在此处保存您的想法、提示词、分镜剧本或大纲。双击或选择下方下方工具栏中的「查看与修改」进行内容编辑。" || 
-            prompt === "在此处保存您的想法、提示词、分镜剧本或大纲。双击或选择下方工具栏中的「查看与修改」进行内容编辑。") {
-          return false;
-        }
-        if (prompt.includes("连接输入节点") && prompt.includes("进行内容转换")) {
-          return false;
-        }
-        return true;
-      });
-      localStorage.setItem("aistudio_canvas_history_default", JSON.stringify(initialHistory));
+      // Keep saved canvas history stable; remove only empty records.
+      initialHistory = initialHistory.filter(Boolean);
+      if (!useCloudStorage) {
+        localStorage.setItem("aistudio_canvas_history_default", JSON.stringify(initialHistory));
+      }
     } catch (e) {}
 
     return [
       {
-        id: "default",
+        id: DEFAULT_CANVAS_ID,
         name: "默认创作",
         history: initialHistory,
         createdAt: Date.now(),
@@ -1123,9 +1653,14 @@ export const SmartImageGenerator: React.FC<SmartImageGeneratorProps> = ({
   });
 
   const [activeCanvasId, setActiveCanvasId] = useState<string>(() => {
-    const savedId = localStorage.getItem("aistudio_active_canvas_id");
-    return savedId || "default";
+    const savedId = localStorage.getItem(ACTIVE_CANVAS_STORAGE_KEY);
+    return savedId || DEFAULT_CANVAS_ID;
   });
+
+  const hasLoadedCloudCanvasIndexRef = useRef(false);
+  const hasAutoSelectedInitialCanvasRef = useRef(false);
+  const canvasCloudSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastCloudSyncFingerprintRef = useRef<Map<string, string>>(new Map());
 
   const undoStackRef = useRef<HistoryItem[][]>([]);
   const redoStackRef = useRef<HistoryItem[][]>([]);
@@ -1165,7 +1700,7 @@ export const SmartImageGenerator: React.FC<SmartImageGeneratorProps> = ({
           return { ...item, canvasId: activeCanvasId };
         }
         return item;
-      });
+      }).filter((item: HistoryItem) => !isGenericEmptyCanvasNode(item));
 
       const prevSer = JSON.stringify(prev || []);
       const nextSer = JSON.stringify(nextMapped);
@@ -1221,6 +1756,20 @@ export const SmartImageGenerator: React.FC<SmartImageGeneratorProps> = ({
     
     setIsConfirmingClear(false);
     try {
+      if (isCloudCanvasStorageEnabled()) {
+        for (let i = localStorage.length - 1; i >= 0; i--) {
+          const key = localStorage.key(i);
+          if (key && key.startsWith("aistudio_canvas_history_")) {
+            localStorage.removeItem(key);
+          }
+        }
+        localStorage.setItem(CANVAS_INDEX_STORAGE_KEY, JSON.stringify(toLightweightCanvasIndex(canvases)));
+        setError("Local canvas cache cleared; cloud canvas data was not changed");
+        setTimeout(() => setError(null), 3000);
+        updateStorageUsage();
+        return;
+      }
+
       setCanvases((prev) => {
         return prev.map((canvas) => {
           if (canvas.id === activeCanvasId) {
@@ -1255,12 +1804,12 @@ export const SmartImageGenerator: React.FC<SmartImageGeneratorProps> = ({
         }
       }
 
-      setError("本地存储空间优化成功！非活跃历史已完成分片清理。");
+      setError("Canvas cache optimized");
       setTimeout(() => setError(null), 3000);
       updateStorageUsage();
     } catch (err) {
       console.error("Manual optimization failed:", err);
-      setError("优化失败，请稍后重试");
+      setError("Canvas cache optimization failed");
       setTimeout(() => setError(null), 3000);
     }
   };
@@ -1272,89 +1821,68 @@ export const SmartImageGenerator: React.FC<SmartImageGeneratorProps> = ({
   const [editingCanvasId, setEditingCanvasId] = useState<string | null>(null);
   const [editingNameValue, setEditingNameValue] = useState("");
 
-  // Sync canvas with history changes
+  // Rebuild the canvas index from account-level history. This keeps different
+  // browsers aligned even when their local canvas cache starts empty.
   useEffect(() => {
-    if (!activeCanvasId) return;
-
-    const activeHistory = (history || []).filter((h) => (h.canvasId || "default") === (activeCanvasId || "default"));
-
     setCanvases((prev) => {
-      const matched = prev.find((c) => c.id === activeCanvasId);
-      if (!matched) return prev;
-
-      const firstWithMedia = activeHistory.find((h) => h.imageUrl || h.videoUrl);
-      const urlToUse = firstWithMedia ? (firstWithMedia.imageUrl || firstWithMedia.videoUrl) : undefined;
-      
-      let currentName = matched.name;
-       if (
-        (currentName === "新对话" ||
-          currentName === "添加画布" ||
-          currentName === "新建画布" ||
-          currentName === "未命名画布") &&
-        activeHistory.length > 0
-      ) {
-        const item = activeHistory[0] || activeHistory[activeHistory.length - 1];
-        const firstPrompt = item.revisedPrompt || item.config?.prompt;
-        if (firstPrompt && firstPrompt.trim().length > 0) {
-          currentName = firstPrompt.trim().substring(0, 15);
-        }
-      }
-
-      const isHistoryEqual =
-        matched.history.length === activeHistory.length &&
-        matched.history.every(
-          (h, i) =>
-            h.id === activeHistory[i].id &&
-            h.status === activeHistory[i].status &&
-            h.imageUrl === activeHistory[i].imageUrl,
-        );
-
-      if (
-        isHistoryEqual &&
-        matched.name === currentName &&
-        matched.thumbnailUrl === urlToUse
-      ) {
-        return prev;
-      }
-
-      return prev.map((c) => {
-        if (c.id === activeCanvasId) {
-          return {
-            ...c,
-            history: activeHistory,
-            name: currentName,
-            thumbnailUrl: urlToUse || c.thumbnailUrl,
-          };
-        }
-        return c;
-      });
+      const next = buildCanvasIndexFromHistory(history || [], prev);
+      return areCanvasIndexesEqual(prev, next) ? prev : next;
     });
-  }, [history, activeCanvasId]);
+  }, [history]);
 
   // Persist canvas list update to localStorage with advanced compression, error interception & automatic cleanup
   useEffect(() => {
     if (canvases && canvases.length > 0) {
       const saveToLocal = () => {
         try {
-          // 1. Save each canvas history to its individual key
-          canvases.forEach((canvas) => {
-            if (canvas && canvas.id) {
-              localStorage.setItem(`aistudio_canvas_history_${canvas.id}`, JSON.stringify(canvas.history || []));
+          const usesCloudStorage = isCloudCanvasStorageEnabled();
+          const lightweightCanvases = toLightweightCanvasIndex(canvases);
+
+          if (usesCloudStorage) {
+            for (let i = localStorage.length - 1; i >= 0; i--) {
+              const key = localStorage.key(i);
+              if (key && key.startsWith("aistudio_canvas_history_")) {
+                localStorage.removeItem(key);
+              }
             }
-          });
+          } else {
+            canvases.forEach((canvas) => {
+              if (canvas && canvas.id) {
+                localStorage.setItem(`aistudio_canvas_history_${canvas.id}`, JSON.stringify(canvas.history || []));
+              }
+            });
+          }
 
-          // 2. Clear out full histories from the index document so it remains extremely lightweight
-          const lightweightCanvases = canvases.map((c) => ({
-            id: c.id,
-            name: c.name,
-            thumbnailUrl: c.thumbnailUrl,
-            createdAt: c.createdAt,
-            history: [], // Keep index light!
-          }));
+          localStorage.setItem(CANVAS_INDEX_STORAGE_KEY, JSON.stringify(lightweightCanvases));
 
-          localStorage.setItem("aistudio_canvases", JSON.stringify(lightweightCanvases));
+          const token = localStorage.getItem("token");
+          if (usesCloudStorage && token && hasLoadedCloudCanvasIndexRef.current) {
+            if (canvasCloudSaveTimerRef.current) {
+              clearTimeout(canvasCloudSaveTimerRef.current);
+            }
+            canvasCloudSaveTimerRef.current = setTimeout(() => {
+              fetch("/api/user/preferences", {
+                method: "POST",
+                headers: {
+                  "Content-Type": "application/json",
+                  Authorization: `Bearer ${token}`,
+                },
+                body: JSON.stringify({
+                  pref_key: CANVAS_INDEX_PREF_KEY,
+                  pref_value: JSON.stringify(lightweightCanvases),
+                }),
+              }).catch((err) => {
+                console.warn("Failed to sync canvas index to cloud:", err);
+              });
+            }, 800);
+          }
         } catch (err: any) {
           console.error("Storage write failed. Attempting auto GC optimization...", err);
+          if (isCloudCanvasStorageEnabled()) {
+            setError("Canvas cloud cache index save failed; cloud data is still authoritative");
+            setTimeout(() => setError(null), 4000);
+            return;
+          }
           
           if (err.name === "QuotaExceededError" || err.message?.includes("exceeded the quota") || err.code === 22) {
             // Trigger automatic space cleanup (Garbage Collector)
@@ -1388,9 +1916,9 @@ export const SmartImageGenerator: React.FC<SmartImageGeneratorProps> = ({
                       createdAt: c.createdAt,
                       history: [],
                     }));
-                    localStorage.setItem("aistudio_canvases", JSON.stringify(lightweight));
+                    localStorage.setItem(CANVAS_INDEX_STORAGE_KEY, JSON.stringify(lightweight));
                     console.log(`[Storage GC] Successfully saved after deleting ${deletedCount} old canvases.`);
-                    setError("项目存储优化成功，当前项目已经安全保存！");
+                    setError("Storage cleanup completed");
                     setTimeout(() => setError(null), 3000);
                     return; // GC Success
                   } catch (subErr) {
@@ -1402,7 +1930,7 @@ export const SmartImageGenerator: React.FC<SmartImageGeneratorProps> = ({
               // Extreme backup fallback: Session Storage
               try {
                 sessionStorage.setItem("aistudio_canvases_emergency", JSON.stringify(canvases));
-                setError("本地配额极度不足！画布已安全暂存至当前会话中。建议登录以持久化保存到云端。");
+                setError("Storage is full; emergency session backup was used");
                 setTimeout(() => setError(null), 8000);
               } catch (sessErr) {
                 console.error("Emergency sessionStorage fallback failed", sessErr);
@@ -1418,6 +1946,61 @@ export const SmartImageGenerator: React.FC<SmartImageGeneratorProps> = ({
       saveToLocal();
     }
   }, [canvases, activeCanvasId]);
+
+  useEffect(() => {
+    return () => {
+      if (canvasCloudSaveTimerRef.current) {
+        clearTimeout(canvasCloudSaveTimerRef.current);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    hasLoadedCloudCanvasIndexRef.current = false;
+
+    const token = localStorage.getItem("token");
+    if (!token || !user) {
+      hasLoadedCloudCanvasIndexRef.current = true;
+      return;
+    }
+
+    fetch("/api/user/preferences", {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    })
+      .then((res) => (res.ok ? safeJson(res) : null))
+      .then((data) => {
+        if (cancelled || !data?.success || !Array.isArray(data.preferences)) return;
+        const canvasPref = data.preferences.find((pref: any) => pref.pref_key === CANVAS_INDEX_PREF_KEY);
+        if (!canvasPref?.pref_value) return;
+
+        try {
+          const parsed = JSON.parse(canvasPref.pref_value);
+          if (!Array.isArray(parsed)) return;
+          setCanvases((prev) => {
+            const merged = mergeCanvasMetadata(prev, parsed);
+            const rebuilt = buildCanvasIndexFromHistory(history || [], merged);
+            return areCanvasIndexesEqual(prev, rebuilt) ? prev : rebuilt;
+          });
+        } catch (err) {
+          console.warn("Failed to parse cloud canvas index:", err);
+        }
+      })
+      .catch((err) => {
+        console.warn("Failed to load cloud canvas index:", err);
+      })
+      .finally(() => {
+        if (!cancelled) {
+          hasLoadedCloudCanvasIndexRef.current = true;
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [user?.id]);
 
   // Sync sidebar open state to localStorage
   useEffect(() => {
@@ -1443,6 +2026,13 @@ export const SmartImageGenerator: React.FC<SmartImageGeneratorProps> = ({
     const handleSwitchToCanvas = (e: Event) => {
       const customEvent = e as CustomEvent;
       if (customEvent.detail && customEvent.detail.canvasId) {
+        if (Array.isArray(customEvent.detail.history) && customEvent.detail.history.length > 0) {
+          setHistory((prev) => {
+            const existingIds = new Set((prev || []).map((item) => item.id));
+            const incoming = customEvent.detail.history.filter((item: HistoryItem) => item && !existingIds.has(item.id));
+            return incoming.length > 0 ? [...incoming, ...prev] : prev;
+          });
+        }
         handleSelectCanvas(customEvent.detail.canvasId);
       }
     };
@@ -1454,16 +2044,34 @@ export const SmartImageGenerator: React.FC<SmartImageGeneratorProps> = ({
     const targetCanvas = canvases.find((c) => c.id === canvasId);
     if (!targetCanvas) return;
     setActiveCanvasId(canvasId);
-    localStorage.setItem("aistudio_active_canvas_id", canvasId);
-    
-    const cleanedHistory = (targetCanvas.history || [])
-      .filter((item) => !item.canvasId || item.canvasId === canvasId)
-      .map((item) => ({
-        ...item,
-        canvasId: item.canvasId || canvasId
-      }));
-    rawSetHistory(cleanedHistory);
+    localStorage.setItem(ACTIVE_CANVAS_STORAGE_KEY, canvasId);
+    setSelectedHistoryId(null);
+    setSelectedIds([]);
   };
+
+  useEffect(() => {
+    if (hasAutoSelectedInitialCanvasRef.current || canvases.length === 0) return;
+
+    const savedActiveCanvasId = localStorage.getItem(ACTIVE_CANVAS_STORAGE_KEY);
+    const activeExists = canvases.some((canvas) => canvas.id === activeCanvasId);
+    if (savedActiveCanvasId && activeExists) {
+      hasAutoSelectedInitialCanvasRef.current = true;
+      return;
+    }
+
+    const firstCanvasWithAssets =
+      canvases.find((canvas) => canvas.id !== DEFAULT_CANVAS_ID && (canvas.history || []).length > 0) ||
+      canvases.find((canvas) => (canvas.history || []).length > 0);
+
+    if (!firstCanvasWithAssets) return;
+
+    if (firstCanvasWithAssets && firstCanvasWithAssets.id !== activeCanvasId) {
+      setActiveCanvasId(firstCanvasWithAssets.id);
+      localStorage.setItem(ACTIVE_CANVAS_STORAGE_KEY, firstCanvasWithAssets.id);
+    }
+
+    hasAutoSelectedInitialCanvasRef.current = true;
+  }, [canvases, activeCanvasId]);
 
   const handleCreateNewCanvas = () => {
     const newCanvasId = "canvas_" + Date.now();
@@ -1476,8 +2084,9 @@ export const SmartImageGenerator: React.FC<SmartImageGeneratorProps> = ({
 
     setCanvases((prev) => [newCanvas, ...prev]);
     setActiveCanvasId(newCanvasId);
-    localStorage.setItem("aistudio_active_canvas_id", newCanvasId);
-    rawSetHistory([]);
+    localStorage.setItem(ACTIVE_CANVAS_STORAGE_KEY, newCanvasId);
+    setSelectedHistoryId(null);
+    setSelectedIds([]);
 
     setTimeout(() => {
       const textarea = document.querySelector("textarea");
@@ -1504,6 +2113,17 @@ export const SmartImageGenerator: React.FC<SmartImageGeneratorProps> = ({
 
   const handleDeleteCanvas = (canvasId: string, e: React.MouseEvent) => {
     e.stopPropagation();
+    const targetCanvas = canvases.find((canvas) => canvas.id === canvasId);
+    if (targetCanvas) {
+      setCanvasToDelete(targetCanvas);
+    }
+  };
+
+  const confirmDeleteCanvas = () => {
+    if (!canvasToDelete) return;
+    const canvasId = canvasToDelete.id;
+    setCanvasToDelete(null);
+    setEditingCanvasId((current) => (current === canvasId ? null : current));
 
     // Clean up corresponding individual key from localStorage to release quota
     try {
@@ -1512,12 +2132,35 @@ export const SmartImageGenerator: React.FC<SmartImageGeneratorProps> = ({
       console.warn("Failed to delete canvas history from storage:", err);
     }
 
+    const idsToDelete = history
+      .filter((item) => normalizeCanvasId(item.canvasId) === normalizeCanvasId(canvasId))
+      .map((item) => item.id);
+
+    if (idsToDelete.length > 0) {
+      setHistory((prev) => prev.filter((item) => !idsToDelete.includes(item.id)));
+      const token = localStorage.getItem("token");
+      if (token) {
+        Promise.all(
+          idsToDelete.map((id) =>
+            fetch(`/api/user/history/${id}`, {
+              method: "DELETE",
+              headers: {
+                Authorization: `Bearer ${token}`,
+              },
+            })
+          )
+        ).catch((deleteErr) => {
+          console.error("Failed to delete canvas history from server:", deleteErr);
+        });
+      }
+    }
+
     setCanvases((prev) => {
       const filtered = prev.filter((c) => c.id !== canvasId);
 
       if (canvasId === activeCanvasId) {
         const nextActive = filtered[0] || {
-          id: "default",
+          id: DEFAULT_CANVAS_ID,
           name: "默认创作",
           history: [],
           createdAt: Date.now(),
@@ -1526,13 +2169,9 @@ export const SmartImageGenerator: React.FC<SmartImageGeneratorProps> = ({
         const finalCanvases = filtered.length > 0 ? filtered : [nextActive];
 
         setActiveCanvasId(nextActive.id);
-        localStorage.setItem("aistudio_active_canvas_id", nextActive.id);
-        
-        const cleanedHistory = (nextActive.history || []).map(item => ({
-          ...item,
-          canvasId: item.canvasId || nextActive.id
-        }));
-        rawSetHistory(cleanedHistory);
+        localStorage.setItem(ACTIVE_CANVAS_STORAGE_KEY, nextActive.id);
+        setSelectedHistoryId(null);
+        setSelectedIds([]);
 
         return finalCanvases;
       }
@@ -1541,36 +2180,23 @@ export const SmartImageGenerator: React.FC<SmartImageGeneratorProps> = ({
     });
   };
 
-  const handleShareCanvasToWorkflow = async (canvas: Canvas, e: React.MouseEvent) => {
+  const handleShareCanvasToWorkflow = async (canvas: SavedCanvas, e: React.MouseEvent) => {
     e.stopPropagation();
     
     const token = localStorage.getItem('token');
     if (!token) {
-      setError("请先登录系统后再进行分享。");
+      setError("Please log in before sharing canvas");
       setIsCriticalError(false);
       return;
     }
 
     // Extract skills in the canvas history
-    let canvasHistory = canvas.history || [];
-    // If the canvas is the active canvas, use the current in-memory history
-    if (canvas.id === activeCanvasId) {
-      canvasHistory = history;
-    } else {
-      try {
-        const individualSaved = localStorage.getItem(`aistudio_canvas_history_${canvas.id}`);
-        if (individualSaved) {
-          canvasHistory = JSON.parse(individualSaved);
-        }
-      } catch (innerErr) {
-        console.error(`Failed to parse history for canvas ${canvas.id} on share`, innerErr);
-      }
-    }
+    const canvasHistory = getCanvasHistory(history, canvas.id);
 
     // Create shared canvas payload
     const payload = {
       id: canvas.id === 'default' ? `default_${Date.now()}` : canvas.id,
-      name: canvas.name === "默认创作" ? "添加画布" : canvas.name,
+      name: canvas.name === "default" ? "New Canvas" : canvas.name,
       history: canvasHistory
     };
 
@@ -1585,15 +2211,15 @@ export const SmartImageGenerator: React.FC<SmartImageGeneratorProps> = ({
       });
 
       if (res.ok) {
-        setError(`成功分享画布【${canvas.name}】至「WORKFLOW」工作流！所有用户均可使用。`);
+        setError(`Canvas ${canvas.name} has been shared to WORKFLOW`);
         setIsCriticalError(false);
       } else {
         const errData = await res.json();
-        setError(errData.error || "分享失败");
+        setError(errData.error || "Share failed");
         setIsCriticalError(true);
       }
     } catch (err: any) {
-      setError("网络错误，分享失败: " + err.message);
+      setError("Network error: " + err.message);
       setIsCriticalError(true);
     }
   };
@@ -1875,6 +2501,7 @@ export const SmartImageGenerator: React.FC<SmartImageGeneratorProps> = ({
 
   const savePinnedToStorage = (key: string, val: string[]) => {
     localStorage.setItem(key, JSON.stringify(val));
+    void saveCloudPreference(key, val);
   };
   const [showGridMenu, setShowGridMenu] = useState(false);
   const [showCreativeSubmenu, setShowCreativeSubmenu] = useState(false);
@@ -1939,6 +2566,7 @@ export const SmartImageGenerator: React.FC<SmartImageGeneratorProps> = ({
   const [remixParentId, setRemixParentId] = useState<string | null>(null);
   const [showClearConfirm, setShowClearConfirm] = useState(false);
   const [itemToRemove, setItemToRemove] = useState<string | null>(null);
+  const [canvasToDelete, setCanvasToDelete] = useState<Canvas | null>(null);
   const [stagePosition, setStagePosition] = useState({ x: 0, y: 0, scale: 1 });
   const [transformState, setTransformState] = useState({
     x: 0,
@@ -1971,6 +2599,7 @@ export const SmartImageGenerator: React.FC<SmartImageGeneratorProps> = ({
   const arrowDragStartBtnPosRef = useRef<{ x: number; y: number } | null>(null);
   const arrowHasMovedRef = useRef<boolean>(false);
   const isArrowDragJustEndedRef = useRef<boolean>(false);
+  const purgedGenericNodeIdsRef = useRef<Set<string>>(new Set());
 
   const [isDraggingBatchPanel, setIsDraggingBatchPanel] = useState(false);
   const batchDragStartRef = useRef<{
@@ -1991,6 +2620,47 @@ export const SmartImageGenerator: React.FC<SmartImageGeneratorProps> = ({
       setLastMouseUpCanvasPos(null);
     }
   }, [selectedIds]);
+
+  useEffect(() => {
+    const genericNodeIds = (history || [])
+      .filter((item) => isGenericEmptyCanvasNode(item))
+      .map((item) => item.id)
+      .filter(Boolean);
+
+    if (genericNodeIds.length === 0) return;
+
+    const genericNodeIdSet = new Set(genericNodeIds);
+    rawSetHistory((prev) =>
+      (prev || []).filter((item) => !genericNodeIdSet.has(item.id))
+    );
+    setSelectedHistoryId((prev) =>
+      prev && genericNodeIdSet.has(prev) ? null : prev
+    );
+    setSelectedIds((prev) => prev.filter((id) => !genericNodeIdSet.has(id)));
+
+    const idsToDelete = genericNodeIds.filter((id) => {
+      if (purgedGenericNodeIdsRef.current.has(id)) return false;
+      purgedGenericNodeIdsRef.current.add(id);
+      return true;
+    });
+    if (idsToDelete.length === 0) return;
+
+    const token = localStorage.getItem("token");
+    if (!token) return;
+
+    Promise.all(
+      idsToDelete.map((id) =>
+        fetch(`/api/user/history/${id}`, {
+          method: "DELETE",
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        })
+      )
+    ).catch((err) => {
+      console.error("Failed to purge generic empty canvas nodes:", err);
+    });
+  }, [history, rawSetHistory]);
 
 
 
@@ -2041,10 +2711,7 @@ export const SmartImageGenerator: React.FC<SmartImageGeneratorProps> = ({
         }
         if (p.type === "gen_script" || p.config?.isSkillNode || p.config?.isIntegratedModelNode) {
           let textVal = (p.revisedPrompt || p.config?.prompt || "").trim();
-          textVal = textVal
-            .replace(/根据指定的相机机型[\s\S]+?极具故事渲染力。/g, "")
-            .replace(/【技能指令 - 相机调整】：[\s\S]+?极具故事渲染力。/g, "")
-            .trim();
+          textVal = textVal.trim();
           if (textVal && !parentPrompts.includes(textVal)) {
             parentPrompts.push(textVal);
           }
@@ -2052,10 +2719,7 @@ export const SmartImageGenerator: React.FC<SmartImageGeneratorProps> = ({
       });
 
       let basePrompt = draftItem.config?.prompt || draftItem.revisedPrompt || "";
-      basePrompt = basePrompt
-        .replace(/根据指定的相机机型[\s\S]+?极具故事渲染力。/g, "")
-        .replace(/【技能指令 - 相机调整】：[\s\S]+?极具故事渲染力。/g, "")
-        .trim();
+      basePrompt = basePrompt.trim();
       let mergedPrompt = basePrompt;
       const normalizeText = (t: string) => t.replace(/\s+/g, " ").trim();
       parentPrompts.forEach((parentPrompt) => {
@@ -2063,7 +2727,7 @@ export const SmartImageGenerator: React.FC<SmartImageGeneratorProps> = ({
         const normalizedParent = normalizeText(parentPrompt);
         if (!normalizedMerged.includes(normalizedParent)) {
           if (mergedPrompt.trim()) {
-            if (!/[.,\/#!$%\^&\*;:{}=\-_`~()。，、？！；：“”‘’]/g.test(mergedPrompt.trim().slice(-1))) {
+            if (!/[.,\/#!$%\^&\*;:{}=\-_`~()]$/.test(mergedPrompt.trim().slice(-1))) {
               mergedPrompt = `${mergedPrompt}. ${parentPrompt}`;
             } else {
               mergedPrompt = `${mergedPrompt} ${parentPrompt}`;
@@ -2074,11 +2738,17 @@ export const SmartImageGenerator: React.FC<SmartImageGeneratorProps> = ({
         }
       });
 
+      const draftModel = getActiveImageDefaultsModel(draftItem.config?.model || imageConfig.model);
+      const imageDefaults = resolveImageGenerationSettings(config, draftModel);
+
       setImageConfig((prev) => ({
         ...prev,
+        model: draftItem.config?.model || draftModel,
         prompt: mergedPrompt,
-        aspectRatio: draftItem.config?.aspectRatio || "1:1",
-        imageSize: draftItem.config?.imageSize || "1K",
+        aspectRatio: draftItem.config?.aspectRatio || imageDefaults.aspectRatio,
+        imageSize: draftItem.config?.imageSize || imageDefaults.imageSize,
+        bananaAspectRatio: draftItem.config?.bananaAspectRatio || draftItem.config?.aspectRatio || imageDefaults.aspectRatio,
+        bananaImageSize: draftItem.config?.bananaImageSize || draftItem.config?.imageSize || imageDefaults.imageSize,
         gridMode: draftItem.config?.gridMode || "none",
         referenceImages: nextRefs,
       }));
@@ -2126,7 +2796,7 @@ export const SmartImageGenerator: React.FC<SmartImageGeneratorProps> = ({
         const normalizedParent = normalizeText(parentPrompt);
         if (!normalizedMerged.includes(normalizedParent)) {
           if (mergedPrompt.trim()) {
-            if (!/[.,\/#!$%\^&\*;:{}=\-_`~()。，、？！；：“”‘’]/g.test(mergedPrompt.trim().slice(-1))) {
+            if (!/[.,\/#!$%\^&\*;:{}=\-_`~()]$/.test(mergedPrompt.trim().slice(-1))) {
               mergedPrompt = `${mergedPrompt}. ${parentPrompt}`;
             } else {
               mergedPrompt = `${mergedPrompt} ${parentPrompt}`;
@@ -2137,12 +2807,17 @@ export const SmartImageGenerator: React.FC<SmartImageGeneratorProps> = ({
         }
       });
 
+      const draftModel = getActiveVideoDefaultsModel(draftItem.config?.model || videoConfig.model);
+      const videoDefaults = resolveVideoGenerationSettings(config, draftModel);
+
       setVideoConfig((prev) => ({
         ...prev,
         prompt: mergedPrompt,
-        aspectRatio: draftItem.config?.aspectRatio || "16:9",
-        duration: draftItem.config?.duration || "5",
-        model: draftItem.config?.model || "seedance2.0",
+        resolution: draftItem.config?.resolution || videoDefaults.resolution,
+        aspectRatio: draftItem.config?.aspectRatio || videoDefaults.aspectRatio,
+        duration: draftItem.config?.duration || videoDefaults.duration,
+        model: draftItem.config?.model || draftModel,
+        videoMode: draftItem.config?.videoMode || videoDefaults.videoMode,
         referenceAssets: nextAssets,
       }));
     } else if (draftItem.type === "gen_script") {
@@ -2150,12 +2825,12 @@ export const SmartImageGenerator: React.FC<SmartImageGeneratorProps> = ({
         ...prev,
         prompt: draftItem.config?.prompt || draftItem.revisedPrompt || "",
         creationType: draftItem.config?.creationType || "new",
-        genre: draftItem.config?.genre || { id: "general", name: "综合" },
-        length: draftItem.config?.length || { id: "short", label: "短视频" },
-        duration: draftItem.config?.duration || { id: "1m", label: "1分钟" },
+        genre: draftItem.config?.genre || { id: "general", name: "General" },
+        length: draftItem.config?.length || { id: "short", label: "Short" },
+        duration: draftItem.config?.duration || { id: "1m", label: "1m" },
       }));
     }
-  }, [selectedHistoryId, selectedIds, history, mode, setMode, setImageConfig, setVideoConfig, setScriptConfig]);
+  }, [selectedHistoryId, selectedIds, history, mode, setMode, setImageConfig, setVideoConfig, setScriptConfig, imageConfig.model, videoConfig.model, config, getActiveImageDefaultsModel, getActiveVideoDefaultsModel]);
 
   // Synchronize active config changes back to the selected draft item in history
   useEffect(() => {
@@ -2175,15 +2850,21 @@ export const SmartImageGenerator: React.FC<SmartImageGeneratorProps> = ({
 
     if (draftItem.type === "image") {
       const currentPrompt = imageConfig.prompt || "";
+      const currentModel = getActiveImageDefaultsModel(imageConfig.model);
       const currentAspectRatio = imageConfig.aspectRatio || "1:1";
       const currentImageSize = imageConfig.imageSize || "1K";
+      const currentBananaAspectRatio = imageConfig.bananaAspectRatio || currentAspectRatio;
+      const currentBananaImageSize = imageConfig.bananaImageSize || currentImageSize;
       const currentGridMode = imageConfig.gridMode || "none";
       const currentRefs = imageConfig.referenceImages || [];
 
       const configChanged = 
         draftItem.config?.prompt !== currentPrompt ||
+        draftItem.config?.model !== currentModel ||
         draftItem.config?.aspectRatio !== currentAspectRatio ||
         draftItem.config?.imageSize !== currentImageSize ||
+        draftItem.config?.bananaAspectRatio !== currentBananaAspectRatio ||
+        draftItem.config?.bananaImageSize !== currentBananaImageSize ||
         draftItem.config?.gridMode !== currentGridMode ||
         JSON.stringify(draftItem.config?.referenceImages || []) !== JSON.stringify(currentRefs);
 
@@ -2196,8 +2877,11 @@ export const SmartImageGenerator: React.FC<SmartImageGeneratorProps> = ({
                   config: {
                     ...(h.config || {}),
                     prompt: currentPrompt,
+                    model: currentModel,
                     aspectRatio: currentAspectRatio,
                     imageSize: currentImageSize,
+                    bananaAspectRatio: currentBananaAspectRatio,
+                    bananaImageSize: currentBananaImageSize,
                     gridMode: currentGridMode,
                     referenceImages: currentRefs,
                   },
@@ -2209,15 +2893,19 @@ export const SmartImageGenerator: React.FC<SmartImageGeneratorProps> = ({
     } else if (draftItem.type === "video") {
       const currentPrompt = videoConfig.prompt || "";
       const currentAspectRatio = videoConfig.aspectRatio || "16:9";
+      const currentResolution = videoConfig.resolution || "720p";
       const currentDuration = videoConfig.duration || "5";
-      const currentModel = videoConfig.model || "seedance2.0";
+      const currentModel = getActiveVideoDefaultsModel(videoConfig.model);
+      const currentVideoMode = videoConfig.videoMode || "all-around";
       const currentRefs = videoConfig.referenceAssets || [];
 
       const configChanged = 
         draftItem.config?.prompt !== currentPrompt ||
         draftItem.config?.aspectRatio !== currentAspectRatio ||
+        draftItem.config?.resolution !== currentResolution ||
         draftItem.config?.duration !== currentDuration ||
         draftItem.config?.model !== currentModel ||
+        draftItem.config?.videoMode !== currentVideoMode ||
         JSON.stringify(draftItem.config?.referenceAssets || []) !== JSON.stringify(currentRefs);
 
       if (configChanged) {
@@ -2230,8 +2918,10 @@ export const SmartImageGenerator: React.FC<SmartImageGeneratorProps> = ({
                     ...(h.config || {}),
                     prompt: currentPrompt,
                     aspectRatio: currentAspectRatio,
+                    resolution: currentResolution,
                     duration: currentDuration,
                     model: currentModel,
+                    videoMode: currentVideoMode,
                     referenceAssets: currentRefs,
                   },
                 }
@@ -2240,7 +2930,7 @@ export const SmartImageGenerator: React.FC<SmartImageGeneratorProps> = ({
         );
       }
     }
-  }, [imageConfig, videoConfig, selectedHistoryId, selectedIds, history, setHistory]);
+  }, [imageConfig, videoConfig, selectedHistoryId, selectedIds, history, setHistory, getActiveImageDefaultsModel, getActiveVideoDefaultsModel]);
 
   const handlePanelDragStart = (e: React.PointerEvent) => {
     e.stopPropagation();
@@ -2331,9 +3021,9 @@ export const SmartImageGenerator: React.FC<SmartImageGeneratorProps> = ({
     let finalTargetX = canvasX;
     let finalTargetY = canvasY;
 
-    const activeCanvasId = localStorage.getItem("aistudio_active_canvas_id") || "default";
+    const activeCanvasId = localStorage.getItem(ACTIVE_CANVAS_STORAGE_KEY) || DEFAULT_CANVAS_ID;
     const dockableItems = (history || []).filter(
-      (h) => ((h.canvasId || "default") === (activeCanvasId || "default")) && h.position
+      (h) => normalizeCanvasId(h.canvasId) === normalizeCanvasId(activeCanvasId) && h.position
     );
 
     const matchThreshold = 80; // 80px snap radius
@@ -2386,7 +3076,7 @@ export const SmartImageGenerator: React.FC<SmartImageGeneratorProps> = ({
         const selectedItems = history.filter((h) => selectedIds.includes(h.id));
 
         if (selectedItems.length === 0) {
-          setError("请框选或点击选择想要连接添加的起始卡片节点。");
+          setError("Please select at least one asset before linking");
           setIsCriticalError(true);
           return;
         }
@@ -2463,7 +3153,7 @@ export const SmartImageGenerator: React.FC<SmartImageGeneratorProps> = ({
                 thumbnailUrl: isVideo ? p.imageUrl : undefined,
                 mimeType: isVideo ? "video/mp4" : isAudio ? "audio/mpeg" : "image/png",
                 type: isVideo ? "video" : isAudio ? "audio" : "image",
-                name: isAudio ? (p.config?.originalName || p.config?.title || "音频素材") : (p.config?.title || p.config?.originalName || "素材"),
+                name: isAudio ? (p.config?.originalName || p.config?.title || "Audio Asset") : (p.config?.title || p.config?.originalName || "Media Asset"),
               });
             }
           });
@@ -2472,9 +3162,9 @@ export const SmartImageGenerator: React.FC<SmartImageGeneratorProps> = ({
             referenceAssets: nextAssets,
           }));
           if (mode !== "video") setMode("video");
-          setError(`已成功将 ${selectedItems.length} 个上游参考项连接加入到该视频占位卡片！请在底部主框中直接键入描述语生成。`);
+          setError("Linked " + selectedItems.length + " asset(s) to the video reference panel");
         } else if (targetPlaceholderDesc.config?.isSkillNode) {
-          setError(`已成功将 ${selectedItems.length} 个上游节点连接至 AI 工作流功能节点！`);
+          setError("Linked " + selectedItems.length + " asset(s) to the AI plugin card");
         }
 
         setIsCriticalError(false);
@@ -2484,26 +3174,12 @@ export const SmartImageGenerator: React.FC<SmartImageGeneratorProps> = ({
       }
     }
 
-    // Default drag-to-empty behavior:
     setArrowDroppedPos(null);
     if (arrowHasMovedRef.current) {
-      const canvasEl = document.getElementById("infinite-canvas-grid");
-      let cx = e.clientX;
-      let cy = e.clientY;
-      if (canvasEl) {
-        const rect = canvasEl.getBoundingClientRect();
-        cx = (e.clientX - rect.left) / transformState.scale;
-        cy = (e.clientY - rect.top) / transformState.scale;
-      }
       isArrowDragJustEndedRef.current = true;
-      setContextMenu({
-        visible: true,
-        x: e.clientX,
-        y: e.clientY,
-        canvasX: cx,
-        canvasY: cy,
-        arrowDragSourceIds: [...selectedIds],
-      });
+      setContextMenu(null);
+      setError("请将连线拖到已有专业节点上，或右键添加 AI 插件卡片。");
+      setIsCriticalError(false);
       setTimeout(() => {
         isArrowDragJustEndedRef.current = false;
       }, 300);
@@ -2570,10 +3246,6 @@ export const SmartImageGenerator: React.FC<SmartImageGeneratorProps> = ({
           return JSON.parse(saved);
         } catch (e) {}
       }
-      const oldActive = localStorage.getItem("selected_ai_skill");
-      if (oldActive && oldActive !== "general") {
-        return [oldActive];
-      }
       return PLUGINS.map(p => p.id);
     }
     return [];
@@ -2582,12 +3254,64 @@ export const SmartImageGenerator: React.FC<SmartImageGeneratorProps> = ({
   useEffect(() => {
     const handlePluginsChange = (e: any) => {
       if (e.detail && Array.isArray(e.detail.pluginIds)) {
+        localStorage.setItem("selected_plugin_ids", JSON.stringify(e.detail.pluginIds));
+        void saveCloudPreference("selected_plugin_ids", e.detail.pluginIds);
         setSelectedPluginIds(e.detail.pluginIds);
       }
     };
     window.addEventListener("selected-plugins-changed", handlePluginsChange);
     return () => {
       window.removeEventListener("selected-plugins-changed", handlePluginsChange);
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    loadCloudPreferenceMap()
+      .then((prefs) => {
+        if (cancelled) return;
+
+        const cloudSelectedPlugins = readPreferenceJson<string[]>(prefs.get("selected_plugin_ids"), []);
+        if (Array.isArray(cloudSelectedPlugins) && cloudSelectedPlugins.length > 0) {
+          localStorage.setItem("selected_plugin_ids", JSON.stringify(cloudSelectedPlugins));
+          setSelectedPluginIds(cloudSelectedPlugins);
+        }
+
+        const cloudPinnedModels = readPreferenceJson<string[]>(prefs.get("pinnedModels"), []);
+        if (Array.isArray(cloudPinnedModels) && cloudPinnedModels.length > 0) {
+          localStorage.setItem("pinnedModels", JSON.stringify(cloudPinnedModels));
+          setPinnedModels(cloudPinnedModels);
+        }
+
+        const cloudPinnedPlugins = readPreferenceJson<string[]>(prefs.get("pinnedPlugins"), []);
+        if (Array.isArray(cloudPinnedPlugins) && cloudPinnedPlugins.length > 0) {
+          localStorage.setItem("pinnedPlugins", JSON.stringify(cloudPinnedPlugins));
+          setPinnedPlugins(cloudPinnedPlugins);
+        }
+
+        const cloudPinnedSkills = readPreferenceJson<string[]>(prefs.get("pinnedSkills"), []);
+        if (Array.isArray(cloudPinnedSkills) && cloudPinnedSkills.length > 0) {
+          localStorage.setItem("pinnedSkills", JSON.stringify(cloudPinnedSkills));
+          setPinnedSkills(cloudPinnedSkills);
+        }
+
+        prefs.forEach((value, key) => {
+          if (key.startsWith("plugin_category_") && typeof value === "string") {
+            localStorage.setItem(key, value);
+          }
+        });
+      })
+      .then(() => PluginRegistry.refreshFromServer())
+      .then((changed) => {
+        if (!cancelled && changed) {
+          window.dispatchEvent(new CustomEvent("skills-changed"));
+        }
+      })
+      .catch((err) => {
+        console.warn("Failed to refresh plugin packages from server:", err);
+      });
+    return () => {
+      cancelled = true;
     };
   }, []);
 
@@ -2617,7 +3341,7 @@ export const SmartImageGenerator: React.FC<SmartImageGeneratorProps> = ({
       if (!token) return;
       try {
         const res = await fetch("/api/skills", {
-          headers: { Authorization: `Bearer ${token}` }
+          headers: { Authorization: "Bearer " + token }
         });
         if (res.ok) {
           const contentType = res.headers.get("content-type");
@@ -2631,11 +3355,11 @@ export const SmartImageGenerator: React.FC<SmartImageGeneratorProps> = ({
                   name: s.name,
                   desc: s.desc,
                   instruction: s.instruction,
-                  icon: s.icon || "⚡",
+                  icon: s.icon || "鈿?",
                   isSystem: s.isSystem,
                   isInstalled: s.isInstalled,
                   tier: s.tier || "light",
-                  customOptions: s.customOptions && s.customOptions.length > 0 ? s.customOptions : (systemSkill?.customOptions || undefined),
+                  customOptions: Array.isArray(s.customOptions) ? s.customOptions : undefined,
                   category: s.category || "text",
                   enableUpload: s.enableUpload !== undefined ? s.enableUpload : systemSkill?.enableUpload,
                   uploadType: s.uploadType || systemSkill?.uploadType || "all",
@@ -2643,40 +3367,12 @@ export const SmartImageGenerator: React.FC<SmartImageGeneratorProps> = ({
                   promptPlaceholder: s.promptPlaceholder || systemSkill?.promptPlaceholder
                 };
               });
-              setWorkflowSkills((prev) => {
-                const base = prev.filter(
-                  (p) =>
-                    p.isSystem &&
-                    p.tier !== "heavy" &&
-                    !PLUGINS.some((m) => m.id === p.id)
-                );
-                const merged = [...base];
-                fetched.forEach((f: any) => {
-                  if (f.tier === 'heavy') return;
-                  if (PLUGINS.some((m) => m.id === f.id)) return; // Filter out plugins from appearing as workflow skills
-                  const existingIdx = merged.findIndex(m => m.id === f.id);
-                  if (existingIdx >= 0) {
-                    // Update existing system skill or custom skill with fetched data
-                    merged[existingIdx] = {
-                      ...merged[existingIdx],
-                      name: f.name,
-                      desc: f.desc,
-                      instruction: f.instruction,
-                      icon: f.icon || merged[existingIdx].icon,
-                      tier: f.tier,
-                      customOptions: f.customOptions && f.customOptions.length > 0 ? f.customOptions : merged[existingIdx].customOptions,
-                      category: f.category || merged[existingIdx].category,
-                      enableUpload: f.enableUpload !== undefined ? f.enableUpload : merged[existingIdx].enableUpload,
-                      uploadType: f.uploadType || merged[existingIdx].uploadType || "all",
-                      promptLabel: f.promptLabel || merged[existingIdx].promptLabel,
-                      promptPlaceholder: f.promptPlaceholder || merged[existingIdx].promptPlaceholder
-                    };
-                  } else if (f.isInstalled) {
-                    merged.push(f);
-                  }
-                });
-                return merged;
+              const nextSkills = fetched.filter((f: any) => {
+                if (f.tier === "heavy") return false;
+                if (PLUGINS.some((plugin) => plugin.id === f.id)) return false;
+                return f.isInstalled || f.isSystem;
               });
+              setWorkflowSkills(nextSkills);
             }
           } else {
             console.warn("fetchWorkflowSkills: Expected JSON but received non-JSON response");
@@ -2720,6 +3416,14 @@ export const SmartImageGenerator: React.FC<SmartImageGeneratorProps> = ({
     });
   }, [workflowActiveSkills, wfSkillSearchQuery]);
 
+  const getCleanSkillName = React.useCallback((skill: any) => {
+    const rawName = (skill?.name || "").trim();
+    const withoutIcon = skill?.icon && rawName.startsWith(skill.icon)
+      ? rawName.slice(String(skill.icon).length).trim()
+      : rawName;
+    return withoutIcon.replace(/^[^\p{L}\p{N}]+/u, "").trim() || rawName || skill?.id || "未命名 SKILL";
+  }, []);
+
   const getCurrentPromptValue = () => {
     if (isCollabModeActive) {
       return collabInput;
@@ -2762,10 +3466,9 @@ export const SmartImageGenerator: React.FC<SmartImageGeneratorProps> = ({
       const prefix = text.slice(0, lastSlashIndex);
       const suffix = text.slice(selStart);
       
-      const hasIconEmoji = skill.icon && skill.name.startsWith(skill.icon);
-      const displayName = hasIconEmoji ? skill.name : (skill.icon ? `${skill.icon} ${skill.name}` : skill.name);
+      const displayName = skill.icon ? (skill.icon + " " + getCleanSkillName(skill)) : getCleanSkillName(skill);
       
-      const inserted = `${displayName} `;
+      const inserted = displayName + " ";
       const newValue = prefix + inserted + suffix;
       updatePromptText(newValue);
       setWfShowSkillDropdown(false);
@@ -2793,60 +3496,49 @@ export const SmartImageGenerator: React.FC<SmartImageGeneratorProps> = ({
 
       const timestamp = Date.now();
       const isCameraControl = skill.id === "camera-control";
-      const defaultCameraPrompt = "Camera: 全画幅电影级数码相机.";
+      const defaultCameraPrompt = "Camera control: set camera movement, lens, lighting, and framing.";
+      const skillName = skill.name || "AI 插件";
       const newSkillItem: HistoryItem = {
-        id: `skill-${timestamp}`,
+        id: "skill-" + timestamp,
         type: "gen_script",
         status: "success",
         parentId: "",
-        revisedPrompt: isCameraControl 
-          ? defaultCameraPrompt 
-          : (skill.instruction || `【${skill.name}】插件节点已就绪。连接上游节点并点击下方执行。`),
-        timestamp: timestamp,
+        revisedPrompt: isCameraControl
+          ? defaultCameraPrompt
+          : (skill.instruction || ("使用 " + skillName + " 处理这个画布节点。")),
+        timestamp,
         canvasId: activeCanvasId,
-        position: {
-          x: centerX - 180,
-          y: centerY - 170,
-          customX: centerX - 180,
-          customY: centerY - 170,
-          mindmap: {
-            x: centerX - 180,
-            y: centerY - 170,
-          },
-          bento: {
-            x: centerX - 180,
-            y: centerY - 170,
-          },
-        },
+        position: createCanvasPosition(centerX - 180, centerY - 170),
         config: {
           isSkillNode: true,
           skillId: skill.id,
-          title: skill.name,
-          icon: skill.icon || "🧩",
+          sectionId: "workflow-zone",
+          title: skillName,
+          icon: skill.icon || "Plugin",
           prompt: isCameraControl ? defaultCameraPrompt : "",
           cameraParams: isCameraControl ? {
-            model: "全画幅电影级数码相机",
-            lensType: "无特定镜头",
-            focalLength: "自动",
-            aperture: "自动",
-            colorTone: "默认",
-            lighting: "默认",
-            lightingType: "默认"
+            model: "standard",
+            lensType: "auto",
+            focalLength: "auto",
+            aperture: "auto",
+            colorTone: "auto",
+            lighting: "auto",
+            lightingType: "auto",
           } : undefined,
-        }
+        },
       };
 
       setHistory((prev) => [newSkillItem, ...prev]);
       setSelectedHistoryId(newSkillItem.id);
       setSelectedIds([]);
       syncToCloud(newSkillItem);
-      setError(`已成功将【${skill.name}】插件添加至画布！`);
+      setError("已添加 AI 插件卡片: " + skillName);
       setIsCriticalError(false);
     };
 
-    window.addEventListener('add-plugin-to-canvas', handleAddPluginToCanvas);
+    window.addEventListener("add-plugin-to-canvas", handleAddPluginToCanvas);
     return () => {
-      window.removeEventListener('add-plugin-to-canvas', handleAddPluginToCanvas);
+      window.removeEventListener("add-plugin-to-canvas", handleAddPluginToCanvas);
     };
   }, [transformState, activeCanvasId, setHistory]);
   const [layoutMode, setLayoutMode] = useState<
@@ -2927,6 +3619,12 @@ export const SmartImageGenerator: React.FC<SmartImageGeneratorProps> = ({
     };
 
     const handleGlobalPointerUp = () => {
+      setHistory((prev) => {
+        prev
+          .filter((h) => selectedIds.includes(h.id))
+          .forEach((h) => syncToCloud(h));
+        return prev;
+      });
       setIsDraggingBatchPanel(false);
       setIsDraggingCard(false);
       batchDragStartRef.current = null;
@@ -3011,7 +3709,7 @@ export const SmartImageGenerator: React.FC<SmartImageGeneratorProps> = ({
       if (!target) return;
 
       // If a confirmation dialog is active, DO NOT run dismiss logic
-      if (showBatchDeleteConfirm || showClearConfirm || itemToRemove) {
+      if (showBatchDeleteConfirm || showClearConfirm || itemToRemove || canvasToDelete) {
         return;
       }
 
@@ -3036,9 +3734,145 @@ export const SmartImageGenerator: React.FC<SmartImageGeneratorProps> = ({
 
     window.addEventListener("mousedown", handleGlobalClickDismiss, true);
     return () => window.removeEventListener("mousedown", handleGlobalClickDismiss, true);
-  }, [selectedHistoryId, selectedIds, showBatchDeleteConfirm, showClearConfirm, itemToRemove]);
+  }, [selectedHistoryId, selectedIds, showBatchDeleteConfirm, showClearConfirm, itemToRemove, canvasToDelete]);
 
   const pollingTasksRef = useRef<Set<string>>(new Set());
+
+  type CanvasGenerationKind = "image" | "video" | "text";
+
+  const applyServerHistoryItem = (
+    taskId: string,
+    latestItem: Partial<HistoryItem> | null | undefined,
+  ) => {
+    if (!latestItem) return null;
+
+    const normalizedPatch: Partial<HistoryItem> = {
+      ...latestItem,
+      imageUrl: (latestItem as any).imageUrl || (latestItem as any).image_url,
+      videoUrl: (latestItem as any).videoUrl || (latestItem as any).video_url,
+      revisedPrompt: (latestItem as any).revisedPrompt || (latestItem as any).revised_prompt,
+      arkOriginalUrl: (latestItem as any).arkOriginalUrl || (latestItem as any).ark_original_url,
+      canvasId: (latestItem as any).canvasId || (latestItem as any).canvas_id || activeCanvasId,
+      operationId: (latestItem as any).operationId || (latestItem as any).operation_id,
+    };
+
+    setHistory((prev) =>
+      prev.map((h) => {
+        if (h.id !== taskId) return h;
+
+        if (
+          (h.status === "success" || h.status === "error") &&
+          (normalizedPatch.status === "loading" ||
+            normalizedPatch.status === "processing" ||
+            normalizedPatch.status === "running")
+        ) {
+          return h;
+        }
+
+        return mergeSyncedCanvasItem(h, normalizedPatch);
+      }),
+    );
+
+    if (normalizedPatch.status === "success") {
+      updateChatHistoryForTask(
+        taskId,
+        "success",
+        normalizedPatch.imageUrl || normalizedPatch.videoUrl,
+      );
+    } else if (normalizedPatch.status === "error") {
+      updateChatHistoryForTask(taskId, "error", undefined, normalizedPatch.error);
+    }
+
+    return normalizedPatch;
+  };
+
+  const fetchGenerationJobStatus = async (jobId: string) => {
+    const token = localStorage.getItem("token");
+    if (!token) return null;
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 15000);
+    try {
+      const response = await fetch(`/api/generation-jobs/${jobId}`, {
+        headers: { Authorization: `Bearer ${token}` },
+        signal: controller.signal,
+      });
+      if (response.status === 404) return null;
+      if (response.status === 401) {
+        setError("Login expired. Please log in again.");
+        setIsCriticalError(true);
+        localStorage.removeItem("token");
+        return null;
+      }
+      if (!response.ok) return null;
+      return await safeJson(response);
+    } finally {
+      clearTimeout(timeoutId);
+    }
+  };
+
+  const startServerGenerationJob = async (
+    kind: CanvasGenerationKind,
+    historyItem: HistoryItem,
+    request: Record<string, any>,
+  ) => {
+    const token = localStorage.getItem("token");
+    if (!token) throw new Error("Login expired. Please log in again.");
+
+    const response = await fetch("/api/generation-jobs/start", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        jobId: historyItem.id,
+        kind,
+        historyItem,
+        request,
+      }),
+    });
+
+    const data = await safeJson(response);
+    if (!response.ok || !data?.success) {
+      throw new Error(data?.details || data?.error || "Failed to start generation job.");
+    }
+    applyServerHistoryItem(historyItem.id, data.historyItem);
+    return data;
+  };
+
+  const waitForServerGenerationJob = async (
+    jobId: string,
+    fallbackItem: HistoryItem,
+    timeoutMs = 30 * 60 * 1000,
+  ) => {
+    const startedAt = Date.now();
+    while (Date.now() - startedAt < timeoutMs) {
+      const data = await fetchGenerationJobStatus(jobId);
+      const job = data?.job;
+      const latestItem =
+        data?.historyItem ||
+        job?.result?.historyItem ||
+        fallbackItem;
+
+      if (latestItem) {
+        applyServerHistoryItem(jobId, latestItem);
+      }
+
+      if (job?.status === "success" || latestItem?.status === "success") {
+        return mergeSyncedCanvasItem(fallbackItem, latestItem);
+      }
+
+      if (job?.status === "error" || latestItem?.status === "error") {
+        const errorMsg = job?.error || latestItem?.error || "Generation failed.";
+        throw new Error(errorMsg);
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, 3000));
+    }
+
+    throw new Error("Generation is still running. Please refresh the canvas later to see the result.");
+  };
 
   // Auto-clear non-critical errors after 8 seconds
   useEffect(() => {
@@ -3058,13 +3892,23 @@ export const SmartImageGenerator: React.FC<SmartImageGeneratorProps> = ({
     if (history && history.length > 0 && !hasAlignedInitialRef.current) {
       hasAlignedInitialRef.current = true;
 
-      const savedLayout = localStorage.getItem("layoutMode") === "bento" ? "bento" : "mindmap";
+      const savedLayoutRaw = localStorage.getItem("layoutMode");
+      const savedLayout =
+        savedLayoutRaw === "bento"
+          ? "bento"
+          : savedLayoutRaw === "semi_auto"
+            ? "semi_auto"
+            : "mindmap";
       const hasUnpositioned = history.some(
         (h) => !h.position || (h.position.x === 0 && h.position.y === 0),
       );
       if (savedLayout === "bento" && hasUnpositioned) {
         setTimeout(() => {
           autoLayoutBentoGrid();
+        }, 400);
+      } else if (savedLayout === "semi_auto" && hasUnpositioned) {
+        setTimeout(() => {
+          autoLayoutSemiAuto(false);
         }, 400);
       } else if (savedLayout === "mindmap" && hasUnpositioned) {
         setTimeout(() => {
@@ -3075,8 +3919,9 @@ export const SmartImageGenerator: React.FC<SmartImageGeneratorProps> = ({
   }, [history]);
   
   const displayHistory = React.useMemo(() => {
-    const rawItems = (history || [])
-      .filter((item) => (item.canvasId || "default") === (activeCanvasId || "default"));
+      const rawItems = (history || [])
+        .filter((item) => (item.canvasId || "default") === (activeCanvasId || "default"))
+        .filter((item) => !isGenericEmptyCanvasNode(item));
     
     const seenIds = new Set<string>();
     const uniqueItems: typeof rawItems = [];
@@ -3136,13 +3981,59 @@ export const SmartImageGenerator: React.FC<SmartImageGeneratorProps> = ({
   const semiAutoGroups = React.useMemo(() => {
     if (layoutMode !== "semi_auto") return [];
 
+    const sectionVisibleItems = displayHistory
+      .filter((item) => !item.hiddenFromCanvas)
+      .sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
+    const sectionPadding = 48;
+
+    return CANVAS_SECTION_DEFINITIONS.map((section) => {
+      const items = sectionVisibleItems.filter((item) => inferCanvasSectionId(item) === section.id);
+      let minX = section.baseBounds.x;
+      let minY = section.baseBounds.y;
+      let maxX = section.baseBounds.x + section.baseBounds.width;
+      let maxY = section.baseBounds.y + section.baseBounds.height;
+
+      if (items.length > 0) {
+        minX = Infinity;
+        minY = Infinity;
+        maxX = -Infinity;
+        maxY = -Infinity;
+
+        items.forEach((item) => {
+          const x = item.position?.x ?? section.baseBounds.x + sectionPadding;
+          const y = item.position?.y ?? section.baseBounds.y + sectionPadding;
+          const size = getActualCanvasCardSizeAndPort(item);
+          minX = Math.min(minX, x);
+          minY = Math.min(minY, y);
+          maxX = Math.max(maxX, x + size.width);
+          maxY = Math.max(maxY, y + size.height);
+        });
+      }
+
+      const x = Math.min(section.baseBounds.x, minX - sectionPadding);
+      const y = Math.min(section.baseBounds.y, minY - sectionPadding - 24);
+      const width = Math.max(section.baseBounds.width, maxX + sectionPadding - x);
+      const height = Math.max(section.baseBounds.height, maxY + sectionPadding - y);
+
+      return {
+        ...section,
+        items,
+        bounds: {
+          x: Math.round(x),
+          y: Math.round(y),
+          width: Math.round(width),
+          height: Math.round(height),
+        },
+      };
+    });
+
     const visible = displayHistory.filter((item) => !item.hiddenFromCanvas);
 
     const getScriptGroupWeightGroup = (item: HistoryItem) => {
       const cls = getHistoryItemClassification(item);
       if (cls === "text_asset") return 1; // 资产
       if (cls === "shot_prompt") return 2; // 分镜提示词
-      return 0; // 剧本
+      return 0; // 鍓ф湰
     };
     const scriptItems = visible
       .filter((item) => item.type === "gen_script")
@@ -3220,7 +4111,7 @@ export const SmartImageGenerator: React.FC<SmartImageGeneratorProps> = ({
     });
     if (storyboardItems.length > 0) storyboardHeight = storyboardY - imageSectionStartY - 60;
 
-    // Align all column heights to the maximum height so they are perfectly equal (左右都对齐，一样大小)
+    // Align all column heights to the maximum height so they are perfectly equal (左右都对齐，一样大小
     const finalColHeight = Math.max(340, charHeight, sceneHeight, propHeight, storyboardHeight);
     const charHeightAligned = finalColHeight;
     const sceneHeightAligned = finalColHeight;
@@ -3274,7 +4165,7 @@ export const SmartImageGenerator: React.FC<SmartImageGeneratorProps> = ({
       if (size.width > storyboardMaxCardWidth) storyboardMaxCardWidth = size.width;
     });
 
-    // Make all column widths exactly identical (左右都对齐，一样大小)
+    // Make all column widths exactly identical (左右都对齐，一样大小
     const finalColWidth = Math.max(
       Math.max(440, charMaxCardWidth + 80),
       Math.max(440, sceneMaxCardWidth + 80),
@@ -3332,7 +4223,7 @@ export const SmartImageGenerator: React.FC<SmartImageGeneratorProps> = ({
       },
       {
         id: "scene",
-        title: "🏞️ 图片（场景区域 - 氛围设计师）",
+        title: "🏙️ 图片（场景区域 - 氛围设计师）",
         colorClass: "from-emerald-500/5 to-teal-500/1",
         borderColor: "border-emerald-300/40",
         tagColor: "bg-emerald-100 text-emerald-700 border-emerald-200/50",
@@ -3644,10 +4535,10 @@ export const SmartImageGenerator: React.FC<SmartImageGeneratorProps> = ({
       }
 
       if (!isDone) {
-        throw new Error("视频生成超时，请稍后查看");
+        throw new Error("Task polling timed out. Please retry later.");
       }
     } catch (err: any) {
-      console.error(`Resumed polling failed for task ${item.id}:`, err);
+      console.error("Resumed polling failed for task " + item.id + ":", err);
       const errorMsg = formatErrorMessage(err);
       const failedItem = { ...item, status: "error" as const, error: errorMsg };
       syncToCloud(failedItem);
@@ -3667,16 +4558,35 @@ export const SmartImageGenerator: React.FC<SmartImageGeneratorProps> = ({
     pollingTasksRef.current.add(item.id);
 
     try {
-      // 1. Check for timeout (stuck tasks)
+      const jobData = await fetchGenerationJobStatus(item.id);
+      const job = jobData?.job;
+      const jobHistoryItem = jobData?.historyItem || job?.result?.historyItem;
+      if (job || jobHistoryItem) {
+        const applied = applyServerHistoryItem(item.id, jobHistoryItem);
+        if (
+          job?.status === "success" ||
+          job?.status === "error" ||
+          applied?.status === "success" ||
+          applied?.status === "error"
+        ) {
+          return;
+        }
+
+        if (job?.status === "running") {
+          return;
+        }
+      }
+
+      // 1. Check for timeout only when there is no server-owned running job
       const now = Date.now();
       const taskAge = now - (item.timestamp || now);
       const TIMEOUT_LIMIT =
-        item.type === "video" ? 30 * 60 * 1000 : 10 * 60 * 1000; // 30m for video, 10m for image
+        item.type === "video" ? 60 * 60 * 1000 : 30 * 60 * 1000; // 60m for video, 30m for image/text
 
       if (item.status === "loading" || (item.status as any) === "processing" || (item.status as any) === "running") {
         if (taskAge > TIMEOUT_LIMIT) {
-          console.warn(`Task ${item.id} timed out after ${taskAge / 1000}s`);
-          const timedOutItem = { ...item, status: "error" as const, error: "生成超时，请尝试重新生成" };
+          console.warn("Task " + item.id + " timed out after " + (taskAge / 1000) + "s");
+          const timedOutItem = { ...item, status: "error" as const, error: "Task timed out. Please retry later." };
           syncToCloud(timedOutItem);
           setHistory((prev) =>
             prev.map((h) =>
@@ -3694,14 +4604,14 @@ export const SmartImageGenerator: React.FC<SmartImageGeneratorProps> = ({
       const timeoutId = setTimeout(() => controller.abort(), 15000); // 15s timeout
 
       // Fetch single history item to find the latest state
-      const res = await fetch(`/api/user/history/${item.id}`, {
-        headers: { Authorization: `Bearer ${token}` },
+      const res = await fetch("/api/user/history/" + item.id, {
+        headers: { Authorization: "Bearer " + token },
         signal: controller.signal,
       });
       clearTimeout(timeoutId);
 
       if (res.status === 401) {
-        setError("您的登录已过期，请重新登录。");
+        setError("Login expired. Please log in again.");
         setIsCriticalError(true);
         localStorage.removeItem("token");
         return;
@@ -3714,6 +4624,7 @@ export const SmartImageGenerator: React.FC<SmartImageGeneratorProps> = ({
             latestItem.status !== item.status ||
             latestItem.imageUrl !== item.imageUrl ||
             latestItem.videoUrl !== item.videoUrl ||
+            latestItem.operationId !== item.operationId ||
             latestItem.error !== item.error;
 
           if (hasChanged) {
@@ -3729,7 +4640,7 @@ export const SmartImageGenerator: React.FC<SmartImageGeneratorProps> = ({
                     latestItem.status === "processing")
                 ) {
                   console.log(
-                    `[DEBUG] Preventing status downgrade for task ${h.id}: local=${h.status}, server=${latestItem.status}`,
+                    "[DEBUG] Preventing status downgrade for task " + h.id + ": local=" + h.status + ", server=" + latestItem.status,
                   );
                   return h;
                 }
@@ -3746,6 +4657,7 @@ export const SmartImageGenerator: React.FC<SmartImageGeneratorProps> = ({
                   imageUrl: latestItem.imageUrl || h.imageUrl,
                   videoUrl: latestItem.videoUrl || h.videoUrl,
                   revisedPrompt: latestItem.revisedPrompt || h.revisedPrompt,
+                  operationId: latestItem.operationId || h.operationId,
                   error: latestItem.error || h.error,
                 };
               }),
@@ -3755,9 +4667,9 @@ export const SmartImageGenerator: React.FC<SmartImageGeneratorProps> = ({
       }
     } catch (err: any) {
       if (err.name === "AbortError") {
-        console.warn(`Check image status timed out for task ${item.id}`);
+        console.warn("Check image status timed out for task " + item.id);
       } else {
-        console.error(`Check image status failed for task ${item.id}:`, err);
+        console.error("Check image status failed for task " + item.id + ":", err);
       }
     } finally {
       pollingTasksRef.current.delete(item.id);
@@ -3805,7 +4717,7 @@ export const SmartImageGenerator: React.FC<SmartImageGeneratorProps> = ({
     const isVideo = targetId === "video";
     const isScript = targetId === "script";
     const customAgentName = isImage ? "灵境生图" : isVideo ? "灵境视频" : isScript ? "灵境创生" : undefined;
-    const customAgentIcon = isImage ? "🎨" : isVideo ? "🎬" : isScript ? "✍️" : undefined;
+    const customAgentIcon = isImage ? "🎨" : isVideo ? "🎬" : isScript ? "鉁嶏笍" : undefined;
 
     const userMsg = {
       id: "user_" + Date.now() + Math.random().toString(36).substring(2, 9),
@@ -3830,8 +4742,8 @@ export const SmartImageGenerator: React.FC<SmartImageGeneratorProps> = ({
       collabAppendMessageFnRef.current(userMsg);
       collabAppendMessageFnRef.current(assistantMsg);
     } else {
-      const storageKey = user?.id ? `codex_state_${user.id}` : "codex_state_guest";
-      const key = `${storageKey}_messages_${targetId}`;
+      const storageKey = user?.id ? "codex_state_" + user.id : "codex_state_guest";
+      const key = storageKey + "_messages_" + targetId;
       try {
         const saved = localStorage.getItem(key);
         let currentMessages = [];
@@ -3843,10 +4755,10 @@ export const SmartImageGenerator: React.FC<SmartImageGeneratorProps> = ({
             role: "assistant" as const,
             content:
               targetId === "image"
-                ? "您好，我是灵境生图助手。"
+                ? "Image creation assistant ready."
                 : targetId === "video"
-                  ? "您好，我是灵境视频助手。"
-                  : "您好，我是灵境文造助手。",
+                  ? "Video creation assistant ready."
+                  : "Creative assistant ready.",
             timestamp: Date.now() - 1000,
           };
           currentMessages = [defaultWelcome];
@@ -3865,75 +4777,73 @@ export const SmartImageGenerator: React.FC<SmartImageGeneratorProps> = ({
     dataUrl?: string,
     errorMsg?: string,
   ) => {
-    const storageKey = user?.id ? `codex_state_${user.id}` : "codex_state_guest";
-    
+    const storageKey = user?.id ? "codex_state_" + user.id : "codex_state_guest";
+    const makeContent = (isVideoTask: boolean) => {
+      if (status === "success") {
+        if (isVideoTask) return "Video generation completed.";
+        return dataUrl
+          ? "Image generation completed.\n![generated image](" + dataUrl + ")"
+          : "Image generation completed.";
+      }
+      return "Generation failed: " + (errorMsg || "Unknown error");
+    };
+
     try {
       for (let i = 0; i < localStorage.length; i++) {
         const key = localStorage.key(i);
-        if (key && key.startsWith(`${storageKey}_messages_`)) {
-          const saved = localStorage.getItem(key);
-          if (saved) {
-            let messages = JSON.parse(saved);
-            if (Array.isArray(messages)) {
-              let updated = false;
-              messages = messages.map((m: any) => {
-                if (m.taskId === taskId && m.role === "assistant") {
-                  updated = true;
-                  if (status === "success") {
-                    const isVideo = key.endsWith("_video") || (m.content && m.content.includes("视频")) || m.type === "video";
-                    return {
-                      ...m,
-                      content: isVideo
-                        ? `已为您生成视频。`
-                        : `已为您生成图片：\n![生成图片](${dataUrl})`,
-                      type: isVideo ? "video" : "image",
-                      url: dataUrl || m.url,
-                    };
-                  } else {
-                    return {
-                      ...m,
-                      content: `生成失败：${errorMsg || "未知错误"}`,
-                      type: "text",
-                    };
-                  }
-                }
-                return m;
-              });
+        if (!key || !key.startsWith(storageKey + "_messages_")) continue;
 
-              if (updated) {
-                localStorage.setItem(key, JSON.stringify(messages));
-              } else {
-                // Fallback append ONLY if this key is the correct channel key
-                const isVideoTask = key.endsWith("_video") || (status === "success" && dataUrl && (dataUrl.includes("video") || dataUrl.includes(".mp4")));
-                const isImageTask = !isVideoTask;
+        const saved = localStorage.getItem(key);
+        if (!saved) continue;
 
-                const shouldAppend = 
-                  (collabChatTargetId && key.endsWith(`_messages_${collabChatTargetId}`)) ||
-                  (isVideoTask && key.endsWith("_messages_video")) ||
-                  (isImageTask && key.endsWith("_messages_image"));
+        let messages = JSON.parse(saved);
+        if (!Array.isArray(messages)) continue;
 
-                if (shouldAppend) {
-                  const alreadyExists = messages.some((m: any) => m.taskId === taskId);
-                  if (!alreadyExists) {
-                    const assistantMsg = {
-                      id: "assistant_" + Date.now() + Math.random().toString(36).substring(2, 9),
-                      role: "assistant" as const,
-                      content: status === "success"
-                        ? (isVideoTask ? `已为您生成视频。` : `已为您生成图片：\n![生成图片](${dataUrl})`)
-                        : `生成失败：${errorMsg || "未知错误"}`,
-                      type: isVideoTask ? ("video" as const) : ("image" as const),
-                      url: dataUrl,
-                      timestamp: Date.now(),
-                      taskId: taskId,
-                    };
-                    messages.push(assistantMsg);
-                    localStorage.setItem(key, JSON.stringify(messages.slice(-50)));
-                  }
-                }
-              }
-            }
-          }
+        let updated = false;
+        messages = messages.map((m: any) => {
+          if (m.taskId !== taskId || m.role !== "assistant") return m;
+
+          updated = true;
+          const isVideoTask =
+            key.endsWith("_video") ||
+            m.type === "video" ||
+            (!!dataUrl && (dataUrl.includes(".mp4") || dataUrl.includes("video")));
+
+          return {
+            ...m,
+            content: makeContent(isVideoTask),
+            type: status === "error" ? "text" : isVideoTask ? "video" : "image",
+            url: status === "success" ? (dataUrl || m.url) : m.url,
+          };
+        });
+
+        if (updated) {
+          localStorage.setItem(key, JSON.stringify(messages));
+          continue;
         }
+
+        const isVideoTask = status === "success" && !!dataUrl && (dataUrl.includes(".mp4") || dataUrl.includes("video"));
+        const isImageTask = !isVideoTask;
+        const shouldAppend =
+          (collabChatTargetId && key.endsWith("_messages_" + collabChatTargetId)) ||
+          (isVideoTask && key.endsWith("_messages_video")) ||
+          (isImageTask && key.endsWith("_messages_image"));
+
+        if (!shouldAppend) continue;
+        const alreadyExists = messages.some((m: any) => m.taskId === taskId);
+        if (alreadyExists) continue;
+
+        const assistantMsg = {
+          id: "assistant_" + Date.now() + Math.random().toString(36).substring(2, 9),
+          role: "assistant" as const,
+          content: makeContent(isVideoTask),
+          type: status === "error" ? ("text" as const) : isVideoTask ? ("video" as const) : ("image" as const),
+          url: status === "success" ? dataUrl : undefined,
+          timestamp: Date.now(),
+          taskId,
+        };
+        messages.push(assistantMsg);
+        localStorage.setItem(key, JSON.stringify(messages.slice(-50)));
       }
     } catch (e) {
       console.error("Failed to update chat history in localStorage:", e);
@@ -4014,7 +4924,7 @@ export const SmartImageGenerator: React.FC<SmartImageGeneratorProps> = ({
     const clickX = (e.clientX - rect.left) / rect.width;
     const clickY = (e.clientY - rect.top) / rect.height;
 
-    const items = history.filter((h) => !h.hiddenFromCanvas && h.position);
+    const items = displayHistory.filter((h) => !h.hiddenFromCanvas && h.position);
     let minX = Infinity,
       minY = Infinity,
       maxX = -Infinity,
@@ -4070,7 +4980,7 @@ export const SmartImageGenerator: React.FC<SmartImageGeneratorProps> = ({
     aspectRatio: "9:16",
     quality: "4K",
     narrativeMode: "compact" as "detailed" | "compact",
-    segments: EPISODE_OPTIONS[0], // 4段
+    segments: EPISODE_OPTIONS[0], // 4娈?
     segmentDuration: SEGMENT_DURATION_OPTIONS[0], // 15s
     generationMode: "prompt" as "asset_prompt" | "shot_prompt" | "prompt" | "reference", // Add this
     duration: SCRIPT_DURATIONS[1], // 1.5min
@@ -4090,7 +5000,10 @@ export const SmartImageGenerator: React.FC<SmartImageGeneratorProps> = ({
     const directorGenModeChanged = prevDirectorGenModeRef.current !== directorConfig.generationMode;
 
     if (collabAiSkillChanged) {
-      if ((collabAiSkill === "createScript" || collabAiSkill === "create-script") && scriptConfig.activeSubTab !== "create") {
+      if (collabAiSkill === "none" && scriptConfig.activeSubTab !== "none") {
+        setScriptConfig((prev) => ({ ...prev, activeSubTab: "none" }));
+        if (mode !== "script") setMode("script");
+      } else if ((collabAiSkill === "createScript" || collabAiSkill === "create-script") && scriptConfig.activeSubTab !== "create") {
         setScriptConfig((prev) => ({ ...prev, activeSubTab: "create" }));
         if (mode !== "script") setMode("script");
       } else if ((collabAiSkill === "analyzeScript" || collabAiSkill === "analyze-script") && scriptConfig.activeSubTab !== "analyze") {
@@ -4117,7 +5030,8 @@ export const SmartImageGenerator: React.FC<SmartImageGeneratorProps> = ({
     } else if (activeSubTabChanged || modeChanged || directorGenModeChanged) {
       let targetCollabSkill = collabAiSkill;
       if (mode === "script") {
-        if (scriptConfig.activeSubTab === "create") targetCollabSkill = "create-script";
+        if (scriptConfig.activeSubTab === "none") targetCollabSkill = "none";
+        else if (scriptConfig.activeSubTab === "create") targetCollabSkill = "create-script";
         else if (scriptConfig.activeSubTab === "analyze") targetCollabSkill = "analyze-script";
         else if (scriptConfig.activeSubTab === "video") targetCollabSkill = "video-dissect";
         else if (scriptConfig.activeSubTab === "rewrite") targetCollabSkill = "rewrite-script";
@@ -4179,7 +5093,7 @@ export const SmartImageGenerator: React.FC<SmartImageGeneratorProps> = ({
       ? (collabChatTargetId.endsWith('_ai') ? collabAiSkill : null)
       : (mode === "director"
         ? (directorConfig.generationMode === "prompt" ? "prompt-skill" : directorConfig.generationMode === "asset_prompt" ? "asset-prompt-skill" : "shot-prompt-skill")
-        : (scriptConfig.activeSubTab === "create" ? "create-script" : scriptConfig.activeSubTab === "analyze" ? "analyze-script" : scriptConfig.activeSubTab === "video" ? "video-dissect" : "rewrite-script"));
+        : (scriptConfig.activeSubTab === "none" ? null : scriptConfig.activeSubTab === "create" ? "create-script" : scriptConfig.activeSubTab === "analyze" ? "analyze-script" : scriptConfig.activeSubTab === "video" ? "video-dissect" : "rewrite-script"));
 
     if (!activeId) return null;
     const normalizedId = activeId === "createScript" ? "create-script" :
@@ -4198,10 +5112,10 @@ export const SmartImageGenerator: React.FC<SmartImageGeneratorProps> = ({
     }
     if (skillId === "shot-prompt-skill" || skillId === "shotPromptSkill") {
       if (option.id === "directorStyle") {
-        if (directorConfig.directorName === "王家卫(都市)") return "王家卫迷幻";
-        if (directorConfig.directorName === "宫崎骏") return "宫崎骏治愈";
-        if (directorConfig.directorName === "诺兰") return "诺兰时空感";
-        return "好莱坞大片";
+        if (directorConfig.directorName === "wong-kar-wai") return "wong";
+        if (directorConfig.directorName === "miyazaki") return "miyazaki";
+        if (directorConfig.directorName === "nolan") return "nolan";
+        return "hollywood";
       }
       if (option.id === "directorName") {
         return directorConfig.directorName;
@@ -4216,7 +5130,7 @@ export const SmartImageGenerator: React.FC<SmartImageGeneratorProps> = ({
     if (skillId === "asset-prompt-skill" || skillId === "assetPromptSkill") {
       if (option.id === "visualStyle") {
         const vid = directorConfig.visualStyle.id;
-        if (vid === "bright_sweet") return "动漫插画";
+        if (vid === "bright_sweet") return "鍔ㄦ极鎻掔敾";
         if (vid === "cyber_real") return "赛博朋克";
         if (vid === "film_35mm") return "复古颗粒";
         return "电影写实";
@@ -4256,22 +5170,22 @@ export const SmartImageGenerator: React.FC<SmartImageGeneratorProps> = ({
       }
     } else if (skillId === "shot-prompt-skill" || skillId === "shotPromptSkill") {
       if (optionId === "directorStyle") {
-        let directorName = "卡梅隆";
+        let directorName = "hollywood";
         let visualStyle = VISUAL_STYLES[0];
-        if (value === "王家卫迷幻") {
-          directorName = "王家卫(都市)";
+        if (value === "wong") {
+          directorName = "wong-kar-wai";
           const matched = VISUAL_STYLES.find(v => v.id === "wkw_style");
           if (matched) visualStyle = matched;
-        } else if (value === "宫崎骏治愈") {
-          directorName = "宫崎骏";
+        } else if (value === "miyazaki") {
+          directorName = "miyazaki";
           const matched = VISUAL_STYLES.find(v => v.id === "rural_healing");
           if (matched) visualStyle = matched;
-        } else if (value === "诺兰时空感") {
-          directorName = "诺兰";
+        } else if (value === "nolan") {
+          directorName = "nolan";
           const matched = VISUAL_STYLES.find(v => v.id === "noir_suspense");
           if (matched) visualStyle = matched;
         } else {
-          directorName = "卡梅隆";
+          directorName = "hollywood";
           const matched = VISUAL_STYLES.find(v => v.id === "hollywood_blockbuster");
           if (matched) visualStyle = matched;
         }
@@ -4294,7 +5208,8 @@ export const SmartImageGenerator: React.FC<SmartImageGeneratorProps> = ({
           }));
         }
       } else if (optionId === "segments") {
-        const matchedOpt = EPISODE_OPTIONS.find(o => o.label === value || o.id === value || o.id === value.replace('段', '')) || EPISODE_OPTIONS[0];
+        const normalizedSegmentValue = value.replace(/[^\d]/g, "");
+        const matchedOpt = EPISODE_OPTIONS.find(o => o.label === value || o.id === value || o.id === normalizedSegmentValue) || EPISODE_OPTIONS[0];
         setDirectorConfig((prev) => ({
           ...prev,
           segments: matchedOpt,
@@ -4303,7 +5218,7 @@ export const SmartImageGenerator: React.FC<SmartImageGeneratorProps> = ({
     } else if (skillId === "asset-prompt-skill" || skillId === "assetPromptSkill") {
       if (optionId === "visualStyle") {
         let styleId = "hollywood_blockbuster";
-        if (value === "动漫插画") {
+        if (value === "鍔ㄦ极鎻掔敾") {
           styleId = "bright_sweet";
         } else if (value === "赛博朋克") {
           styleId = "cyber_real";
@@ -4422,6 +5337,7 @@ export const SmartImageGenerator: React.FC<SmartImageGeneratorProps> = ({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const canvasUploadInputRef = useRef<HTMLInputElement>(null);
   const uploadTargetPositionRef = useRef<{ x: number; y: number } | null>(null);
+  const uploadTargetSectionIdRef = useRef<CanvasSectionId | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const transformComponentRef = useRef<any>(null);
   const canvasViewportRef = useRef<HTMLDivElement>(null);
@@ -4499,7 +5415,7 @@ export const SmartImageGenerator: React.FC<SmartImageGeneratorProps> = ({
               referenceAssets: [...currentAssets, newAsset],
             };
           });
-          setCaptureMessage("✅ 已截取当前画面并载入");
+          setCaptureMessage("鉁?已截取当前画面并载入");
         } else {
           setImageConfig((prev) => {
             const currentImages = prev.referenceImages || [];
@@ -4520,7 +5436,7 @@ export const SmartImageGenerator: React.FC<SmartImageGeneratorProps> = ({
               ],
             };
           });
-          setCaptureMessage("✅ 已截取当前画面并载入");
+          setCaptureMessage("鉁?已截取当前画面并载入");
         }
         setIsCriticalError(false);
 
@@ -4607,12 +5523,12 @@ export const SmartImageGenerator: React.FC<SmartImageGeneratorProps> = ({
         const worksheet = workbook.Sheets[sheetName];
         const sheetText = XLSX.utils.sheet_to_csv(worksheet);
         if (sheetText.trim()) {
-          fullText += `--- Sheet: ${sheetName} ---\n${sheetText}\n\n`;
+          fullText += "--- Sheet: " + sheetName + " ---\n" + sheetText + "\n\n";
         }
       });
       content = fullText;
     } else {
-      throw new Error("不支持的文件格式");
+      throw new Error("Unsupported file type.");
     }
     return content;
   };
@@ -4659,6 +5575,7 @@ export const SmartImageGenerator: React.FC<SmartImageGeneratorProps> = ({
     type: "image" | "video" | "audio" | "gen_script",
     customId?: string,
     position?: { x: number; y: number },
+    sectionId?: CanvasSectionId,
   ) => {
     const token = localStorage.getItem("token");
     if (!token) return;
@@ -4666,13 +5583,13 @@ export const SmartImageGenerator: React.FC<SmartImageGeneratorProps> = ({
     try {
       const count = history.filter((h) => h.type === type).length + 1;
       const typeName =
-        type === "image" ? "图片" : type === "audio" ? "音频" : type === "video" ? "视频" : "剧本";
-      const autoTitle = type === "gen_script" ? file.name : `${typeName}_${count}`;
+        type === "image" ? "image" : type === "audio" ? "audio" : type === "video" ? "video" : "file";
+      const autoTitle = type === "gen_script" ? file.name : typeName + "_" + count;
 
       const historyItem = {
         id:
           customId ||
-          `upl_${Date.now()}_${Math.random().toString(36).substring(2, 5)}`,
+          "upl_" + Date.now() + "_" + Math.random().toString(36).substring(2, 5),
         type,
         status: "success",
         imageUrl: type === "image" ? data : null,
@@ -4682,6 +5599,7 @@ export const SmartImageGenerator: React.FC<SmartImageGeneratorProps> = ({
           title: autoTitle,
           isUpload: true,
           originalName: file.name,
+          sectionId,
         },
         timestamp: Date.now(),
         position: position || undefined,
@@ -4692,7 +5610,7 @@ export const SmartImageGenerator: React.FC<SmartImageGeneratorProps> = ({
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
+          Authorization: "Bearer " + token,
         },
         body: JSON.stringify(historyItem),
       });
@@ -4707,7 +5625,14 @@ export const SmartImageGenerator: React.FC<SmartImageGeneratorProps> = ({
             imageUrl: (result.imageUrl || historyItem.imageUrl) ?? undefined,
             videoUrl: (result.videoUrl || historyItem.videoUrl) ?? undefined,
             revisedPrompt: type === "gen_script" ? data : undefined,
-            config: result.config || historyItem.config,
+            config: {
+              ...(result.config || historyItem.config),
+              sectionId:
+                sectionId ||
+                (result.config && isCanvasSectionId(result.config.sectionId)
+                  ? result.config.sectionId
+                  : inferCanvasSectionId(historyItem as HistoryItem)),
+            },
             timestamp: historyItem.timestamp,
             position: position || result.position || undefined,
             canvasId: activeCanvasId,
@@ -4734,7 +5659,7 @@ export const SmartImageGenerator: React.FC<SmartImageGeneratorProps> = ({
         }
       }
     } catch (err: any) {
-      console.error("保存上传文件到历史记录失败:", err);
+      console.error("保存上传文件到历史记录失败", err);
       if (customId) {
         setHistory((prev) =>
           prev.map((item) =>
@@ -4763,14 +5688,14 @@ export const SmartImageGenerator: React.FC<SmartImageGeneratorProps> = ({
 
       if (scriptConfig.activeSubTab === "video") {
         if (!file.type.startsWith("video/")) {
-          setError("影音拉片模式仅支持视频文件上传");
+          setError("Please upload a video file.");
           return;
         }
 
         try {
           const duration = await getMediaDuration(file);
           if (duration > 300) {
-            setError(`视频时长上限为 300 秒 (当前: ${duration.toFixed(1)}s)`);
+            setError("Video length cannot exceed 300 seconds. Current: " + duration.toFixed(1) + "s");
             return;
           }
 
@@ -4812,7 +5737,7 @@ export const SmartImageGenerator: React.FC<SmartImageGeneratorProps> = ({
           try {
             const duration = await getMediaDuration(file);
             if (duration > 300) {
-              setError(`视频时长上限为 300 秒 (当前: ${duration.toFixed(1)}s)`);
+              setError("Video length cannot exceed 300 seconds. Current: " + duration.toFixed(1) + "s");
               return;
             }
 
@@ -4835,7 +5760,7 @@ export const SmartImageGenerator: React.FC<SmartImageGeneratorProps> = ({
             };
             reader.readAsDataURL(file);
           } catch (err) {
-            setError("无法读取视频时长");
+            setError("Failed to read video duration.");
           }
           return;
         }
@@ -4870,7 +5795,7 @@ export const SmartImageGenerator: React.FC<SmartImageGeneratorProps> = ({
             const safePos = specifiedPosition ? findUnoccupiedPosition(specifiedPosition.x, specifiedPosition.y, history) : getFreeCanvasFlowPosition(history);
             await saveUploadedFileToHistory(file, content, "gen_script", undefined, safePos);
           } catch (err: any) {
-            setError(err.message || "剧本解析失败");
+            setError(err.message || "Failed to parse uploaded file.");
           }
           return;
         }
@@ -4981,12 +5906,12 @@ export const SmartImageGenerator: React.FC<SmartImageGeneratorProps> = ({
               const minLimit = type === "audio" ? 3 : 5;
               if (roundedDuration < minLimit || roundedDuration > 15) {
                 setError(
-                  `${type === "video" ? "视频" : "音频"}时长必须在 ${minLimit}-15 秒之间 (当前: ${roundedDuration.toFixed(1)}s)`,
+                  (type === "video" ? "Video" : "Audio") + " duration must be " + minLimit + "-15 seconds. Current: " + roundedDuration.toFixed(1) + "s",
                 );
                 continue;
               }
             } catch (err) {
-              setError("无法读取媒体文件时长");
+              setError("Failed to read media duration.");
               continue;
             }
           }
@@ -5046,7 +5971,7 @@ export const SmartImageGenerator: React.FC<SmartImageGeneratorProps> = ({
               thumbnailUrl = await generateVideoThumbnail(file);
             }
 
-            const uploadId = `upl_${Date.now()}_${Math.random().toString(36).substring(2, 5)}_${Math.random().toString(36).substring(2, 5)}`;
+            const uploadId = "upl_" + Date.now() + "_" + Math.random().toString(36).substring(2, 5) + "_" + Math.random().toString(36).substring(2, 5);
             setVideoConfig((prev) => ({
               ...prev,
               referenceAssets: [
@@ -5073,7 +5998,7 @@ export const SmartImageGenerator: React.FC<SmartImageGeneratorProps> = ({
       const file = files[0];
       if (!file || !file.type.startsWith("image/")) return;
 
-      const uploadId = `upl_${Date.now()}_${Math.random().toString(36).substring(2, 5)}`;
+      const uploadId = "upl_" + Date.now() + "_" + Math.random().toString(36).substring(2, 5);
       const reader = new FileReader();
       reader.onload = async (event) => {
         const data = event.target?.result as string;
@@ -5102,7 +6027,7 @@ export const SmartImageGenerator: React.FC<SmartImageGeneratorProps> = ({
     const remaining = maxCount - currentCount;
 
     if (remaining <= 0) {
-      setError(`当前模型最多支持 ${maxCount} 张参考图`);
+      setError("Current model supports up to " + maxCount + " reference images.");
       return;
     }
 
@@ -5110,7 +6035,7 @@ export const SmartImageGenerator: React.FC<SmartImageGeneratorProps> = ({
 
     filesToProcess.forEach((file: File, idx: number) => {
       if (!file.type.startsWith("image/")) return;
-      const uploadId = `upl_${Date.now()}_${Math.random().toString(36).substring(2, 5)}`;
+      const uploadId = "upl_" + Date.now() + "_" + Math.random().toString(36).substring(2, 5);
       const reader = new FileReader();
       reader.onload = async (event) => {
         const data = event.target?.result as string;
@@ -5163,7 +6088,9 @@ export const SmartImageGenerator: React.FC<SmartImageGeneratorProps> = ({
   const addCanvasFiles = async (filesList: FileList | File[]) => {
     const files = Array.from(filesList);
     const specifiedPosition = uploadTargetPositionRef.current || getViewportCenterPosition();
+    const specifiedSectionId = uploadTargetSectionIdRef.current;
     uploadTargetPositionRef.current = null;
+    uploadTargetSectionIdRef.current = null;
 
     let tempHistory = [...history];
     const newItemsToAppend: HistoryItem[] = [];
@@ -5239,19 +6166,32 @@ export const SmartImageGenerator: React.FC<SmartImageGeneratorProps> = ({
       }
 
       if (type) {
-        const uploadId = `upl_${Date.now()}_${Math.random().toString(36).substring(2, 5)}_${i}`;
+        const uploadId = "upl_" + Date.now() + "_" + Math.random().toString(36).substring(2, 5) + "_" + i;
         const targetX = specifiedPosition.x + i * 40;
         const targetY = specifiedPosition.y + i * 40;
-        const safePos = findUnoccupiedPosition(targetX, targetY, tempHistory);
+        const uploadSectionId =
+          specifiedSectionId ||
+          getCanvasSectionAtPoint(targetX, targetY) ||
+          inferCanvasSectionId({
+            id: uploadId,
+            type,
+            status: "loading",
+            timestamp: Date.now(),
+            config: {},
+          } as HistoryItem);
+        const safePos =
+          layoutMode === "semi_auto"
+            ? findUnoccupiedPositionInSection(targetX, targetY, uploadSectionId, tempHistory)
+            : findUnoccupiedPosition(targetX, targetY, tempHistory);
 
-        let placeholderTitle = "正在上传文件...";
-        if (type === "image") placeholderTitle = "正在上传参考图片...";
-        else if (type === "video") placeholderTitle = "正在上传参考视频...";
-        else if (type === "audio") placeholderTitle = "正在上传音频...";
+        let placeholderTitle = "Uploading file...";
+        if (type === "image") placeholderTitle = "Uploading image...";
+        else if (type === "video") placeholderTitle = "Uploading video...";
+        else if (type === "audio") placeholderTitle = "Uploading audio...";
         else if (type === "gen_script") {
           const ext = file.name.split(".").pop()?.toLowerCase();
           if (ext === "pdf") placeholderTitle = "正在解析 PDF 文档...";
-          else if (ext === "xlsx" || ext === "xls") placeholderTitle = "正在解析 Excel 表格...";
+          else if (ext === "xlsx" || ext === "xls") placeholderTitle = "正在解析 Excel 琛ㄦ牸...";
           else if (ext === "docx" || ext === "doc") placeholderTitle = "正在解析 Word 文档...";
           else placeholderTitle = "正在提取文本内容...";
         }
@@ -5267,6 +6207,7 @@ export const SmartImageGenerator: React.FC<SmartImageGeneratorProps> = ({
             isUpload: true,
             originalName: file.name,
             isPlaceholder: true,
+            sectionId: uploadSectionId,
           },
           canvasId: activeCanvasId,
         };
@@ -5290,7 +6231,7 @@ export const SmartImageGenerator: React.FC<SmartImageGeneratorProps> = ({
                 throw new Error("文本文档内容为空");
               }
 
-              saveUploadedFileToHistory(file, textResult, "gen_script", uploadId, safePos);
+              saveUploadedFileToHistory(file, textResult, "gen_script", uploadId, safePos, uploadSectionId);
             } catch (err: any) {
               setHistory((prev) => prev.filter((h) => h.id !== uploadId));
               setError(err.message || "文档内容提取失败");
@@ -5301,7 +6242,7 @@ export const SmartImageGenerator: React.FC<SmartImageGeneratorProps> = ({
           const reader = new FileReader();
           reader.onload = async (event) => {
             const data = event.target?.result as string;
-            saveUploadedFileToHistory(file, data, type, uploadId, safePos);
+            saveUploadedFileToHistory(file, data, type, uploadId, safePos, uploadSectionId);
           };
           reader.onerror = () => {
             setHistory((prev) => prev.filter((h) => h.id !== uploadId));
@@ -5310,7 +6251,7 @@ export const SmartImageGenerator: React.FC<SmartImageGeneratorProps> = ({
           reader.readAsDataURL(file);
         }
       } else {
-        setError("只支持上传图片、视频、音频及常见文本文档格式（txt、doc、docx、pdf、xlsx等）");
+        setError("只支持上传图片、视频、音频及常见文本文档格式（txt、doc、docx、pdf、xlsx绛夛級");
         setTimeout(() => setError(null), 5000);
       }
     }
@@ -5351,14 +6292,14 @@ export const SmartImageGenerator: React.FC<SmartImageGeneratorProps> = ({
   ): string => {
     if (!currentPrompt) return "";
 
-    // Replace @图{deletedIndex + 1} with "" first
-    const targetTag = `@图${deletedIndex + 1}`;
+    // Remove @图N for the deleted reference first.
+    const targetTag = "@图" + (deletedIndex + 1);
     let newPrompt = currentPrompt.split(targetTag).join("");
 
-    // Now shift all @图{i} where i > deletedIndex + 1
+    // Shift later @图N references down by one.
     for (let i = deletedIndex + 2; i <= 20; i++) {
-      const oldTag = `@图${i}`;
-      const newTag = `@图${i - 1}`;
+      const oldTag = "@图" + i;
+      const newTag = "@图" + (i - 1);
       newPrompt = newPrompt.split(oldTag).join(newTag);
     }
 
@@ -5515,24 +6456,16 @@ export const SmartImageGenerator: React.FC<SmartImageGeneratorProps> = ({
       let systemPrompt = "";
 
       if (mode === "video") {
-        systemPrompt = `你现在是一个专业的视频导演和提示词专家。请将以下简单的描述词优化为详细、生动、具有电影感的视频生成提示词。
-        要求：
-        1. 增加镜头运动（如：推、拉、摇、移）、光影变化、氛围感、动作细节等描述。
-        2. 必须以 JSON 格式输出，格式为：{"enhancedPrompt": "优化后的详细视频提示词"}。
-        3. 不要输出任何其他文字，只输出 JSON。`;
+        systemPrompt = "You are a professional video prompt optimizer. Rewrite the user idea into a clear production prompt for video generation. Return JSON only with the field enhancedPrompt.";
       } else {
         systemPrompt =
           IMAGE_AGENT_SYSTEM_INSTRUCTION +
-          `\n\n你现在需要执行 **提示词优化** 任务。请将以下简单的描述词优化为详细、生动、具有艺术感的 AI 绘画提示词。
-              要求：
-              1. 增加光影、构图、材质、风格等细节描述。
-              2. 必须以 JSON 格式输出，格式为：{"enhancedPrompt": "优化后的详细提示词"}。
-              3. 不要输出任何其他文字，只输出 JSON。`;
+          "\n\nYou are a professional image prompt optimizer. Rewrite the user idea into a clear production prompt for image generation. Return JSON only with the field enhancedPrompt.";
       }
 
       // Include reference images in the prompt if they exist
       const parts: any[] = [
-        { text: `${systemPrompt}\n\n原始描述：${currentPrompt}` },
+        { text: systemPrompt + "\n\nUser prompt: " + currentPrompt },
       ];
 
       if (
@@ -5547,7 +6480,7 @@ export const SmartImageGenerator: React.FC<SmartImageGeneratorProps> = ({
               mimeType: ref.mimeType,
             },
           });
-          parts.push({ text: `参考图${idx + 1} (图${idx + 1})` });
+          parts.push({ text: "Reference image " + (idx + 1) + " (@图" + (idx + 1) + ")" });
         });
       }
 
@@ -5563,7 +6496,7 @@ export const SmartImageGenerator: React.FC<SmartImageGeneratorProps> = ({
           ],
           config: {
             systemInstruction:
-              "你是一位顶级视觉艺术家和创意提示词专家。你的任务是将用户简略的描述扩展为极具美感、细节丰富且符合物理规律的视觉提示词。请重点描述光影、材质、构图和氛围，并以 JSON 格式返回，包含 'enhancedPrompt' 字段。",
+              "Return JSON only. The JSON object must include enhancedPrompt.",
             responseMimeType: "application/json",
           },
         },
@@ -5575,48 +6508,65 @@ export const SmartImageGenerator: React.FC<SmartImageGeneratorProps> = ({
         enhanceResponse.candidates?.[0]?.content?.parts?.[0]?.text;
       if (jsonText) {
         // We output the raw JSON string into the textarea as requested
-        const cleanedJson = jsonText.replace(/```json|```/g, "").trim();
+        const fence = String.fromCharCode(96, 96, 96);
+        const cleanedJson = jsonText.split(fence + "json").join("").split(fence).join("").trim();
         try {
           const parsed = JSON.parse(cleanedJson);
           const enhanced = parsed.enhancedPrompt || cleanedJson;
+          const optimizedSectionId: CanvasSectionId = "text-planning";
+          const optimizedBounds = getCanvasSectionDefinition(optimizedSectionId).baseBounds;
+          const optimizedSlot = getCanvasHistory(history, activeCanvasId)
+            .filter((h) => inferCanvasSectionId(h) === optimizedSectionId)
+            .length;
 
           // Instead of updating the textarea (Figure 1), we add it as a result on the canvas (Figure 2)
           const historyItem: HistoryItem = {
-            id: `optimized-${Date.now()}`,
+            id: "optimized-" + Date.now(),
             type: "gen_script",
             status: "success",
             revisedPrompt: enhanced,
             timestamp: Date.now(),
-            position: {
-              x: (Math.random() - 0.5) * 200,
-              y: (Math.random() - 0.5) * 200,
-            },
+            position: createCanvasPosition(
+              optimizedBounds.x + 56 + (optimizedSlot % 3) * 420,
+              optimizedBounds.y + 86 + Math.floor(optimizedSlot / 3) * 500,
+            ),
+            canvasId: activeCanvasId,
             isOptimized: true,
-            config:
-              mode === "image"
+            config: {
+              ...(mode === "image"
                 ? { ...imageConfig, prompt: enhanced }
-                : { ...videoConfig, prompt: enhanced },
+                : { ...videoConfig, prompt: enhanced }),
+              sectionId: optimizedSectionId,
+            },
           };
 
           setHistory((prev) => [historyItem, ...prev]);
           setSelectedHistoryId(historyItem.id);
           setIsOptimized(true);
         } catch (e) {
+          const optimizedSectionId: CanvasSectionId = "text-planning";
+          const optimizedBounds = getCanvasSectionDefinition(optimizedSectionId).baseBounds;
+          const optimizedSlot = getCanvasHistory(history, activeCanvasId)
+            .filter((h) => inferCanvasSectionId(h) === optimizedSectionId)
+            .length;
           const historyItem: HistoryItem = {
-            id: `optimized-err-${Date.now()}`,
+            id: "optimized-err-" + Date.now(),
             type: "gen_script",
             status: "success",
             revisedPrompt: cleanedJson,
             timestamp: Date.now(),
-            position: {
-              x: (Math.random() - 0.5) * 200,
-              y: (Math.random() - 0.5) * 200,
-            },
+            position: createCanvasPosition(
+              optimizedBounds.x + 56 + (optimizedSlot % 3) * 420,
+              optimizedBounds.y + 86 + Math.floor(optimizedSlot / 3) * 500,
+            ),
+            canvasId: activeCanvasId,
             isOptimized: true,
-            config:
-              mode === "image"
+            config: {
+              ...(mode === "image"
                 ? { ...imageConfig, prompt: cleanedJson }
-                : { ...videoConfig, prompt: cleanedJson },
+                : { ...videoConfig, prompt: cleanedJson }),
+              sectionId: optimizedSectionId,
+            },
           };
           setHistory((prev) => [historyItem, ...prev]);
           setIsOptimized(true);
@@ -5624,7 +6574,7 @@ export const SmartImageGenerator: React.FC<SmartImageGeneratorProps> = ({
       }
     } catch (err: any) {
       console.error("Prompt enhancement failed:", err);
-      setError("优化失败，请重试");
+      setError("Prompt enhancement failed.");
     } finally {
       setIsEnhancing(false);
     }
@@ -5645,7 +6595,7 @@ export const SmartImageGenerator: React.FC<SmartImageGeneratorProps> = ({
     const hasParentIntegratedNode = parentItems.some(p => p?.config?.isIntegratedModelNode && ((p?.revisedPrompt || "").trim().length > 0 || (p?.config?.prompt || "").trim().length > 0));
 
     if (!hasCustomPrompt && !hasParentSkillNode && !hasParentTextNode && !hasParentIntegratedNode) {
-      setError("运行失败：缺少大模型指令或AI工作流输入！当前没有可执行的任务指令，请输入「自定义指令/提示词」或连接上游的「AI工作流(SKILL)节点/文本节点」以告知大模型你想执行何种任务。");
+      setError("Run failed: add a custom prompt or connect an upstream AI workflow, skill, or text node first.");
       setTimeout(() => setError(null), 5000);
       return;
     }
@@ -5791,16 +6741,11 @@ export const SmartImageGenerator: React.FC<SmartImageGeneratorProps> = ({
               revisedPrompt: outputText,
               timestamp: Date.now(),
               parentId: targetId,
-              position: {
-                x: posX,
-                y: posY,
-                customX: posX,
-                customY: posY,
-                bento: { x: posX, y: posY },
-                mindmap: { x: posX, y: posY }
-              },
+              position: createCanvasPosition(posX, posY),
+              canvasId: activeCanvasId,
               config: {
                 prompt: outputText,
+                sectionId: "media-zone",
               }
             };
             nextHistory = [newImageNode, ...nextHistory];
@@ -5818,16 +6763,11 @@ export const SmartImageGenerator: React.FC<SmartImageGeneratorProps> = ({
               revisedPrompt: outputText,
               timestamp: Date.now(),
               parentId: targetId,
-              position: {
-                x: posX,
-                y: posY,
-                customX: posX,
-                customY: posY,
-                bento: { x: posX, y: posY },
-                mindmap: { x: posX, y: posY }
-              },
+              position: createCanvasPosition(posX, posY),
+              canvasId: activeCanvasId,
               config: {
                 prompt: outputText,
+                sectionId: "media-zone",
               }
             };
             nextHistory = [newVideoNode, ...nextHistory];
@@ -5847,16 +6787,16 @@ export const SmartImageGenerator: React.FC<SmartImageGeneratorProps> = ({
         parentIds.forEach((pId, idx) => {
           const parentItem = history.find((h) => h.id === pId);
           if (parentItem) {
-            const label = `【上游节点 ${idx + 1} - ${parentItem.type === "gen_script" ? "文本节点" : parentItem.type === "image" ? "图片节点" : "节点数据"}】`;
+            const label = "Upstream node " + (idx + 1) + " - " + (parentItem.type === "gen_script" ? "text" : parentItem.type === "image" ? "image" : "asset");
             let content = "";
             if (parentItem.type === "gen_script") {
               content = parentItem.revisedPrompt || "";
             } else if (parentItem.type === "image") {
-              content = `图片URL: ${parentItem.imageUrl || ""}\n提示词/描述: ${parentItem.config?.prompt || parentItem.revisedPrompt || ""}`;
+              content = "Image URL: " + (parentItem.imageUrl || "") + "\nPrompt: " + (parentItem.config?.prompt || parentItem.revisedPrompt || "");
             } else {
-              content = `数据内容: ${parentItem.revisedPrompt || ""}`;
+              content = "Asset content: " + (parentItem.revisedPrompt || "");
             }
-            parentInputsContext += `${label}\n${content}\n\n`;
+            parentInputsContext += label + "\n" + content + "\n\n";
           }
         });
       }
@@ -5864,29 +6804,19 @@ export const SmartImageGenerator: React.FC<SmartImageGeneratorProps> = ({
       // 3. Integrate custom Prompt and Upstream context
       let executionPrompt = "";
       if (parentInputsContext) {
-        executionPrompt += `上游参考输入数据如下：\n\n${parentInputsContext}\n请结合以上输入数据，执行以下大模型自定义指令/提示词：\n`;
+        executionPrompt += `Upstream reference input data:\n\n${parentInputsContext}\nUse the upstream data together with the following custom model instruction or prompt:\n`;
       }
-      executionPrompt += customPrompt || (modelType === "text" ? "请根据上游输入项进行创意发散、内容扩充或分析提炼。" : "");
+      executionPrompt += customPrompt || (modelType === "text" ? "Use the upstream inputs for creative expansion, content enrichment, or analytical extraction." : "");
 
       // For image/video generation, we use an LLM (gemini-1.5-pro) to compile/synthesize the prompt
       let synthesizedPrompt = executionPrompt;
       if (modelType === "image" || modelType === "video") {
         try {
-          const synthPrompt = `你是一个专业的生图/生视频提示词编译器（Prompt Synthesizer & Compiler）。
-当前用户的生图/生视频节点有以下输入内容（包含上游节点的输出、图片参考及用户自定义指令）：
--------------------------
-${executionPrompt}
--------------------------
-
-请将这些输入内容融合成一段连贯、精炼、视觉描述极强的高质量生图/生视频提示词（Prompt）。
-
-【重要规则】：
-1. **核心指令提炼**：必须提取最核心的创意和排版指令（例如：上游如果提到了"三视图"、"正面侧面背面"、"角色设计图"，则最终提示词必须以"character design sheet, three-view drawing (front view, side view, and back view)"为中心；如果提到了特定服装、动作或环境，必须将其融入描述中）。
-2. **生图特化描述**：请根据上游输入的图片描述，提炼出对应角色的五官、发型、神态、服饰细节（若上游图片有提供相关线索），并将这些视觉特征精细、生动地写进提示词，以保证生图后角色的连贯与一致性。
-3. **纯视觉描述**：输出必须是纯粹的画面视觉描述，不要包含任何指令性控制词汇、过渡性文字（如"根据上游输入..."、"我为你生成..."）、HTML标签或Markdown标记。
-4. **英文为主**：图像/视频大模型对英文的理解最为精准。请将最终的描述编译成高质量、细节丰富的英文 Prompt（末尾可附带非常简短的中文关键词，以辅助模型理解）。
-5. **简洁直接**：直接输出最终的 Prompt 文本，不需要任何解释、开头或结尾。`;
-
+          const synthPrompt =
+            "You are a prompt synthesizer for image/video generation. " +
+            "Compile the upstream context and user prompt into one concise, production-ready prompt. " +
+            "Return only the final prompt, without markdown or explanation.\n\n" +
+            "Input:\n" + executionPrompt;
           const synthResponse = await pipelineService.callApi(
             "script",
             "generateContent",
@@ -5915,7 +6845,7 @@ ${executionPrompt}
 
           if (compiledText && compiledText.trim().length > 0) {
             synthesizedPrompt = compiledText.trim();
-            console.log(`[DEBUG] Prompt synthesized from:\n"${executionPrompt}"\nto:\n"${synthesizedPrompt}"`);
+            console.log("[DEBUG] Prompt synthesized from:\n\"" + executionPrompt + "\"\nto:\n\"" + synthesizedPrompt + "\"");
           }
         } catch (synthErr) {
           console.error("Failed to synthesize prompt, using raw prompt as fallback:", synthErr);
@@ -5935,7 +6865,7 @@ ${executionPrompt}
           itemId
         );
         if (!deduction.success) {
-          throw new Error(deduction.error || "积分扣除失败");
+          throw new Error(deduction.error || "Insufficient points.");
         }
 
         const responseData = await pipelineService.callApi(
@@ -6023,12 +6953,12 @@ ${executionPrompt}
           itemId
         );
         if (!deduction.success) {
-          throw new Error(deduction.error || "积分扣除失败");
+          throw new Error(deduction.error || "Insufficient points.");
         }
 
         const result = await pipelineService.generateSmartImage(imgConfig, config);
         if (!result || !result.imageUrl) {
-          throw new Error("图片生成未返回有效结果");
+          throw new Error("Image generation did not return an image URL.");
         }
 
         // Try downloading/proxying the image to store locally for persistence
@@ -6071,11 +7001,11 @@ ${executionPrompt}
         const cost = 5; // video cost
         const deduction = await deductPoints(
           cost,
-          `大模型[${selectedModel}]生视频运算: ${customPrompt.substring(0, 15)}...`,
+          `大模型[${selectedModel}]生视频运算 ${customPrompt.substring(0, 15)}...`,
           itemId
         );
         if (!deduction.success) {
-          throw new Error(deduction.error || "积分扣除失败");
+          throw new Error(deduction.error || "Insufficient points.");
         }
 
         let parentImage: any = undefined;
@@ -6200,7 +7130,7 @@ ${executionPrompt}
             : h
         )
       );
-      setError(`【节点执行失败】: ${errorMsg}`);
+      setError(`【节点执行失败】 ${errorMsg}`);
     }
   };
 
@@ -6227,12 +7157,12 @@ ${executionPrompt}
         parentIds.forEach((pId, idx) => {
           const parentItem = currentHistory.find((h) => h.id === pId);
           if (parentItem) {
-            const label = `【上游节点 ${idx + 1} - ${parentItem.type === "gen_script" ? "文本节点" : parentItem.type === "image" ? "图片节点" : "节点数据"}】`;
+            const label = `[Upstream node ${idx + 1} - ${parentItem.type === "gen_script" ? "text" : parentItem.type === "image" ? "image" : "data"}]`;
             let content = "";
             if (parentItem.type === "gen_script") {
               content = parentItem.revisedPrompt || "";
             } else if (parentItem.type === "image") {
-              content = `图片URL: ${parentItem.imageUrl || ""}\n提示词/描述: ${parentItem.config?.prompt || parentItem.revisedPrompt || ""}`;
+              content = `Image URL: ${parentItem.imageUrl || ""}\nPrompt: ${parentItem.config?.prompt || parentItem.revisedPrompt || ""}`;
             } else {
               content = `数据内容: ${parentItem.revisedPrompt || ""}`;
             }
@@ -6242,8 +7172,18 @@ ${executionPrompt}
       }
 
       // 3. Resolve skill configuration
-      const nodeSkillId = item.config?.skillId || "general";
-      const matchedSkill = workflowSkills.find((s) => s.id === nodeSkillId) || { id: "general", name: "🧠 小逻啥都懂", instruction: "你是一位精通协同、项目、创意和规划 of AI 助手。请协助团队进行 analysis、解答疑问或整理创意概念。请尽量用亲切、靠谱、专业的语气回答。" };
+      const nodeSkillId = item.config?.skillId || "none";
+      const matchedSkill = nodeSkillId === "none"
+        ? {
+            id: "none",
+            name: "无",
+            instruction: "",
+          }
+        : workflowSkills.find((s) => s.id === nodeSkillId) || {
+            id: "general",
+            name: "General assistant",
+            instruction: "Help the user analyze, plan, and organize ideas in a clear and practical way.",
+          };
       const skillName = matchedSkill.name;
       const systemInstruction = matchedSkill.instruction || matchedSkill.desc || "";
 
@@ -6255,7 +7195,7 @@ ${executionPrompt}
       const sourceContents = parentInputsContext ? [parentInputsContext] : [];
       let userPrompt = "";
       if (matchedSkill.customOptions && matchedSkill.customOptions.length > 0) {
-        userPrompt += "\n\n【当前节点参数设定】:\n";
+        userPrompt += "\n\n【当前节点参数设定】\n";
         matchedSkill.customOptions.forEach((opt: any) => {
           let val = item.config?.[opt.id];
           if (val === undefined || val === null) {
@@ -6279,10 +7219,10 @@ ${executionPrompt}
               val = genreMap[val] || val;
             } else if (opt.id === "selectedLength") {
               const lengthMap: Record<string, string> = {
-                "4": "4段 (短片)",
-                "6": "6段 (标准)",
-                "8": "8段 (中篇)",
-                "12": "12段 (长篇)",
+                "4": "4段（短片）",
+                "6": "6段（标准）",
+                "8": "8段（中篇）",
+                "12": "12段（长篇）",
                 "auto": "随机段数"
               };
               val = lengthMap[val] || val;
@@ -6294,7 +7234,7 @@ ${executionPrompt}
               "comprehensive": "🔍 综合全案拉片",
               "structure": "🎬 结构与节拍拆解",
               "character": "👥 人物关系与动作",
-              "expression": "👁️ 微表情与视听设计"
+              "expression": "🎭 微表情与视听设计"
             };
             val = map[val] || val;
           }
@@ -6327,7 +7267,7 @@ ${executionPrompt}
             } else if (opt.id === "rewriteMicroIntensity") {
               const map: Record<string, string> = {
                 "max": "🌟 极高五维",
-                "moderate": "⚡ 适度描述"
+                "moderate": "⚖️ 适度描述"
               };
               val = map[val] || val;
             }
@@ -6356,8 +7296,8 @@ ${executionPrompt}
             if (opt.id === "assetType") {
               const map: Record<string, string> = {
                 "character": "👤 角色服装外形",
-                "scene": "🏔️ 场景环境氛围",
-                "prop": "🗡️ 道具特效材质"
+                "scene": "🏙️ 场景环境氛围",
+                "prop": "🧰 道具特效材质"
               };
               val = map[val] || val;
             } else if (opt.id === "visualStyle") {
@@ -6365,7 +7305,7 @@ ${executionPrompt}
                 "realistic": "📷 电影写实",
                 "anime": "🎨 动漫插画",
                 "cyberpunk": "🌆 赛博朋克",
-                "retro": "⏳ 复古颗粒"
+                "retro": "📼 复古颗粒"
               };
               val = map[val] || val;
             }
@@ -6375,7 +7315,7 @@ ${executionPrompt}
             if (opt.id === "directorStyle") {
               const map: Record<string, string> = {
                 "hollywood": "🎥 好莱坞大片",
-                "wong": "🚬 王家卫迷幻",
+                "wong": "🚬 王家卫迷离",
                 "miyazaki": "🍃 宫崎骏治愈",
                 "nolan": "⏱️ 诺兰时空感"
               };
@@ -6396,11 +7336,15 @@ ${executionPrompt}
       }
 
       if (sourceContents && sourceContents.length > 0) {
-        userPrompt += `\n本节点收到了 ${sourceContents.length} 个上游输入源，请结合以下输入源的信息执行本次自定义命令/提示词：\n`;
+        userPrompt += `\nThis node received ${sourceContents.length} upstream input source(s). Use them to execute the following instruction:\n`;
       } else {
-        userPrompt += `本节点当前无上游输入项。请直接执行以下命令：\n`;
+        userPrompt += "This node has no upstream input. Execute the following instruction directly:\n";
       }
-      userPrompt += `"${nodeCustomPrompt && nodeCustomPrompt !== "输入本节点的执行细化命令/提示词..." ? nodeCustomPrompt : "请根据您的专业设定做出反应，进行创意发散或内容补充。"}"\n\n请直接输出生成的丰富、结构化成果，不需要输出无关解释。`;
+      const effectiveNodePrompt =
+        nodeCustomPrompt && nodeCustomPrompt !== "Enter this node instruction/prompt..."
+          ? nodeCustomPrompt
+          : "Respond according to the skill configuration, expanding ideas or enriching the content where useful.";
+      userPrompt += `"${effectiveNodePrompt}"\n\nReturn the final structured result directly without unrelated explanation.`;
 
       // 5. Call API via pipelineService
       const responseData = await pipelineService.callApi(
@@ -6437,7 +7381,7 @@ ${executionPrompt}
       const pointsToDeduct = 2; // Flat 2 points per prompt run
       const deduction = await deductPoints(
         pointsToDeduct,
-        `AI工作流节点执行[${skillName}]: ${nodeCustomPrompt.substring(0, 15)}...`,
+        `AI工作流节点执行【${skillName}】：${nodeCustomPrompt.substring(0, 15)}...`,
       );
 
       // Propagation of output to downstream connected cards
@@ -6541,47 +7485,17 @@ ${executionPrompt}
         prev.map((h) => (h.id === itemId ? failedItem : h))
       );
       await syncToCloud(failedItem);
-      setError(`【节点执行失败】: ${err.message || '网络连接超时'}`);
+      setError(`【节点执行失败】 ${err.message || '网络连接超时'}`);
       setIsCriticalError(true);
     }
   };
 
 
   const syncToCloud = async (item: HistoryItem) => {
+    if (isGenericEmptyCanvasNode(item)) return item;
+
     const token = localStorage.getItem("token");
     if (!token) return item;
-
-    // Avoid redundant network sync requests if nothing has changed compared to state
-    try {
-      const existing = history.find((h) => h.id === item.id);
-      if (existing) {
-        const posChanged = JSON.stringify(existing.position) !== JSON.stringify(item.position);
-        const statusChanged = existing.status !== item.status;
-        const imgChanged = existing.imageUrl !== item.imageUrl;
-        const vidChanged = existing.videoUrl !== item.videoUrl;
-        const configChanged = JSON.stringify(existing.config) !== JSON.stringify(item.config);
-        const hiddenChanged = existing.hiddenFromCanvas !== item.hiddenFromCanvas;
-        const errorChanged = existing.error !== item.error;
-        const promptChanged = existing.prompt !== item.prompt;
-        const revisedPromptChanged = existing.revisedPrompt !== item.revisedPrompt;
-
-        if (
-          !posChanged &&
-          !statusChanged &&
-          !imgChanged &&
-          !vidChanged &&
-          !configChanged &&
-          !hiddenChanged &&
-          !errorChanged &&
-          !promptChanged &&
-          !revisedPromptChanged
-        ) {
-          return item;
-        }
-      }
-    } catch (e) {
-      console.warn("[syncToCloud] Error checking differences:", e);
-    }
 
     let attempts = 0;
     while (attempts < 3) {
@@ -6590,6 +7504,11 @@ ${executionPrompt}
           ...item,
           canvasId: item.canvasId || activeCanvasId,
         };
+
+        const syncFingerprint = getCloudSyncFingerprint(finalItem);
+        if (lastCloudSyncFingerprintRef.current.get(finalItem.id) === syncFingerprint) {
+          return item;
+        }
 
         // 1. If it's a blob URL, convert to base64 so the backend can upload to OSS
         const mediaUrl = item.type === "video" ? item.videoUrl : item.imageUrl;
@@ -6629,15 +7548,20 @@ ${executionPrompt}
             console.log(
               `[DEBUG] Task ${item.id} synced successfully. OSS URL: ${data.ossUrl || "N/A"}`,
             );
-            // Return item with updated OSS URLs if available
-            return {
-              ...item,
+            // Return media updates without letting stale server shape overwrite local canvas placement.
+            const mergedItem = mergeSyncedCanvasItem(item, {
               imageUrl: data.imageUrl || item.imageUrl,
               videoUrl: data.videoUrl || item.videoUrl,
               ossUrl: data.ossUrl || item.ossUrl,
               arkOriginalUrl: data.arkOriginalUrl || item.arkOriginalUrl,
               config: data.config || item.config,
-            };
+            });
+            lastCloudSyncFingerprintRef.current.set(finalItem.id, syncFingerprint);
+            lastCloudSyncFingerprintRef.current.set(
+              mergedItem.id,
+              getCloudSyncFingerprint({ ...mergedItem, canvasId: mergedItem.canvasId || activeCanvasId })
+            );
+            return mergedItem;
           }
           break; // Exit loop if successful but no data.success
         } else {
@@ -6685,7 +7609,7 @@ ${executionPrompt}
 
     const charBlock = sections[1].split("####")[0];
 
-    // Matches line: "1. 阿屿 (@阿屿)" or "1. 阿屿 (@图1)"
+    // Matches line: "1. 阿庆 (@阿庆)" or "1. 阿庆 (@图1)"
     const characterRegex = /(\d+)\.\s+([^\s(@]+)\s+\((@.*?)\)/g;
     let match;
     const entries: {
@@ -6868,28 +7792,29 @@ ${executionPrompt}
       .map((item) => {
         const defaultTitle =
           item.type === "video"
-            ? "视频"
+            ? "Video"
             : item.type === "audio"
-              ? "音频"
+              ? "Audio"
               : item.type === "gen_script"
-                ? "剧本"
-                : "图";
+                ? "Script"
+                : "Image";
 
         // Detect if title is an auto-generated scheme (or placeholder title)
         const isAutoTitle =
           !item.config?.title ||
-          /^(图片|图|视频|音频|剧本|正在上传.*)[_\d]+$/.test(item.config.title) ||
+          /^(Image|Video|Audio|Script|正在上传.*|图像|图片|视频|音频|剧本)[_\d]*$/i.test(item.config.title) ||
           item.config.title.startsWith("图片") ||
-          item.config.title.startsWith("图") ||
-          item.config.title.startsWith("视频") ||
-          item.config.title.startsWith("音频") ||
+          item.config.title.startsWith("Image") ||
+          item.config.title.startsWith("Video") ||
+          item.config.title.startsWith("Audio") ||
+          item.config.title.startsWith("Script") ||
           item.config.title.startsWith("正在上传");
 
         let name = "";
         if (isAutoTitle) {
           const t = item.type;
           typeCounters[t] = (typeCounters[t] || 0) + 1;
-          const displayPrefix = t === "image" ? "图" : defaultTitle;
+          const displayPrefix = t === "image" ? "Image" : defaultTitle;
           name = `${displayPrefix}${typeCounters[t]}`;
         } else {
           name = item.config?.title || `${defaultTitle}${item.id.substring(item.id.length - 4)}`;
@@ -7004,17 +7929,17 @@ ${executionPrompt}
 
     // Grouping
     const groups = [
-      { id: "tray-ref", name: "参考内容", items: [] as any[] },
-      { id: "ui-component", name: "组件 - UI", items: [] as any[] },
-      { id: "img-char", name: "图片 - 角色", items: [] as any[] },
-      { id: "img-scene", name: "图片 - 场景", items: [] as any[] },
-      { id: "img-prop", name: "图片 - 道具", items: [] as any[] },
-      { id: "img-story", name: "图片 - 分镜", items: [] as any[] },
-      { id: "audio", name: "音频", items: [] as any[] },
-      { id: "text-asset", name: "文本 - 资产", items: [] as any[] },
-      { id: "text-story", name: "文本 - 分镜", items: [] as any[] },
-      { id: "text", name: "文本", items: [] as any[] },
-      { id: "video", name: "视频", items: [] as any[] },
+      { id: "tray-ref", name: "Reference", items: [] as any[] },
+      { id: "ui-component", name: "Component - UI", items: [] as any[] },
+      { id: "img-char", name: "Image - Character", items: [] as any[] },
+      { id: "img-scene", name: "Image - Scene", items: [] as any[] },
+      { id: "img-prop", name: "Image - Prop", items: [] as any[] },
+      { id: "img-story", name: "Image - Storyboard", items: [] as any[] },
+      { id: "audio", name: "Audio", items: [] as any[] },
+      { id: "text-asset", name: "Text - Asset", items: [] as any[] },
+      { id: "text-story", name: "Text - Storyboard", items: [] as any[] },
+      { id: "text", name: "Text", items: [] as any[] },
+      { id: "video", name: "Video", items: [] as any[] },
     ];
 
     finalAssets.forEach((asset) => {
@@ -7078,7 +8003,7 @@ ${executionPrompt}
     const cursorPos = activeRef.current?.selectionStart || 0;
     const textBeforeCursor = value.slice(0, cursorPos);
     const textAfterCursor = value.slice(cursorPos);
-    // Check if we are following an asset label like "图1 @" or "王伟=@"
+    // Check if we are following an asset label like "图1 @" or "王五=@"
     let bindingMatch = textBeforeCursor.match(
       /(图|历史图|音频|视频)(\d+)\s*@$/,
     );
@@ -7103,7 +8028,7 @@ ${executionPrompt}
     let newTextBefore = "";
 
     if (bindingMatch && asset.isProjectAsset) {
-      // Input: "图1 @" -> Output: "图1=@王伟 "
+      // Input: "图1 @" -> Output: "图1=@王五 "
       const assetLabel = bindingMatch[1] + bindingMatch[2];
       newTextBefore =
         textBeforeCursor.slice(0, bindingMatch.index) +
@@ -7115,7 +8040,7 @@ ${executionPrompt}
         setScriptConfig((prev) => ({ ...prev, prompt: newValue }));
       else setImageConfig({ ...imageConfig, prompt: newValue });
     } else if (reverseBindingMatch && !asset.isProjectAsset) {
-      // Input: "王伟=@" -> Output: "王伟=@图1 "
+      // Input: "王五=@" -> Output: "王五=@图1 "
       const name = reverseBindingMatch[1];
       newTextBefore =
         textBeforeCursor.slice(0, reverseBindingMatch.index) +
@@ -7187,7 +8112,7 @@ ${executionPrompt}
     const cost = 2;
 
     if (userPoints < cost) {
-      setError("积分不足 (开始创作需账户内至少存有 2 积分)");
+      setError("积分不足（开始创作需要账户内至少有 2 积分）");
       return;
     }
 
@@ -7227,19 +8152,14 @@ ${executionPrompt}
 
       if (activeSubTab === "analyze") {
         systemPrompt = ANALYZER_SYSTEM_PROMPT;
-        userPrompt = `请对以下剧本进行深度拉片分析：\n\n${prompt}`;
+        userPrompt = `Analyze the following script in depth:\n\n${prompt}`;
         parts.push({ text: `${systemPrompt}\n\n${userPrompt}` });
       } else if (activeSubTab === "video") {
-        systemPrompt = `你是一位顶级的影音拉片专家和视听语言分析师。你的任务是对用户提供的剧本或视频描述进行深度视听解构，将其转化为可供拍摄执行的专业分镜脚本。
-        分析要求：
-        1. 景别设计：根据情感张力设计大特写、特写、近景等。
-        2. 光影色调：设计符合氛围的影调风格。
-        3. 动作调度：精准描述人物动作指令。
-        4. 音效与音乐：给出具体的环境音及配乐方向建议。
-        5. 拍摄技巧：提及特定拍摄技术（如希区柯克变焦、长镜头等）。`;
+        systemPrompt =
+          "You are a senior film breakdown expert. Convert the provided script, description, or video into a practical shot-by-shot production analysis covering shot size, lighting, blocking, sound, music, and camera technique.";
         userPrompt = prompt.trim()
-          ? `请对以下内容进行专业的影音拉片分析与分镜拆解：\n\n${prompt}`
-          : `请对提供的视频进行专业的影音拉片分析与分镜拆解。`;
+          ? `Analyze the following content and break it into production-ready shots:\n\n${prompt}`
+          : "Analyze the provided video and break it into production-ready shots.";
 
         parts.push({ text: `${systemPrompt}\n\n${userPrompt}` });
 
@@ -7262,66 +8182,49 @@ ${executionPrompt}
         systemPrompt = REWRITE_SYSTEM_PROMPT;
         userPrompt = `请根据我的要求和设定的参数（篇幅：${scriptConfig.length.label}，单集时长：${scriptConfig.duration.label}），对以下剧本内容进行深度改写，在规避版权的同时保持原有的叙事张力和调性：\n\n${prompt}`;
         parts.push({ text: `${systemPrompt}\n\n${userPrompt}` });
-      } else if (activeSubTab !== "create" && activeSubTab !== "createScript" && activeSubTab !== "create-script" && activeSubTab !== "director") {
+      } else if ((activeSubTab as string) !== "create" && (activeSubTab as string) !== "createScript" && (activeSubTab as string) !== "create-script" && (activeSubTab as string) !== "director") {
         // Custom skill support inside script generation
         const activeTabStr = activeSubTab as any;
         const customSkill = workflowSkills.find(
           (s) => s.id === activeTabStr || s.id === activeTabStr.replace(/_/, "-")
         );
         if (customSkill) {
-          systemPrompt = customSkill.instruction || "你是一个实用的AI短剧创作助手。";
+          systemPrompt = customSkill.instruction || "You are a practical AI script writing assistant.";
           let optionsText = "";
           if (customSkill.customOptions && customSkill.customOptions.length > 0) {
-            optionsText = "设定参数：\n";
+            optionsText = "Settings:\n";
             customSkill.customOptions.forEach((opt: any) => {
               const val = scriptConfig[opt.id] || opt.choices?.[0] || "";
               optionsText += `- ${opt.name}: ${val}\n`;
             });
           }
-          userPrompt = `${optionsText}\n输入内容/指令：\n${prompt}`;
+          userPrompt = `${optionsText}\nInput / instruction:\n${prompt}`;
           parts.push({ text: `${systemPrompt}\n\n${userPrompt}` });
         } else {
-          systemPrompt = `你是一位资深的编剧。`;
+          systemPrompt = "You are an experienced screenwriter.";
           userPrompt = prompt;
           parts.push({ text: `${systemPrompt}\n\n${userPrompt}` });
         }
       } else {
         // Default: Create or Continue
         if (scriptConfig.creationType === "continue") {
-          systemPrompt = `你是一位资深的${scriptConfig.genre.name}编剧，擅长模仿${authorDisplayName}的风格。由于用户想要对已有的故事进行延续，你的任务是扮演剧情续写大师，根据用户给出的已有剧本和后续思路，续写其后传或下一集剧本。`;
+          systemPrompt = `You are an experienced ${scriptConfig.genre.name} screenwriter writing in the style of ${authorDisplayName}. Continue the existing story while preserving continuity, tone, character logic, and narrative rhythm.`;
           userPrompt = prompt.trim()
-            ? `以下是用户提供的已有剧本及续写方向：
-${prompt}
-
-请根据上面的已有剧本内容及其基调风格进行剧情续写：
-要求：
-1. 延续已有剧本。如果已有剧本包含人物、世界观等设计，需严格遵循，保持前后一致性。
-2. 标明续写情节标题（例如：第二集，或者续作章节名）。
-3. 补充或续写后续的核心人物成长与设计。
-4. 包含后续的剧情大纲及下个阶段${scriptConfig.length.label}的短剧纲。
-5. 提供本次续写的下一集完整剧本正文（符合单篇${scriptConfig.duration.label}的时长要求，大约${Math.round(parseFloat(scriptConfig.duration.id) * 1200)}字以上，内容必须极其丰富饱满，包含高密度且富有电影感和张力的台词对白，以及对环境场景、人物动作神态的极精细描写，拒绝一切敷衍与简单的剧情大纲式缩写），保持原有的叙事语言风格、节奏和人物性格张力。`
+            ? `Continue the following existing script or outline:\n\n${prompt}\n\nRequirements:\n1. Preserve existing characters, worldbuilding, tone, and continuity.\n2. Add a clear continuation title or episode/chapter marker.\n3. Extend the central character arcs and plot stakes.\n4. Include a continuation outline for ${scriptConfig.length.label}.\n5. Provide the next complete script segment with dense scenes, dialogue, action, and cinematic detail.`
             : "";
         } else {
-          systemPrompt = `你是一位资深的${scriptConfig.genre.name}编剧，擅长模仿${authorDisplayName}的风格。`;
+          systemPrompt = `You are an experienced ${scriptConfig.genre.name} screenwriter writing in the style of ${authorDisplayName}.`;
           const numEpisodes = parseInt(scriptConfig.length.id) || 1;
           let episodePrompt = "";
           if (numEpisodes === 1) {
-            episodePrompt = `提供第一集完整正文（确保符合每集${scriptConfig.duration.label}的时长要求，大约${Math.round(parseFloat(scriptConfig.duration.id) * 1200)}字以上，内容极其详尽、生动且富有张力，包含极其饱满有深度物和神态，拒绝用缩写或空泛的情节概述带过）。`;
+            episodePrompt = `Provide the complete first episode, matching the ${scriptConfig.duration.label} duration target, with vivid scenes, dialogue, action, and emotional detail.`;
           } else if (numEpisodes <= 5) {
-            episodePrompt = `提供第1集至第${numEpisodes}集全部${numEpisodes}集的完整剧本正文（每集之间用 "---" 进行清晰分割，每集都包含完整、详实、无缩水的台词与对白、极具镜头感的场景和动作设计，并确保每集独立且都完全满足每集${scriptConfig.duration.label}的时长长度，每集实际字数都必须在${Math.round(parseFloat(scriptConfig.duration.id) * 1200)}字以上，整部作品内容必须极其丰富生动，杜绝任何敷衍了事的大纲概括）。`;
+            episodePrompt = `Provide complete scripts for episodes 1-${numEpisodes}, separated by "---", with each episode fully developed and aligned to ${scriptConfig.duration.label}.`;
           } else {
-            episodePrompt = `由于篇幅较长，请先提供前5集（第1集至第5集）的完整剧本正文（每集之间用 "---" 进行清晰分割，每集都包含高密度的台词对白与精细入微的镜头画面感描述。说明后续各集数可使用“续写剧本”生成。确保每一集都充实饱满，实际每集字数均达到${Math.round(parseFloat(scriptConfig.duration.id) * 1200)}字以上，杜绝空洞的几百字短剧情节描绘）。`;
+            episodePrompt = `Because the requested length is large, provide complete scripts for the first 5 episodes, separated by "---", and note that later episodes can be generated through continuation.`;
           }
           userPrompt = prompt.trim()
-            ? `请根据以下大纲创作剧本。
-剧本主题/大纲：${prompt}
-
-要求：
-1. 包含剧本名称。
-2. 包含核心人物小传（3-5人）。
-3. 包含整体剧情大纲及${scriptConfig.length.label}的分集剧情简介。
-4. ${episodePrompt}
-5. 严格遵循所要求的套路、结构 and 遣词造句方式。`
+            ? `Create a script from the following theme or outline:\n\n${prompt}\n\nRequirements:\n1. Include a script title.\n2. Include short biographies for 3-5 core characters.\n3. Include an overall plot outline and episode summaries for ${scriptConfig.length.label}.\n4. ${episodePrompt}\n5. Follow the requested structure, genre, tone, and wording style.`
             : "";
         }
         parts.push({ text: `${systemPrompt}\n\n${userPrompt}` });
@@ -7395,8 +8298,8 @@ ${prompt}
       const deduction = await deductPoints(
         chargeCost,
         activeSubTab === "video"
-          ? `影音拉片量化结算(共 ${text.length} 字): ${prompt.substring(0, 20)}...`
-          : `灵境文造(按量字数结算, 共 ${text.length} 字): ${prompt.substring(0, 20)}...`,
+          ? `影音拉片量化结算（共 ${text.length} 字）: ${prompt.substring(0, 20)}...`
+          : `灵境文创 按量字数结算，共 ${text.length} 字: ${prompt.substring(0, 20)}...`,
       );
       if (!deduction.success) {
         setError(deduction.error || "积分扣除失败");
@@ -7405,6 +8308,11 @@ ${prompt}
 
       const token = localStorage.getItem("token");
       if (token) {
+        const textSectionId: CanvasSectionId = "text-planning";
+        const textBounds = getCanvasSectionDefinition(textSectionId).baseBounds;
+        const textSlot = getCanvasHistory(history, activeCanvasId)
+          .filter((h) => inferCanvasSectionId(h) === textSectionId)
+          .length;
         const historyItem: HistoryItem = {
           id: `script-${Date.now()}`,
           type: "gen_script",
@@ -7419,12 +8327,13 @@ ${prompt}
             duration: scriptConfig.duration.id,
             durationLabel: scriptConfig.duration.label,
             userPrompt: prompt,
+            sectionId: textSectionId,
           },
           timestamp: Date.now(),
-          position: {
-            x: Math.random() * 500 - 250,
-            y: Math.random() * 500 - 250,
-          },
+          position: createCanvasPosition(
+            textBounds.x + 56 + (textSlot % 3) * 420,
+            textBounds.y + 86 + Math.floor(textSlot / 3) * 500,
+          ),
           canvasId: activeCanvasId,
         };
 
@@ -7759,6 +8668,395 @@ ${prompt}
     }
   };
 
+  const buildCanvasPosition = (x: number, y: number) => createCanvasPosition(x, y);
+
+  const getCanvasPointFromClient = (clientX: number, clientY: number) => {
+    const scale = transformState.scale || 1;
+    const canvasEl = document.getElementById("infinite-canvas-grid");
+    if (canvasEl) {
+      const rect = canvasEl.getBoundingClientRect();
+      return {
+        x: (clientX - rect.left) / scale,
+        y: (clientY - rect.top) / scale,
+      };
+    }
+
+    const wrapper = canvasViewportRef.current;
+    if (wrapper) {
+      const rect = wrapper.getBoundingClientRect();
+      return {
+        x: (clientX - rect.left - transformState.x) / scale - 200,
+        y: (clientY - rect.top - transformState.y) / scale - 200,
+      };
+    }
+
+    return { x: clientX, y: clientY };
+  };
+
+  const getCanvasSectionAtPoint = (x: number, y: number): CanvasSectionId | null => {
+    if (layoutMode !== "semi_auto") return null;
+    const matched = semiAutoGroups.find((group) => {
+      const bounds = group.bounds;
+      return (
+        x >= bounds.x &&
+        x <= bounds.x + bounds.width &&
+        y >= bounds.y &&
+        y <= bounds.y + bounds.height
+      );
+    });
+    return isCanvasSectionId(matched?.id) ? matched.id : null;
+  };
+
+  const getContextMenuTargetSectionId = (
+    preferredSectionId?: CanvasSectionId,
+  ): CanvasSectionId | null => {
+    if (contextMenu) {
+      const pointedSectionId = getCanvasSectionAtPoint(contextMenu.canvasX, contextMenu.canvasY);
+      if (pointedSectionId) return pointedSectionId;
+    }
+    return preferredSectionId || null;
+  };
+
+  const getCanvasSectionBounds = (sectionId: CanvasSectionId) => {
+    const renderedSection = semiAutoGroups.find((group) => group.id === sectionId);
+    return renderedSection?.bounds || getCanvasSectionDefinition(sectionId).baseBounds;
+  };
+
+  const findUnoccupiedPositionInSection = (
+    startX: number,
+    startY: number,
+    sectionId: CanvasSectionId,
+    historyItems: HistoryItem[],
+    ignoreId?: string,
+  ): { x: number; y: number } => {
+    const bounds = getCanvasSectionBounds(sectionId);
+    const padding = 56;
+    const fallbackCardWidth = 360;
+    const fallbackCardHeight = 420;
+    const minX = bounds.x + padding;
+    const minY = bounds.y + padding + 24;
+    const maxX = Math.max(minX, bounds.x + bounds.width - padding - fallbackCardWidth);
+    const maxY = Math.max(minY, bounds.y + bounds.height - padding - fallbackCardHeight);
+    const clampedX = Math.min(Math.max(startX, minX), maxX);
+    const clampedY = Math.min(Math.max(startY, minY), maxY);
+    const scopedItems = historyItems.filter((item) => inferCanvasSectionId(item) === sectionId);
+    return findUnoccupiedPosition(clampedX, clampedY, scopedItems, ignoreId);
+  };
+
+  const getContextMenuInsertPosition = (preferredSectionId?: CanvasSectionId) => {
+    const targetSectionId = getContextMenuTargetSectionId(preferredSectionId);
+    if (!contextMenu) {
+      const centerPos = getViewportCenterPosition();
+      if (targetSectionId && layoutMode === "semi_auto") {
+        const freeSectionPos = findUnoccupiedPositionInSection(
+          centerPos.x,
+          centerPos.y,
+          targetSectionId,
+          getCanvasHistory(history, activeCanvasId),
+        );
+        return buildCanvasPosition(freeSectionPos.x, freeSectionPos.y);
+      }
+      return buildCanvasPosition(centerPos.x, centerPos.y);
+    }
+
+    if (targetSectionId && layoutMode === "semi_auto") {
+      const freeSectionPos = findUnoccupiedPositionInSection(
+        contextMenu.canvasX - 180,
+        contextMenu.canvasY - 170,
+        targetSectionId,
+        getCanvasHistory(history, activeCanvasId),
+      );
+      return buildCanvasPosition(freeSectionPos.x, freeSectionPos.y);
+    }
+
+    const freePos = findUnoccupiedPosition(
+      contextMenu.canvasX - 180,
+      contextMenu.canvasY - 170,
+      getCanvasHistory(history, activeCanvasId),
+    );
+    return buildCanvasPosition(freePos.x, freePos.y);
+  };
+
+  const addCanvasItemFromMenu = (item: HistoryItem, message: string) => {
+    const sectionedItem = withCanvasSection(item);
+    setHistory((prev) => [sectionedItem, ...prev]);
+    setSelectedHistoryId(sectionedItem.id);
+    setSelectedIds([sectionedItem.id]);
+    syncToCloud(sectionedItem);
+    setError(message);
+    setIsCriticalError(false);
+    setContextMenu(null);
+    setHoveredContextItem(null);
+  };
+
+  const createCanvasTextCard = (
+    kind: "plain" | "script" | "shot" | "asset" | "ppt" | "table" | "brief" | "marketing"
+  ) => {
+    if (!contextMenu) return;
+
+    const timestamp = Date.now();
+    const defaultSectionId = getCanvasTextCardSectionId(kind);
+    const targetSectionId = getContextMenuTargetSectionId(defaultSectionId) || defaultSectionId;
+    const position = getContextMenuInsertPosition(targetSectionId);
+    const parentId = contextMenu.arrowDragSourceIds?.join(",") || "";
+    const model = localTextModel || config?.script?.model || "gemini-3.5-flash";
+    const presets = {
+      plain: {
+        idPrefix: "text",
+        title: "文本卡片",
+        skillId: "none",
+        classification: "script",
+        documentKind: "plain",
+        isPlaceholder: true,
+      },
+      script: {
+        idPrefix: "script",
+        title: "剧本卡片",
+        skillId: "create-script",
+        classification: "script",
+        documentKind: "script",
+      },
+      shot: {
+        idPrefix: "shot",
+        title: "分镜卡片",
+        skillId: "shot-prompt",
+        classification: "shot_prompt",
+        documentKind: "shot_prompt",
+      },
+      asset: {
+        idPrefix: "assets",
+        title: "资产卡片",
+        skillId: "asset-prompt",
+        classification: "text_asset",
+        documentKind: "asset",
+      },
+      ppt: {
+        idPrefix: "ppt",
+        title: "PPT卡片",
+        skillId: "office-pitch-deck",
+        classification: "script",
+        documentKind: "ppt",
+      },
+      table: {
+        idPrefix: "table",
+        title: "表格卡片",
+        skillId: "office-excel-report",
+        classification: "script",
+        documentKind: "table",
+      },
+      brief: {
+        idPrefix: "brief",
+        title: "商业简报卡片",
+        skillId: "office-brief-proposal",
+        classification: "script",
+        documentKind: "brief",
+      },
+      marketing: {
+        idPrefix: "marketing",
+        title: "营销脚本卡片",
+        skillId: "office-ad-script",
+        classification: "script",
+        documentKind: "marketing",
+      },
+    } as const;
+
+    const preset = presets[kind];
+    const isPlaceholderTextCard = kind === "plain";
+    const item: HistoryItem = {
+      id: `${preset.idPrefix}-${timestamp}`,
+      type: "gen_script",
+      status: "success",
+      parentId,
+      revisedPrompt: "",
+      timestamp,
+      canvasId: activeCanvasId,
+      position,
+      classification: preset.classification,
+      config: {
+        title: preset.title,
+        originalName: preset.title,
+        prompt: "",
+        revisedPrompt: "",
+        model,
+        modelId: model,
+        skillId: preset.skillId,
+        classification: preset.classification,
+        documentKind: preset.documentKind,
+        isManualNode: true,
+        isPlaceholder: isPlaceholderTextCard || undefined,
+        isManualPlaceholder: isPlaceholderTextCard || undefined,
+        sectionId: targetSectionId,
+      },
+    };
+
+    addCanvasItemFromMenu(item, `已新建${preset.title}`);
+  };
+
+  const createCanvasPlaceholderCard = (kind: "text" | "image" | "video") => {
+    if (!contextMenu) return;
+
+    const timestamp = Date.now();
+    const defaultSectionId: CanvasSectionId = kind === "text" ? "text-planning" : "media-zone";
+    const targetSectionId = getContextMenuTargetSectionId(defaultSectionId) || defaultSectionId;
+    const position = getContextMenuInsertPosition(targetSectionId);
+    const parentId = contextMenu.arrowDragSourceIds?.join(",") || "";
+    const type = kind === "text" ? "gen_script" : kind;
+    const title =
+      kind === "text"
+        ? "文本占位卡片"
+        : kind === "image"
+          ? "图片占位卡片"
+          : "视频占位卡片";
+
+    const baseItem: HistoryItem = {
+      id: `${kind === "text" ? "text" : "placeholder-" + kind}-${timestamp}`,
+      type: type as HistoryItem["type"],
+      status: kind === "text" ? "success" : "draft_new",
+      parentId,
+      revisedPrompt: "",
+      timestamp,
+      canvasId: activeCanvasId,
+      position,
+      config: {
+        title,
+        prompt: "",
+        isPlaceholder: true,
+        isManualPlaceholder: true,
+        sectionId: targetSectionId,
+      },
+    };
+
+    if (kind === "image") {
+      const imageModel = getActiveImageDefaultsModel(imageConfig.model);
+      const imageDefaults = applyImageGenerationDefaults(
+        {
+          model: imageModel,
+          aspectRatio: "1:1",
+          imageSize: "1K",
+        },
+        config,
+        imageModel,
+      );
+
+      baseItem.config = {
+        ...baseItem.config,
+        model: imageModel,
+        aspectRatio: imageDefaults.aspectRatio,
+        imageSize: imageDefaults.imageSize,
+        bananaAspectRatio: imageDefaults.bananaAspectRatio,
+        bananaImageSize: imageDefaults.bananaImageSize,
+        gridMode: "none",
+        referenceImages: [],
+      };
+    } else if (kind === "video") {
+      const videoModel = getActiveVideoDefaultsModel(videoConfig.model);
+      const videoDefaults = applyVideoGenerationDefaults(
+        {
+          model: videoModel,
+          resolution: "720p",
+          aspectRatio: "16:9",
+          duration: "5",
+          videoMode: "all-around",
+        },
+        config,
+        videoModel,
+      );
+
+      baseItem.config = {
+        ...baseItem.config,
+        resolution: videoDefaults.resolution,
+        aspectRatio: videoDefaults.aspectRatio,
+        duration: videoDefaults.duration,
+        model: videoModel,
+        videoMode: videoDefaults.videoMode,
+        referenceAssets: [],
+      };
+    }
+
+    addCanvasItemFromMenu(baseItem, `已新建${title}`);
+  };
+
+  const createCanvasProfessionalNode = (kind: "text" | "image" | "video") => {
+    if (!contextMenu) return;
+
+    const timestamp = Date.now();
+    const defaultSectionId: CanvasSectionId = "workflow-zone";
+    const targetSectionId = getContextMenuTargetSectionId(defaultSectionId) || defaultSectionId;
+    const position = getContextMenuInsertPosition(targetSectionId);
+    const parentId = contextMenu.arrowDragSourceIds?.join(",") || "";
+    const type = kind === "text" ? "gen_script" : kind;
+    const title =
+      kind === "text"
+        ? "策划脚本节点"
+        : kind === "image"
+          ? "原画生图节点"
+          : "视频合成节点";
+    const model =
+      kind === "text"
+        ? localTextModel || config?.script?.model || "gemini-3.5-flash"
+        : kind === "image"
+          ? getActiveImageDefaultsModel(imageConfig.model)
+          : getActiveVideoDefaultsModel(videoConfig.model);
+    const imageNodeDefaults =
+      kind === "image"
+        ? applyImageGenerationDefaults(
+            {
+              model,
+              aspectRatio: "1:1",
+              imageSize: "1K",
+            },
+            config,
+            model,
+          )
+        : null;
+    const videoNodeDefaults =
+      kind === "video"
+        ? applyVideoGenerationDefaults(
+            {
+              model,
+              resolution: "720p",
+              aspectRatio: "16:9",
+              duration: "5",
+              videoMode: "all-around",
+            },
+            config,
+            model,
+          )
+        : null;
+
+    const item: HistoryItem = {
+      id: `node-${kind}-${timestamp}`,
+      type: type as HistoryItem["type"],
+      status: "pipeline_pending",
+      parentId,
+      prompt: "",
+      revisedPrompt: "",
+      timestamp,
+      canvasId: activeCanvasId,
+      position,
+      config: {
+        title,
+        prompt: "",
+        revisedPrompt: "",
+        model,
+        modelId: model,
+        skillId: "none",
+        aspectRatio: kind === "image" ? imageNodeDefaults?.aspectRatio : kind === "video" ? videoNodeDefaults?.aspectRatio : "16:9",
+        imageSize: kind === "image" ? imageNodeDefaults?.imageSize : undefined,
+        bananaAspectRatio: kind === "image" ? imageNodeDefaults?.bananaAspectRatio : undefined,
+        bananaImageSize: kind === "image" ? imageNodeDefaults?.bananaImageSize : undefined,
+        resolution: kind === "video" ? videoNodeDefaults?.resolution : undefined,
+        duration: kind === "video" ? videoNodeDefaults?.duration : undefined,
+        videoMode: kind === "video" ? videoNodeDefaults?.videoMode : undefined,
+        isPipelineNode: true,
+        isManualNode: true,
+        sectionId: targetSectionId,
+      },
+    };
+
+    addCanvasItemFromMenu(item, `已新建${title}`);
+  };
+
   const getTreeIds = (nodeId: string, items: HistoryItem[]): string[] => {
     const desc: string[] = [nodeId];
     const children = items.filter((h) => {
@@ -7772,7 +9070,9 @@ ${prompt}
   };
 
   const autoLayoutHorizontalFlow = (shouldFocus = false) => {
-    const visibleItems = history.filter((h) => !h.hiddenFromCanvas);
+    const visibleItems = history.filter(
+      (h) => normalizeCanvasId(h.canvasId) === normalizeCanvasId(activeCanvasId) && !h.hiddenFromCanvas
+    );
     if (visibleItems.length === 0) return;
 
     // Find roots (items without a parent or whose parent is not in the history)
@@ -7835,10 +9135,8 @@ ${prompt}
         const itemWithPos = {
           ...item,
           position: {
-            x: targetX,
-            y: targetY,
-            customX: targetX,
-            customY: targetY,
+            ...(item.position || {}),
+            ...createCanvasPosition(targetX, targetY),
           },
         };
         return itemWithPos;
@@ -7862,7 +9160,7 @@ ${prompt}
     // Reconstruct the coordinates for mindmap layout prioritizing any existing mindmap presets.
     // This safeguards against stale layoutMode state values during transitions.
     const visibleItems = history
-      .filter((h) => !h.hiddenFromCanvas)
+      .filter((h) => normalizeCanvasId(h.canvasId) === normalizeCanvasId(activeCanvasId) && !h.hiddenFromCanvas)
       .map((item) => {
         if (!item.position) return item;
         const x = item.position.mindmap?.x ?? item.position.x;
@@ -7993,7 +9291,7 @@ ${prompt}
   const autoLayoutBentoGrid = (shouldFocus = false) => {
     // Reconstruct the sorted list of visible items
     const visibleItems = history
-      .filter((h) => !h.hiddenFromCanvas)
+      .filter((h) => normalizeCanvasId(h.canvasId) === normalizeCanvasId(activeCanvasId) && !h.hiddenFromCanvas)
       .sort((a, b) => a.timestamp - b.timestamp);
     if (visibleItems.length === 0) return;
 
@@ -8070,15 +9368,85 @@ ${prompt}
   const autoLayoutSemiAuto = (shouldFocus = false) => {
     // Reconstruct the sorted list of visible items
     const visibleItems = history
-      .filter((h) => !h.hiddenFromCanvas)
+      .filter((h) => normalizeCanvasId(h.canvasId) === normalizeCanvasId(activeCanvasId) && !h.hiddenFromCanvas)
       .sort((a, b) => a.timestamp - b.timestamp);
     if (visibleItems.length === 0) return;
+
+    const sectionPadding = 56;
+    const sectionHeaderHeight = 86;
+    const sectionGapX = 50;
+    const sectionGapY = 50;
+    const newSectionPositions: Record<string, { x: number; y: number; sectionId: CanvasSectionId }> = {};
+
+    CANVAS_SECTION_DEFINITIONS.forEach((section) => {
+      const sectionItems = visibleItems.filter((item) => inferCanvasSectionId(item) === section.id);
+      if (sectionItems.length === 0) return;
+
+      const startX = section.baseBounds.x + sectionPadding;
+      const startY = section.baseBounds.y + sectionHeaderHeight;
+      const maxRowRight = section.baseBounds.x + section.baseBounds.width - sectionPadding;
+      let cursorX = startX;
+      let cursorY = startY;
+      let rowHeight = 0;
+
+      sectionItems.forEach((item) => {
+        const size = getActualCanvasCardSizeAndPort(item);
+        if (cursorX > startX && cursorX + size.width > maxRowRight) {
+          cursorX = startX;
+          cursorY += rowHeight + sectionGapY;
+          rowHeight = 0;
+        }
+
+        newSectionPositions[item.id] = {
+          x: Math.round(cursorX),
+          y: Math.round(cursorY),
+          sectionId: section.id,
+        };
+        cursorX += size.width + sectionGapX;
+        rowHeight = Math.max(rowHeight, size.height);
+      });
+    });
+
+    const sectionedHistory = history.map((h) => {
+      const nextPosition = newSectionPositions[h.id];
+      if (!nextPosition) return h;
+
+      return {
+        ...h,
+        config: {
+          ...(h.config || {}),
+          sectionId: nextPosition.sectionId,
+        },
+        position: {
+          ...h.position,
+          x: nextPosition.x,
+          y: nextPosition.y,
+          customX: nextPosition.x,
+          customY: nextPosition.y,
+          bento: h.position?.bento || { x: nextPosition.x, y: nextPosition.y },
+          semi_auto: { x: nextPosition.x, y: nextPosition.y },
+        },
+      };
+    });
+
+    sectionedHistory.forEach((item) => {
+      if (newSectionPositions[item.id]) {
+        syncToCloud(item);
+      }
+    });
+
+    setHistory(sectionedHistory);
+
+    if (shouldFocus && visibleItems.length > 0) {
+      handleFocusItem(visibleItems[0]);
+    }
+    return;
 
     const getScriptGroupWeight = (item: HistoryItem) => {
       const cls = getHistoryItemClassification(item);
       if (cls === "text_asset") return 1; // 资产
       if (cls === "shot_prompt") return 2; // 分镜提示词
-      return 0; // 剧本
+      return 0; // 鍓ф湰
     };
 
     const scriptItems = visibleItems
@@ -8194,7 +9562,7 @@ ${prompt}
       if (size.width > storyboardMaxCardWidth) storyboardMaxCardWidth = size.width;
     });
 
-    // Make all column widths exactly identical (左右都对齐，一样大小)
+    // Make all column widths exactly identical (左右都对齐，一样大小
     const finalColWidth = Math.max(
       Math.max(440, charMaxCardWidth + 80),
       Math.max(440, sceneMaxCardWidth + 80),
@@ -8322,11 +9690,14 @@ ${prompt}
   useEffect(() => {
     if (isDraggingCard) return;
     if (layoutMode === "bento") {
-      autoLayoutBentoGrid(false);
-    } else if (layoutMode === "semi_auto") {
-      autoLayoutSemiAuto(false);
+      const hasMissingBentoPosition = getCanvasHistory(history, activeCanvasId)
+        .filter((h) => !h.hiddenFromCanvas)
+        .some((h) => !h.position?.bento);
+      if (hasMissingBentoPosition) {
+        autoLayoutBentoGrid(false);
+      }
     }
-  }, [layoutTriggerChain, layoutMode, isDraggingCard]);
+  }, [layoutTriggerChain, layoutMode, isDraggingCard, activeCanvasId, history]);
 
   const handleCanvasDrop = async (
     e: React.DragEvent<HTMLDivElement>,
@@ -8334,6 +9705,7 @@ ${prompt}
   ) => {
     e.preventDefault();
     console.log(">>> [DEBUG] handleCanvasDrop triggered at client coordinates:", e.clientX, e.clientY, "canvas coordinates:", position);
+    const dropSectionId = getCanvasSectionAtPoint(position.x, position.y);
 
     try {
       if (!e.dataTransfer) {
@@ -8421,7 +9793,19 @@ ${prompt}
 
           if (type) {
             const uploadId = `upl_${Date.now()}_${Math.random().toString(36).substring(2, 5)}`;
-            const safePos = findUnoccupiedPosition(position.x, position.y, tempHistory);
+            const uploadSectionId =
+              dropSectionId ||
+              inferCanvasSectionId({
+                id: uploadId,
+                type,
+                status: "loading",
+                timestamp: Date.now(),
+                config: {},
+              } as HistoryItem);
+            const safePos =
+              layoutMode === "semi_auto"
+                ? findUnoccupiedPositionInSection(position.x, position.y, uploadSectionId, tempHistory)
+                : findUnoccupiedPosition(position.x, position.y, tempHistory);
             console.log(`>>> [DEBUG] handleCanvasDrop: Pre-creating placeholder for local file: ${file.name}, type: ${type}, uploadId: ${uploadId} at safe position:`, safePos);
 
             let placeholderTitle = "正在上传文件...";
@@ -8431,7 +9815,7 @@ ${prompt}
             else if (type === "gen_script") {
               const ext = file.name.split(".").pop()?.toLowerCase();
               if (ext === "pdf") placeholderTitle = "正在解析 PDF 文档...";
-              else if (ext === "xlsx" || ext === "xls") placeholderTitle = "正在解析 Excel 表格...";
+              else if (ext === "xlsx" || ext === "xls") placeholderTitle = "正在解析 Excel 琛ㄦ牸...";
               else if (ext === "docx" || ext === "doc") placeholderTitle = "正在解析 Word 文档...";
               else placeholderTitle = "正在提取文本内容...";
             }
@@ -8448,6 +9832,7 @@ ${prompt}
                 isUpload: true,
                 originalName: file.name,
                 isPlaceholder: true,
+                sectionId: uploadSectionId,
               },
             };
             
@@ -8476,7 +9861,7 @@ ${prompt}
                   }
 
                   console.log(`>>> [DEBUG] handleCanvasDrop: Text file parsed successfully. Length: ${textResult.length}`);
-                  saveUploadedFileToHistory(file, textResult, "gen_script", uploadId, safePos);
+                  saveUploadedFileToHistory(file, textResult, "gen_script", uploadId, safePos, uploadSectionId);
                 } catch (err: any) {
                   console.warn(`>>> [DEBUG] handleCanvasDrop: Text file extraction failed:`, err);
                   setHistory((prev) => prev.filter((h) => h.id !== uploadId));
@@ -8489,7 +9874,7 @@ ${prompt}
               reader.onload = async (event) => {
                 const data = event.target?.result as string;
                 console.log(`>>> [DEBUG] handleCanvasDrop: Local file read completed for ${file.name}. Initializing save...`);
-                saveUploadedFileToHistory(file, data, type, uploadId, safePos);
+                saveUploadedFileToHistory(file, data, type, uploadId, safePos, uploadSectionId);
               };
               reader.onerror = () => {
                 console.warn(`>>> [DEBUG] handleCanvasDrop: FileReader failed for ${file.name}`);
@@ -8500,7 +9885,7 @@ ${prompt}
             }
           } else {
             console.warn(`>>> [DEBUG] handleCanvasDrop: Unsupported file type for drop, file: ${file.name}, MIME: ${file.type}`);
-            setError("只支持拖拽图片、视频、音频及常见文本文档格式（txt、doc、docx、pdf、xlsx等）");
+            setError("只支持拖拽图片、视频、音频及常见文本文档格式（txt、doc、docx、pdf、xlsx绛夛級");
             setTimeout(() => setError(null), 5000);
           }
         });
@@ -8595,7 +9980,7 @@ ${prompt}
             }
           }
         } catch (err) {
-          console.error("解析HTML内容失败:", err);
+          console.error("解析 HTML 内容失败:", err);
         }
       }
 
@@ -8644,7 +10029,19 @@ ${prompt}
           }
 
           const uploadId = `upl_${Date.now()}_${Math.random().toString(36).substring(2, 5)}`;
-          const safePos = findUnoccupiedPosition(position.x, position.y, history);
+          const uploadSectionId =
+            dropSectionId ||
+            inferCanvasSectionId({
+              id: uploadId,
+              type,
+              status: "loading",
+              timestamp: Date.now(),
+              config: {},
+            } as HistoryItem);
+          const safePos =
+            layoutMode === "semi_auto"
+              ? findUnoccupiedPositionInSection(position.x, position.y, uploadSectionId, history)
+              : findUnoccupiedPosition(position.x, position.y, history);
           console.log(`>>> [DEBUG] handleCanvasDrop: Pre-creating placeholder for URL drag: ${draggedUrl.substring(0, 60)}, parsed type: ${type}, uploadId: ${uploadId}`);
 
           // Pre-create placeholder inside canvas
@@ -8659,6 +10056,7 @@ ${prompt}
               isUpload: true,
               originalName: `link_asset.${type === "image" ? "png" : type === "video" ? "mp4" : "mp3"}`,
               isPlaceholder: true,
+              sectionId: uploadSectionId,
             },
           };
           setHistory((prev) => [loadingItem, ...prev]);
@@ -8670,7 +10068,8 @@ ${prompt}
                 draggedUrl,
                 type,
                 uploadId,
-                safePos
+                safePos,
+                uploadSectionId
               );
             } else {
               const response = await fetch(draggedUrl);
@@ -8704,7 +10103,8 @@ ${prompt}
                   base64Data,
                   finalType,
                   uploadId,
-                  safePos
+                  safePos,
+                  uploadSectionId
                 );
               };
               fileReader.readAsDataURL(blob);
@@ -8717,7 +10117,8 @@ ${prompt}
               draggedUrl,
               type,
               uploadId,
-              safePos
+              safePos,
+              uploadSectionId
             );
           }
           return;
@@ -8733,7 +10134,19 @@ ${prompt}
             const type = dataObj.type || (dataObj.videoUrl ? "video" : "image");
             
             const uploadId = `upl_${Date.now()}_${Math.random().toString(36).substring(2, 5)}`;
-            const safePos = findUnoccupiedPosition(position.x, position.y, history);
+            const uploadSectionId =
+              dropSectionId ||
+              inferCanvasSectionId({
+                id: uploadId,
+                type,
+                status: "loading",
+                timestamp: Date.now(),
+                config: {},
+              } as HistoryItem);
+            const safePos =
+              layoutMode === "semi_auto"
+                ? findUnoccupiedPositionInSection(position.x, position.y, uploadSectionId, history)
+                : findUnoccupiedPosition(position.x, position.y, history);
             console.log(`>>> [DEBUG] handleCanvasDrop: Custom JSON payload dropped. URL: ${fileUrl}, type: ${type}, uploadId: ${uploadId}`);
             
             // Pre-create placeholder inside canvas for responsive feedback
@@ -8748,6 +10161,7 @@ ${prompt}
                 isUpload: true,
                 originalName: dataObj.title || dataObj.name || `dragged_asset`,
                 isPlaceholder: true,
+                sectionId: uploadSectionId,
               },
             };
             setHistory((prev) => [loadingItem, ...prev]);
@@ -8757,7 +10171,8 @@ ${prompt}
               fileUrl,
               type,
               uploadId,
-              safePos
+              safePos,
+              uploadSectionId
             );
           }
         } catch (err) {
@@ -8787,21 +10202,15 @@ ${prompt}
     try {
       let systemPrompt = "";
       if (itemType === "video") {
-        systemPrompt = `你现在是一个专业的视频导演和提示词专家。请将以下简单的描述词优化为详细、生动、具有电影感的视频生成提示词。
-        要求：
-        1. 增加镜头运动（如：推、拉、摇、移）、光影变化、氛围感、动作细节等描述。
-        2. 必须以 JSON 格式输出，格式为：{"enhancedPrompt": "优化后的详细视频提示词"}。
-        3. 不要输出任何其他文字，只输出 JSON。`;
+        systemPrompt =
+          'You are a professional video director and prompt engineer. Expand the user description into a cinematic video generation prompt. Add camera movement, lighting changes, atmosphere, action detail, and timing. Return only JSON in the format {"enhancedPrompt":"..."}.';
       } else {
-        systemPrompt = `你现在是一位顶级视觉艺术家和创意提示词专家。你的任务是将用户简略的描述扩展为极具美感、细节丰富且符合物理规律的视觉提示词。请重点描述光影、材质、构图和氛围。
-        要求：
-        1. 增加光影、构图、材质、风格等细节描述。
-        2. 必须以 JSON 格式输出，格式为：{"enhancedPrompt": "优化后的详细提示词"}。
-        3. 不要输出任何其他文字，只输出 JSON。`;
+        systemPrompt =
+          'You are a senior visual artist and prompt engineer. Expand the user description into a detailed image generation prompt with lighting, composition, materials, style, and atmosphere. Return only JSON in the format {"enhancedPrompt":"..."}.';
       }
 
       const parts: any[] = [
-        { text: `${systemPrompt}\n\n原始描述：${currentPrompt}` },
+        { text: `${systemPrompt}\n\nOriginal description:\n${currentPrompt}` },
       ];
 
       referenceFiles.forEach((ref: any, idx: number) => {
@@ -8812,7 +10221,7 @@ ${prompt}
               mimeType: ref.mimeType || "image/png",
             },
           });
-          parts.push({ text: `参考图${idx + 1} (图${idx + 1})` });
+          parts.push({ text: `Reference image ${idx + 1}` });
         }
       });
 
@@ -8828,7 +10237,7 @@ ${prompt}
           ],
           config: {
             systemInstruction:
-              "你是一位顶级视觉艺术家和创意提示词专家。请将以下原始描述优化为详细、精美且有画面的视觉提示词，并返回 JSON 格式，包含 'enhancedPrompt' 字段。",
+              'Optimize the user prompt and return JSON with an "enhancedPrompt" field.',
             responseMimeType: "application/json",
           },
         },
@@ -8868,7 +10277,7 @@ ${prompt}
             (p) => (p.config?.isSkillNode || p.config?.isIntegratedModelNode) && p.status !== "success"
           );
           if (hasExecutableParent) {
-            setError("该节点已被上游连接，请运行上游「AI工作流/集成节点」进行生成");
+            setError("该节点已被上游连接，请运行上游「AI工作流集成节点」进行生成");
             return;
           }
         }
@@ -8954,7 +10363,7 @@ ${prompt}
     setError(null);
     const result = await deductPoints(
       cost,
-      `灵境图片 (模型: ${currentConfig.model || 'nano banana 2'}, ${currentConfig.imageSize || "标准"})`,
+      `灵境图片 (模型: ${currentConfig.model || 'nano banana 2'}, ${currentConfig.imageSize || "鏍囧噯"})`,
       taskId
     );
     if (!result.success) {
@@ -9179,7 +10588,7 @@ ${prompt}
         }
       } else if (currentConfig.gridMode === "six-view") {
         const modeConfig = GRID_MODES.find((m) => m.value === "six-view");
-        if (modeConfig && !finalPrompt.includes("上下各1/2")) {
+        if (modeConfig && !finalPrompt.includes("上下左右/2")) {
           finalPrompt = `${modeConfig.prompt}。角色描述：${finalPrompt}`;
         }
       } else if (currentConfig.gridMode === "scene-plan") {
@@ -9198,19 +10607,19 @@ ${prompt}
             userDesc = userDesc.replace(modeConfig.prompt, "").trim();
           }
           // Always use the full instructions for the AI
-          finalPrompt = `${modeConfig.prompt}，人物在红色色块位置。动作描述：${userDesc || "保持默认姿态"}，动作对应红色线框所示姿态。`;
+          finalPrompt = `${modeConfig.prompt}. Character should be placed in the red block position. Action description: ${userDesc || "keep the default pose"}.`;
         }
       } else if (currentConfig.gridMode === "grid-storyboard") {
         const modeConfig = GRID_MODES.find(
           (m) => m.value === "grid-storyboard",
         );
-        if (modeConfig && !finalPrompt.includes("3X3九宫格")) {
-          finalPrompt = `${modeConfig.prompt}。场景描述：${finalPrompt}`;
+        if (modeConfig && !finalPrompt.includes("3x3 storyboard")) {
+          finalPrompt = `${modeConfig.prompt}. Scene description: ${finalPrompt}`;
         }
       } else if (currentConfig.gridMode === "storyboard") {
         const modeConfig = GRID_MODES.find((m) => m.value === "storyboard");
-        if (modeConfig && !finalPrompt.includes("故事分镜面板图")) {
-          finalPrompt = `${modeConfig.prompt}：${finalPrompt}`;
+        if (modeConfig && !finalPrompt.includes("storyboard panel")) {
+          finalPrompt = `${modeConfig.prompt}, ${finalPrompt}`;
         }
       } else if (currentConfig.gridMode === "panorama") {
         const modeConfig = GRID_MODES.find((m) => m.value === "panorama");
@@ -9220,7 +10629,7 @@ ${prompt}
         ) {
           let refText = "";
           if (finalReferenceImages.length > 0) {
-            refText = `\n[Reference Images]: Please use the provided reference images (图1, 图2, etc.) to guide the visual style and content of this panorama. `;
+            refText = "\n[Reference Images]: Please use the provided reference images to guide the visual style and content of this panorama. ";
           }
           finalPrompt = `${modeConfig.prompt}${refText}${finalPrompt}`;
         }
@@ -9250,32 +10659,24 @@ ${prompt}
         ),
       );
 
-      let res: SmartImageResult;
+      await startServerGenerationJob("image", { ...newTask, config: finalConfig }, {
+        imageConfig: finalConfig,
+      });
 
-      res = (await Promise.race([
-        pipelineService.generateSmartImage(finalConfig, config),
+      const syncedItem = (await Promise.race([
+        waitForServerGenerationJob(taskId, { ...newTask, config: finalConfig }, timeoutMs),
         timeoutPromise,
-      ])) as SmartImageResult;
-
-      const updatedItem: HistoryItem = {
-        ...newTask,
-        status: "success",
-        imageUrl: res.imageUrl,
-        revisedPrompt: res.revisedPrompt,
-      };
-
-      // Sync to cloud (OSS + MySQL)
-      const syncedItem = await syncToCloud(updatedItem);
+      ])) as HistoryItem;
 
       setHistory((prev) =>
         prev.map((item) => (item.id === taskId ? syncedItem : item)),
       );
 
-      updateChatHistoryForTask(taskId, "success", syncedItem.imageUrl || syncedItem.ossUrl || res.imageUrl);
+      updateChatHistoryForTask(taskId, "success", syncedItem.imageUrl || syncedItem.ossUrl);
 
       // Scroll to top
       scrollRef.current?.scrollTo({ top: 0, behavior: "smooth" });
-      return res.imageUrl;
+      return syncedItem.imageUrl || syncedItem.ossUrl;
     } catch (err: any) {
       console.error("Generation failed:", err);
       setIsLocked(false);
@@ -9284,7 +10685,7 @@ ${prompt}
       if (refundPoints) {
         await refundPoints(
           cost,
-          `生图失败退款 (模型: ${currentConfig.model || 'nano banana 2'}): ${errorMessage.substring(0, 50)}`,
+          `生图失败退款(模型: ${currentConfig.model || 'nano banana 2'}): ${errorMessage.substring(0, 50)}`,
         );
       }
 
@@ -9344,7 +10745,7 @@ ${prompt}
             (p) => (p.config?.isSkillNode || p.config?.isIntegratedModelNode) && p.status !== "success"
           );
           if (hasExecutableParent) {
-            setError("该节点已被上游连接，请运行上游「AI工作流/集成节点」进行生成");
+            setError("该节点已被上游连接，请运行上游「AI工作流集成节点」进行生成");
             return;
           }
         }
@@ -9941,7 +11342,7 @@ ${prompt}
       if (refundPoints) {
         await refundPoints(
           cost,
-          `视频生成失败退款: ${errorMessage.substring(0, 50)}`,
+          `视频生成失败退款 ${errorMessage.substring(0, 50)}`,
         );
       }
 
@@ -10016,7 +11417,7 @@ ${prompt}
 
     const cost = 2; // Director gen cost as per user requirements
     if (userPoints < cost) {
-      setError("积分不足 (开始拆解需账户内至少存有 2 积分)");
+      setError("积分不足（开始拆解需要账户内至少有 2 积分）");
       return;
     }
 
@@ -10082,7 +11483,7 @@ ${prompt}
           if (char.variants && char.variants.length > 0) {
             assetsFormatted += `   变装提示词：\n`;
             char.variants.forEach((v) => {
-              assetsFormatted += `   - ${v.name}：${v.prompt}\n`;
+              assetsFormatted += `   - ${v.name}锛?{v.prompt}\n`;
             });
           }
           assetsFormatted += "\n";
@@ -10115,10 +11516,10 @@ ${prompt}
               ? `\n角色资产：${formatAssetLine(seg.assets.characters)}`
               : "";
             const sceneAssets = seg.assets?.scenes
-              ? `\n场景资产：${formatAssetLine(seg.assets.scenes)}`
+              ? `\nScene assets: ${formatAssetLine(seg.assets.scenes)}`
               : "";
             const propAssets = seg.assets?.props
-              ? `\n道具资产：${formatAssetLine(seg.assets.props)}`
+              ? `\nProp assets: ${formatAssetLine(seg.assets.props)}`
               : "";
 
             // Strictly strip technical tags from the display
@@ -10128,11 +11529,11 @@ ${prompt}
             // 1. Remove [承接...] or [新起...] tags safely without eating the rest of the text
             promptDisplayText = promptDisplayText
               .replace(/^\s*\[\s*(?:承接|新起)[\s\S]*?\]\s*/, "") // Strips [新起] or [新起 - 镜头1]
-              .replace(/^\s*(?:承接|新起)\s*-\s*镜头\d+[:：]?\s*/, "") // Strips "新起 - 镜头1:"
+              .replace(/^\s*(?:continue|new|shot)\s*-?\s*\d*[:：]?\s*/i, "") // Strips technical shot prefixes.
               .replace(/^\s*(?:承接|新起)\b\s*/, "") // Strips "新起 "
               .trim();
 
-            return `【分段 ${idx + 1} | 时长: ${seg.duration}】${charAssets}${sceneAssets}${propAssets}\n\n${promptDisplayText}`;
+            return `[Segment ${idx + 1} | Duration: ${seg.duration}]${charAssets}${sceneAssets}${propAssets}\n\n${promptDisplayText}`;
           })
           .join("\n\n" + "=".repeat(40) + "\n\n");
       } else {
@@ -10145,11 +11546,11 @@ ${prompt}
             // Also strip technical meta-text in Director mode
             promptDisplayText = promptDisplayText
               .replace(/^\s*\[\s*(?:承接|新起)[\s\S]*?\]\s*/, "") // Strips [新起] or [新起 - 镜头1]
-              .replace(/^\s*(?:承接|新起)\s*-\s*镜头\d+[:：]?\s*/, "") // Strips "新起 - 镜头1:"
+              .replace(/^\s*(?:continue|new|shot)\s*-?\s*\d*[:：]?\s*/i, "") // Strips technical shot prefixes.
               .replace(/^\s*(?:承接|新起)\b\s*/, "") // Strips "新起 "
               .trim();
 
-            return `【第 ${idx + 1} 集 | ${seg.duration} | ${directorStyle}】\n\n${seg.plotAnchor}\n\n【导演分镜指导】\n${promptDisplayText}`;
+            return `[Episode ${idx + 1} | ${seg.duration} | ${directorStyle}]\n\n${seg.plotAnchor}\n\n[Director shot guidance]\n${promptDisplayText}`;
           })
           .join("\n\n" + "=".repeat(40) + "\n\n");
       }
@@ -10158,7 +11559,7 @@ ${prompt}
       const actualCost = Math.max(2, Math.ceil(totalGeneratedText.length / 2000) * 2);
       const chargeCost = Math.min(actualCost, Math.max(2, userPoints));
 
-      const deduction = await deductPoints(chargeCost, `制剧工厂 (专业模式,共 ${totalGeneratedText.length} 字)`);
+      const deduction = await deductPoints(chargeCost, `制剧工厂（专业模式，共 ${totalGeneratedText.length} 字）`);
       if (!deduction.success) {
         setError(deduction.error || "积分扣除失败");
         return;
@@ -10182,10 +11583,8 @@ ${prompt}
             userPrompt: "剧本资产提示词库",
           },
           timestamp: timestamp,
-          position: {
-            x: -260,
-            y: 0,
-          },
+          classification: "text_asset",
+          position: createCanvasPosition(-260, 0),
           canvasId: activeCanvasId,
         };
 
@@ -10201,10 +11600,8 @@ ${prompt}
             userPrompt: originalScript.substring(0, 500),
           },
           timestamp: timestamp + 1,
-          position: {
-            x: 260,
-            y: 0,
-          },
+          classification: "shot_prompt",
+          position: createCanvasPosition(260, 0),
           canvasId: activeCanvasId,
         };
 
@@ -10330,16 +11727,20 @@ ${prompt}
 
   const confirmClearAll = async () => {
     setShowClearConfirm(false);
-    const updatedHistory = history.map((h) => ({
-      ...h,
-      hiddenFromCanvas: true,
-    }));
+    const updatedHistory = history.map((h) =>
+      normalizeCanvasId(h.canvasId) === normalizeCanvasId(activeCanvasId)
+        ? {
+            ...h,
+            hiddenFromCanvas: true,
+          }
+        : h
+    );
     setHistory(updatedHistory);
 
-    // Update all in DB
+    // Update current canvas records in DB
     const token = localStorage.getItem("token");
     if (token) {
-      for (const item of updatedHistory) {
+      for (const item of updatedHistory.filter((h) => normalizeCanvasId(h.canvasId) === normalizeCanvasId(activeCanvasId))) {
         await fetch("/api/user/history", {
           method: "POST",
           headers: {
@@ -10422,7 +11823,7 @@ ${prompt}
 
     const cost = 2;
     if (userPoints < cost) {
-      setError("积分不足 (开始拆解需账户内至少存有 2 积分)");
+      setError("积分不足（开始拆解需要账户内至少有 2 积分）");
       setIsCriticalError(true);
       return;
     }
@@ -10480,7 +11881,7 @@ ${prompt}
             if (char.variants && char.variants.length > 0) {
               assetsFormatted += `   变装提示词：\n`;
               char.variants.forEach((v) => {
-                assetsFormatted += `   - ${v.name}：${v.prompt}\n`;
+                assetsFormatted += `   - ${v.name}锛?{v.prompt}\n`;
               });
             }
             assetsFormatted += "\n";
@@ -10505,7 +11906,7 @@ ${prompt}
 
         const actualCost = Math.max(2, Math.ceil(assetsFormatted.length / 2000) * 2);
         const chargeCost = Math.min(actualCost, Math.max(2, userPoints));
-        const deduction = await deductPoints(chargeCost, `制剧工厂 (一键拆解资产,共 ${assetsFormatted.length} 字)`);
+        const deduction = await deductPoints(chargeCost, `制剧工厂（一键拆解资产，共 ${assetsFormatted.length} 字`);
         if (!deduction.success) {
           setError(deduction.error || "积分扣除失败");
           return;
@@ -10522,10 +11923,11 @@ ${prompt}
             userPrompt: "剧本资产提示词库",
           },
           timestamp: timestamp,
-          position: {
-            x: item.position ? item.position.x + 360 : 360,
-            y: item.position ? item.position.y : 0,
-          },
+          classification: "text_asset",
+          position: createCanvasPosition(
+            item.position ? item.position.x + 360 : 360,
+            item.position ? item.position.y : 0,
+          ),
           canvasId: activeCanvasId,
         };
 
@@ -10550,7 +11952,7 @@ ${prompt}
             let promptDisplayText = seg.prompt.replace(/【空间结构】[^。！？\n]*[。！？\n]/g, "").trim();
             promptDisplayText = promptDisplayText
               .replace(/^\s*\[\s*(?:承接|新起)[\s\S]*?\]\s*/, "") // Strips [新起] or [新起 - 镜头1]
-              .replace(/^\s*(?:承接|新起)\s*-\s*镜头\d+[:：]?\s*/, "") // Strips "新起 - 镜头1:"
+              .replace(/^\s*(?:continue|new|shot)\s*-?\s*\d*[:：]?\s*/i, "") // Strips technical shot prefixes.
               .replace(/^\s*(?:承接|新起)\b\s*/, "") // Strips "新起 "
               .trim();
             return `【分段 ${idx + 1} | 时长: ${seg.duration}】\n\n${promptDisplayText}`;
@@ -10559,7 +11961,7 @@ ${prompt}
 
         const actualCost = Math.max(2, Math.ceil(formattedResult.length / 2000) * 2);
         const chargeCost = Math.min(actualCost, Math.max(2, userPoints));
-        const deduction = await deductPoints(chargeCost, `制剧工厂 (一键拆解分镜,共 ${formattedResult.length} 字)`);
+        const deduction = await deductPoints(chargeCost, `制剧工厂（一键拆解分镜，共 ${formattedResult.length} 字`);
         if (!deduction.success) {
           setError(deduction.error || "积分扣除失败");
           return;
@@ -10576,10 +11978,11 @@ ${prompt}
             userPrompt: item.revisedPrompt?.substring(0, 500) || "",
           },
           timestamp: timestamp,
-          position: {
-            x: item.position ? item.position.x + 360 : 360,
-            y: item.position ? item.position.y + 400 : 400,
-          },
+          classification: "shot_prompt",
+          position: createCanvasPosition(
+            item.position ? item.position.x + 360 : 360,
+            item.position ? item.position.y + 400 : 400,
+          ),
           canvasId: activeCanvasId,
         };
 
@@ -10626,7 +12029,7 @@ ${prompt}
 
     const cost = 2;
     if (userPoints < cost) {
-      setError("积分不足 (开始拆解需账户内至少存有 2 积分)");
+      setError("积分不足（开始拆解需要账户内至少有 2 积分）");
       setIsCriticalError(true);
       return;
     }
@@ -10664,7 +12067,7 @@ ${prompt}
         !pipelineData.segments ||
         pipelineData.segments.length === 0
       ) {
-        throw new Error("AI 未能成功生成分段提示词/资产，请检查剧本内容或接口配置");
+        throw new Error("AI 未能成功生成分段提示词资产，请检查剧本内容或接口配置");
       }
 
       // Format assets formatted result
@@ -10681,7 +12084,7 @@ ${prompt}
           if (char.variants && char.variants.length > 0) {
             assetsFormatted += `   变装提示词：\n`;
             char.variants.forEach((v) => {
-              assetsFormatted += `   - ${v.name}：${v.prompt}\n`;
+              assetsFormatted += `   - ${v.name}锛?{v.prompt}\n`;
             });
           }
           assetsFormatted += "\n";
@@ -10715,7 +12118,7 @@ ${prompt}
             let promptDisplayText = seg.prompt.replace(/【空间结构】[^。！？\n]*[。！？\n]/g, "").trim();
             promptDisplayText = promptDisplayText
               .replace(/^\s*\[\s*(?:承接|新起)[\s\S]*?\]\s*/, "") // Strips [新起] or [新起 - 镜头1]
-              .replace(/^\s*(?:承接|新起)\s*-\s*镜头\d+[:：]?\s*/, "") // Strips "新起 - 镜头1:"
+              .replace(/^\s*(?:continue|new|shot)\s*-?\s*\d*[:：]?\s*/i, "") // Strips technical shot prefixes.
               .replace(/^\s*(?:承接|新起)\b\s*/, "") // Strips "新起 "
               .trim();
             return `【分段 ${idx + 1} | 时长: ${seg.duration}】${charAssets}${sceneAssets}${propAssets}\n\n${promptDisplayText}`;
@@ -10727,10 +12130,10 @@ ${prompt}
             let promptDisplayText = seg.prompt.replace(/【空间结构】[^。！？\n]*[。！？\n]/g, "").trim();
             promptDisplayText = promptDisplayText
               .replace(/^\s*\[\s*(?:承接|新起)[\s\S]*?\]\s*/, "") // Strips [新起] or [新起 - 镜头1]
-              .replace(/^\s*(?:承接|新起)\s*-\s*镜头\d+[:：]?\s*/, "") // Strips "新起 - 镜头1:"
+              .replace(/^\s*(?:continue|new|shot)\s*-?\s*\d*[:：]?\s*/i, "") // Strips technical shot prefixes.
               .replace(/^\s*(?:承接|新起)\b\s*/, "") // Strips "新起 "
               .trim();
-            return `【第 ${idx + 1} 集 | ${seg.duration} | ${directorStyle}】\n\n${seg.plotAnchor}\n\n【导演分镜指导】\n${promptDisplayText}`;
+            return `【第 ${idx + 1} 集| ${seg.duration} | ${directorStyle}】\n\n${seg.plotAnchor}\n\n【导演分镜指导】\n${promptDisplayText}`;
           })
           .join("\n\n" + "=".repeat(40) + "\n\n");
       }
@@ -10739,7 +12142,7 @@ ${prompt}
       const actualCost = Math.max(2, Math.ceil(totalGeneratedText.length / 2000) * 2);
       const chargeCost = Math.min(actualCost, Math.max(2, userPoints));
 
-      const deduction = await deductPoints(chargeCost, `制剧工厂 (重新生成,共 ${totalGeneratedText.length} 字)`);
+      const deduction = await deductPoints(chargeCost, `制剧工厂（重新生成，共 ${totalGeneratedText.length} 字）`);
       if (!deduction.success) {
         setError(deduction.error || "积分扣除失败");
         return;
@@ -10803,7 +12206,7 @@ ${prompt}
        const line = lines[i];
        const trimmed = line.trim();
 
-       if (line.includes('【角色资产】')) {
+       if (line.includes("【角色资产】")) {
          currentType = 'character';
          if (currentAsset && currentAsset.name && currentAsset.prompt) {
            assets.push(currentAsset as ParsedAsset);
@@ -10812,7 +12215,7 @@ ${prompt}
          state = 'none';
          continue;
        }
-       if (line.includes('【场景资产】')) {
+       if (line.includes("【场景资产】")) {
          currentType = 'scene';
          if (currentAsset && currentAsset.name && currentAsset.prompt) {
            assets.push(currentAsset as ParsedAsset);
@@ -10821,7 +12224,7 @@ ${prompt}
          state = 'none';
          continue;
        }
-       if (line.includes('【道具资产】')) {
+       if (line.includes("【道具资产】")) {
          currentType = 'prop';
          if (currentAsset && currentAsset.name && currentAsset.prompt) {
            assets.push(currentAsset as ParsedAsset);
@@ -10847,14 +12250,14 @@ ${prompt}
        }
 
        if (currentAsset) {
-         if (trimmed.startsWith('主提示词：')) {
+         if (trimmed.startsWith("主提示词：")) {
            state = 'reading_prompt';
            continue;
          }
          if (state === 'reading_prompt') {
-           if (trimmed.startsWith('变装提示词：') || trimmed.match(/^\s*\d+\./) || line.includes('#### 【')) {
+           if (trimmed.startsWith("变装提示词：") || trimmed.match(/^\s*\d+\./) || line.includes("#### ")) {
              state = 'none';
-           } else if (trimmed === '暂无') {
+           } else if (trimmed === "暂无") {
              currentAsset.prompt = '';
              state = 'none';
            } else if (trimmed) {
@@ -10879,8 +12282,8 @@ ${prompt}
     }
     const segments: ParsedSegment[] = [];
     
-    // Exact bracket matching regex for fragments like 【分段 1 | 时长: 15s】
-    const headerRegex = /【(?:分段|分镜|第)\s*\d+[^】]*】/g;
+    // Match bracketed segment headers such as [Segment 1 | Duration: 15s] or 【分段 1 | 时长: 15s】.
+    const headerRegex = /(?:\[|【)\s*(?:Segment|Shot|Episode|分段|分镜|第)\s*\d+[^】\]]*(?:\]|】)/gi;
     const matches: { index: number; text: string; length: number }[] = [];
     let match;
     while ((match = headerRegex.exec(text)) !== null) {
@@ -10903,7 +12306,10 @@ ${prompt}
         rawContent = rawContent.replace(/^[-=~_*]{3,}/g, '').replace(/[-=~_*]{3,}$/g, '').trim();
 
         const title = currentMatch.text;
-        const durationMatch = title.match(/时长:\s*([^\s】\|]+)/) || title.match(/\|\s*([^\|】\s]+)\s*\|/) || rawContent.match(/时长:\s*([^\s行]+)/);
+        const durationMatch =
+          title.match(/(?:Duration|时长):\s*([^\s\]|】]+)/i) ||
+          title.match(/\|\s*([^\|】\]]+)\s*(?:\||\]|】)/) ||
+          rawContent.match(/(?:Duration|时长):\s*([^\s]+)/i);
         const duration = durationMatch ? durationMatch[1] : "5s";
 
         if (rawContent) {
@@ -10921,10 +12327,12 @@ ${prompt}
         const trimmedPart = part.trim();
         if (!trimmedPart) return;
 
-        const headerMatch = trimmedPart.match(/【(?:分段|第)\s*(\d+)[^】]*】/);
-        const title = headerMatch ? headerMatch[0] : `分镜 ${index + 1}`;
+        const headerMatch = trimmedPart.match(/(?:\[|【)?\s*(?:Segment|Shot|Episode|分段|分镜|第)\s*(\d+)[^\n\]】]*(?:\]|】)?/i);
+        const title = headerMatch ? headerMatch[0] : `Shot ${index + 1}`;
 
-        const durationMatch = trimmedPart.match(/时长:\s*([^\s】]+)/) || trimmedPart.match(/\|\s*([^\|】\s]+)\s*\|/);
+        const durationMatch =
+          trimmedPart.match(/(?:Duration|时长):\s*([^\s\]|】]+)/i) ||
+          trimmedPart.match(/\|\s*([^\|】\]]+)\s*(?:\||\]|】)/);
         const duration = durationMatch ? durationMatch[1] : "5s";
 
         let prompt = trimmedPart;
@@ -10951,6 +12359,16 @@ ${prompt}
 
     const startX = item.position?.x ?? 0;
     const startY = item.position?.y ?? 0;
+    const imageModel = getActiveImageDefaultsModel(imageConfig.model);
+    const imageDefaults = applyImageGenerationDefaults(
+      {
+        model: imageModel,
+        aspectRatio: "1:1",
+        imageSize: "1K",
+      },
+      config,
+      imageModel,
+    );
 
     const newItems: HistoryItem[] = parsedAssets.map((asset, idx) => {
       const posX = startX + (idx * 400);
@@ -10963,21 +12381,17 @@ ${prompt}
         parentId: item.id,
         timestamp: Date.now() + idx,
         canvasId: activeCanvasId,
-        position: {
-          x: posX,
-          y: posY,
-          customX: posX,
-          customY: posY,
-          mindmap: { x: posX, y: posY },
-          bento: { x: posX, y: posY },
-          semi_auto: { x: posX, y: posY }
-        },
+        position: createCanvasPosition(posX, posY),
         config: {
           prompt: asset.prompt,
-          aspectRatio: "1:1",
-          imageSize: "1K",
+          model: imageModel,
+          aspectRatio: imageDefaults.aspectRatio,
+          imageSize: imageDefaults.imageSize,
+          bananaAspectRatio: imageDefaults.bananaAspectRatio,
+          bananaImageSize: imageDefaults.bananaImageSize,
           gridMode: "none",
           title: asset.name,
+          sectionId: "media-zone",
         }
       };
     });
@@ -10988,7 +12402,12 @@ ${prompt}
       setSelectedIds([newItems[0].id]);
       setImageConfig((prev) => ({
         ...prev,
+        model: newItems[0].config?.model || imageModel,
         prompt: newItems[0].config?.prompt || "",
+        aspectRatio: newItems[0].config?.aspectRatio || imageDefaults.aspectRatio,
+        imageSize: newItems[0].config?.imageSize || imageDefaults.imageSize,
+        bananaAspectRatio: newItems[0].config?.bananaAspectRatio || imageDefaults.bananaAspectRatio,
+        bananaImageSize: newItems[0].config?.bananaImageSize || imageDefaults.bananaImageSize,
       }));
       if (mode !== "image") setMode("image");
     }
@@ -11011,6 +12430,18 @@ ${prompt}
 
     const startX = item.position?.x ?? 0;
     const startY = item.position?.y ?? 0;
+    const videoModel = getActiveVideoDefaultsModel(videoConfig.model);
+    const videoDefaults = applyVideoGenerationDefaults(
+      {
+        model: videoModel,
+        resolution: "720p",
+        aspectRatio: "16:9",
+        duration: "5",
+        videoMode: "all-around",
+      },
+      config,
+      videoModel,
+    );
 
     const newItems: HistoryItem[] = parsedSegments.map((segment, idx) => {
       const posX = startX + (idx * 400);
@@ -11023,22 +12454,16 @@ ${prompt}
         parentId: item.id,
         timestamp: Date.now() + idx,
         canvasId: activeCanvasId,
-        position: {
-          x: posX,
-          y: posY,
-          customX: posX,
-          customY: posY,
-          mindmap: { x: posX, y: posY },
-          bento: { x: posX, y: posY },
-          semi_auto: { x: posX, y: posY }
-        },
+        position: createCanvasPosition(posX, posY),
         config: {
           prompt: segment.prompt,
-          resolution: "1080p",
-          aspectRatio: "16:9",
-          duration: segment.duration ? segment.duration.replace("s", "") : "5",
-          model: "seedance2.0",
+          resolution: videoDefaults.resolution,
+          aspectRatio: videoDefaults.aspectRatio,
+          duration: segment.duration ? segment.duration.replace("s", "") : videoDefaults.duration,
+          model: videoModel,
+          videoMode: videoDefaults.videoMode,
           title: segment.title,
+          sectionId: "media-zone",
         }
       };
     });
@@ -11049,7 +12474,12 @@ ${prompt}
       setSelectedIds([newItems[0].id]);
       setVideoConfig((prev) => ({
         ...prev,
+        model: newItems[0].config?.model || videoModel,
         prompt: newItems[0].config?.prompt || "",
+        resolution: newItems[0].config?.resolution || videoDefaults.resolution,
+        aspectRatio: newItems[0].config?.aspectRatio || videoDefaults.aspectRatio,
+        duration: newItems[0].config?.duration || videoDefaults.duration,
+        videoMode: newItems[0].config?.videoMode || videoDefaults.videoMode,
       }));
       if (mode !== "video") setMode("video");
     }
@@ -11194,7 +12624,7 @@ ${prompt}
         if (!rawPrompt && item.type !== "gen_script" && !item.config?.isSkillNode) {
           rawPrompt = item.revisedPrompt || "";
         }
-        // 过滤掉原本可能残留的老图号（如：@图1, @图2 等）来避免和崭新的 @图1 标签混淆干扰，保留干净的用户原创意描述
+        // 过滤掉原本可能残留的老图号（如：@图1, @图1 等），避免和崭新的 @图1 标签混淆干扰，保留干净的用户原创意描述
         let targetPrompt = rawPrompt
           .replace(/@图\d+/g, "")
           .replace(/\s+/g, " ")
@@ -11381,7 +12811,7 @@ ${prompt}
     // Auto-update prompt with camera settings
     const parts = [
       `Camera: ${params.model}`,
-      params.lensType !== "无特定镜头" ? `Lens: ${params.lensType}` : "",
+      params.lensType && params.lensType !== "Auto" && params.lensType !== "None" ? `Lens: ${params.lensType}` : "",
       params.focalLength !== "自动" ? `Focal: ${params.focalLength}` : "",
       params.aperture !== "自动" ? `Aperture: ${params.aperture}` : "",
       params.colorTone !== "默认" ? `Tone: ${params.colorTone}` : "",
@@ -11393,8 +12823,6 @@ ${prompt}
 
     // Remove any existing camera description and legacy instructions first to avoid duplicates
     let newPrompt = (imageConfig.prompt || "")
-      .replace(/根据指定的相机机型[\s\S]+?极具故事渲染力。/g, "")
-      .replace(/【技能指令 - 相机调整】：[\s\S]+?极具故事渲染力。/g, "")
       .replace(/Camera: [^.]+\. /g, "")
       .replace(/Shot on [^.]+\. /g, "")
       .trim();
@@ -11595,60 +13023,6 @@ ${prompt}
                 <SquarePen className="w-3.5 h-3.5 text-indigo-400 group-hover:scale-110 transition-transform" />
                 <span>添加画布</span>
               </button>
-
-              {/* Layout Mode Quick Selection - Placing "自由脑图流" close to the creation area */}
-              <div className="space-y-1.5 pt-1.5 border-t border-[#1e2030]/50">
-                <div className="text-[9px] font-black text-zinc-500 uppercase tracking-widest leading-none px-1">
-                  画布排列流向
-                </div>
-                <div className="grid grid-cols-3 gap-1 bg-[#151724]/60 p-1 rounded-xl border border-[#1e2030]/55">
-                  <button
-                    onClick={() => {
-                      setLayoutMode("mindmap");
-                      autoLayoutMindMap(true, false);
-                    }}
-                    className={cn(
-                      "py-2 rounded-lg text-[9px] font-bold text-center transition-all",
-                      layoutMode === "mindmap"
-                        ? "bg-indigo-600 text-white shadow-md font-black"
-                        : "text-zinc-400 hover:bg-zinc-800/30 hover:text-zinc-200"
-                    )}
-                    title="自由脑图流"
-                  >
-                    脑图流
-                  </button>
-                  <button
-                    onClick={() => {
-                      setLayoutMode("bento");
-                      autoLayoutBentoGrid(true);
-                    }}
-                    className={cn(
-                      "py-2 rounded-lg text-[9px] font-bold text-center transition-all",
-                      layoutMode === "bento"
-                        ? "bg-indigo-600 text-white shadow-md font-black"
-                        : "text-zinc-400 hover:bg-zinc-800/30 hover:text-zinc-200"
-                    )}
-                    title="整齐网格流"
-                  >
-                    网格流
-                  </button>
-                  <button
-                    onClick={() => {
-                      setLayoutMode("semi_auto");
-                      autoLayoutSemiAuto(true);
-                    }}
-                    className={cn(
-                      "py-2 rounded-lg text-[9px] font-bold text-center transition-all",
-                      layoutMode === "semi_auto"
-                        ? "bg-indigo-600 text-white shadow-md font-black"
-                        : "text-zinc-400 hover:bg-zinc-800/30 hover:text-zinc-200"
-                    )}
-                    title="区块分类流"
-                  >
-                    分类流
-                  </button>
-                </div>
-              </div>
             </div>
 
             {/* Canvas List Area */}
@@ -11720,7 +13094,9 @@ ${prompt}
                           </div>
                         )}
                         <div className="text-[9px] text-zinc-500 font-bold mt-0.5 whitespace-nowrap overflow-hidden text-ellipsis">
-                          {canvas.history ? `${canvas.history.filter((h) => ((h.canvasId || "default") === (canvas.id || "default")) && !h.hiddenFromCanvas && h.position).length} 个素材` : "新建项目"}
+                          {canvas.history
+                            ? String(canvas.history.filter((h) => ((h.canvasId || "default") === (canvas.id || "default")) && !h.hiddenFromCanvas && h.position).length) + " items"
+                            : "New project"}
                         </div>
                       </div>
                     </div>
@@ -11776,7 +13152,7 @@ ${prompt}
                       "h-full rounded-full transition-all duration-300",
                       localStorageUsage.percent > 80 ? "bg-rose-500" : localStorageUsage.percent > 55 ? "bg-amber-500" : "bg-indigo-500"
                     )}
-                    style={{ width: `${localStorageUsage.percent}%` }}
+                    style={{ width: String(localStorageUsage.percent) + "%" }}
                   />
                 </div>
               </div>
@@ -11798,7 +13174,7 @@ ${prompt}
                 title={isConfirmingClear ? "点击立即开始清理非当前画布缓存" : "一键优化释放本地浏览器空间，云端画布安全不受影响"}
               >
                 <Trash2 className={cn("w-3.5 h-3.5", isConfirmingClear ? "text-rose-400" : "text-zinc-400")} />
-                <span>{isConfirmingClear ? "⚠️ 再次点击确认清理非活跃数据" : "清理本地画布缓存"}</span>
+                <span>{isConfirmingClear ? "Click again to clear inactive cache" : "Clear local canvas cache"}</span>
               </button>
             </div>
           </div>
@@ -11810,9 +13186,20 @@ ${prompt}
           className="flex-1 relative overflow-hidden"
           style={{
             backgroundColor: "#e2e8f0",
-            backgroundImage: `radial-gradient(#94a3b8 ${1.2 * transformState.scale}px, transparent ${1.2 * transformState.scale}px)`,
-            backgroundSize: `${24 * transformState.scale}px ${24 * transformState.scale}px`,
-            backgroundPosition: `${transformState.x + 200 * transformState.scale}px ${transformState.y + 200 * transformState.scale}px`,
+            backgroundImage:
+              "radial-gradient(#94a3b8 " +
+              1.2 * transformState.scale +
+              "px, transparent " +
+              1.2 * transformState.scale +
+              "px)",
+            backgroundSize:
+              24 * transformState.scale + "px " + 24 * transformState.scale + "px",
+            backgroundPosition:
+              transformState.x +
+              200 * transformState.scale +
+              "px " +
+              (transformState.y + 200 * transformState.scale) +
+              "px",
           }}
           onDragOver={(e) => {
             if (e.dataTransfer && e.dataTransfer.types.includes("Files")) {
@@ -11844,21 +13231,9 @@ ${prompt}
               e.stopPropagation();
               setIsCanvasDragging(false);
               
-              let targetX = 0;
-              let targetY = 0;
-               
-              if (canvasViewportRef.current) {
-                const outerRect = canvasViewportRef.current.getBoundingClientRect();
-                const currentScale = transformState.scale;
-                const currentX = transformState.x;
-                const currentY = transformState.y;
-
-                const droppedX = (e.clientX - outerRect.left - currentX) / currentScale - 200;
-                const droppedY = (e.clientY - outerRect.top - currentY) / currentScale - 200;
-                
-                targetX = Math.round(droppedX);
-                targetY = Math.round(droppedY);
-              }
+              const dropPoint = getCanvasPointFromClient(e.clientX, e.clientY);
+              const targetX = Math.round(dropPoint.x - 180);
+              const targetY = Math.round(dropPoint.y - 170);
               
               handleCanvasDrop(e as any, { x: targetX, y: targetY });
             }
@@ -11875,20 +13250,13 @@ ${prompt}
             }
 
             e.preventDefault();
-            const canvasEl = document.getElementById("infinite-canvas-grid");
-            let cx = e.clientX;
-            let cy = e.clientY;
-            if (canvasEl) {
-              const rect = canvasEl.getBoundingClientRect();
-              cx = (e.clientX - rect.left) / transformState.scale;
-              cy = (e.clientY - rect.top) / transformState.scale;
-            }
+            const canvasPoint = getCanvasPointFromClient(e.clientX, e.clientY);
             setContextMenu({
               visible: true,
               x: e.clientX,
               y: e.clientY,
-              canvasX: cx,
-              canvasY: cy,
+              canvasX: canvasPoint.x,
+              canvasY: canvasPoint.y,
             });
           }}
           onMouseDown={(e) => {
@@ -12068,10 +13436,10 @@ ${prompt}
                   const viewportY = -transformState.y / scale;
 
                   const viewportRect = {
-                    left: `${((viewportX - mapBounds.minX) / mapBounds.width) * 100}%`,
-                    top: `${((viewportY - mapBounds.minY) / mapBounds.height) * 100}%`,
-                    width: `${Math.max(5, Math.min(100, (viewportWidth / mapBounds.width) * 100))}%`,
-                    height: `${Math.max(5, Math.min(100, (viewportHeight / mapBounds.height) * 100))}%`,
+                    left: String(((viewportX - mapBounds.minX) / mapBounds.width) * 100) + "%",
+                    top: String(((viewportY - mapBounds.minY) / mapBounds.height) * 100) + "%",
+                    width: String(Math.max(5, Math.min(100, (viewportWidth / mapBounds.width) * 100))) + "%",
+                    height: String(Math.max(5, Math.min(100, (viewportHeight / mapBounds.height) * 100))) + "%",
                   };
 
                   return (
@@ -12082,8 +13450,8 @@ ${prompt}
                           key={item.id}
                           className="absolute"
                           style={{
-                            left: `${(((item.position?.x || 0) - mapBounds.minX) / mapBounds.width) * 100}%`,
-                            top: `${(((item.position?.y || 0) - mapBounds.minY) / mapBounds.height) * 100}%`,
+                            left: String((((item.position?.x || 0) - mapBounds.minX) / mapBounds.width) * 100) + "%",
+                            top: String((((item.position?.y || 0) - mapBounds.minY) / mapBounds.height) * 100) + "%",
                           }}
                         >
                           <button
@@ -12219,15 +13587,13 @@ ${prompt}
                 }
 
                 e.preventDefault();
-                const rect = e.currentTarget.getBoundingClientRect();
-                const canvasX = (e.clientX - rect.left) / transformState.scale;
-                const canvasY = (e.clientY - rect.top) / transformState.scale;
+                const canvasPoint = getCanvasPointFromClient(e.clientX, e.clientY);
                 setContextMenu({
                   visible: true,
                   x: e.clientX,
                   y: e.clientY,
-                  canvasX,
-                  canvasY,
+                  canvasX: canvasPoint.x,
+                  canvasY: canvasPoint.y,
                 });
               }}
               onClick={(e) => {
@@ -12272,48 +13638,45 @@ ${prompt}
                 <div
                   className="absolute border-2 border-indigo-500 bg-indigo-500/10 pointer-events-none rounded-lg shadow-sm z-[200]"
                   style={{
-                    left: `${Math.min(selectStart.x, selectEnd.x)}px`,
-                    top: `${Math.min(selectStart.y, selectEnd.y)}px`,
-                    width: `${Math.abs(selectStart.x - selectEnd.x)}px`,
-                    height: `${Math.abs(selectStart.y - selectEnd.y)}px`,
+                    left: String(Math.min(selectStart.x, selectEnd.x)) + "px",
+                    top: String(Math.min(selectStart.y, selectEnd.y)) + "px",
+                    width: String(Math.abs(selectStart.x - selectEnd.x)) + "px",
+                    height: String(Math.abs(selectStart.y - selectEnd.y)) + "px",
                   }}
                 />
               )}
               <AnimatePresence>
-                {history.filter((h) => !h.hiddenFromCanvas).length > 0 ? (
+                {displayHistory.filter((h) => !h.hiddenFromCanvas).length > 0 ? (
                   <div
                     key="history-list"
                     className="relative w-full h-full"
                   >
                     {layoutMode === "semi_auto" && semiAutoGroups.map((group) => (
                       <div
-                        key={`bg-group-${group.id}`}
+                        key={"bg-group-" + group.id}
                         className={cn(
                           "absolute rounded-[40px] border-2 border-dashed bg-gradient-to-br p-6 transition-all duration-300 pointer-events-none select-none",
                           group.borderColor,
                           group.colorClass
                         )}
                         style={{
-                          left: `${group.bounds.x}px`,
-                          top: `${group.bounds.y}px`,
-                          width: `${group.bounds.width}px`,
-                          height: `${group.bounds.height}px`,
+                          left: String(group.bounds.x) + "px",
+                          top: String(group.bounds.y) + "px",
+                          width: String(group.bounds.width) + "px",
+                          height: String(group.bounds.height) + "px",
                           zIndex: 0,
                         }}
                       >
                         {/* Group Header Label */}
                         <div className="flex items-center space-x-2 mb-4">
                           <span className={cn("px-3 py-1 rounded-full text-xs font-black border uppercase tracking-wider shadow-sm", group.tagColor)}>
-                            {group.title}
-                          </span>
-                          <span className="text-[10px] font-bold text-gray-400">
-                            ({group.items.length} 个元素)
+                            {group.title} · {group.items.length} items
                           </span>
                         </div>
                         {group.items.length === 0 && (
                           <div className="h-full flex items-center justify-center -mt-6">
                             <span className="text-xs font-semibold text-gray-400 italic">
-                              暂无元素，在下方聊天框开始生成创意吧 🚀
+                              {group.emptyHint}
                             </span>
                           </div>
                         )}
@@ -12394,13 +13757,29 @@ ${prompt}
                               const endY = cY + cSpec.height / 2;
 
                               const controlOffset = 80;
-                              const pathD = `M ${startX} ${startY} C ${startX + controlOffset} ${startY}, ${endX - controlOffset} ${endY}, ${endX} ${endY}`;
+                              const pathD =
+                                "M " +
+                                startX +
+                                " " +
+                                startY +
+                                " C " +
+                                (startX + controlOffset) +
+                                " " +
+                                startY +
+                                ", " +
+                                (endX - controlOffset) +
+                                " " +
+                                endY +
+                                ", " +
+                                endX +
+                                " " +
+                                endY;
 
                               if (typeof pathD !== "string" || pathD.includes("[object")) {
                                 return null;
                               }
 
-                              const pathKey = `path-${parent.id}-${item.id}`;
+                              const pathKey = "path-" + parent.id + "-" + item.id;
                               if (renderedPaths.has(pathKey)) return null;
                               renderedPaths.add(pathKey);
 
@@ -12510,7 +13889,7 @@ ${prompt}
                                 ? arrowDragCurrentPos.y
                                 : magPos.y;
 
-                              const arrowKey = `curved-arrow-sel-${item.id}`;
+                              const arrowKey = "curved-arrow-sel-" + item.id;
                               if (renderedArrows.has(arrowKey)) return null;
                               renderedArrows.add(arrowKey);
 
@@ -12518,7 +13897,7 @@ ${prompt}
                                 <g key={arrowKey}>
                                   {/* Glowing path background */}
                                   <path
-                                    d={`M ${sourceX} ${sourceY} L ${targetX} ${targetY}`}
+                                    d={"M " + sourceX + " " + sourceY + " L " + targetX + " " + targetY}
                                     fill="none"
                                     stroke="#818cf8"
                                     strokeWidth="4"
@@ -12528,7 +13907,7 @@ ${prompt}
                                   />
                                   {/* Main dashed path with dash movement */}
                                   <path
-                                    d={`M ${sourceX} ${sourceY} L ${targetX} ${targetY}`}
+                                    d={"M " + sourceX + " " + sourceY + " L " + targetX + " " + targetY}
                                     fill="none"
                                     stroke="#6366f1"
                                     strokeWidth="2"
@@ -12561,7 +13940,7 @@ ${prompt}
                             isSelected={selectedHistoryId === item.id}
                             isMultiSelected={selectedIds.includes(item.id)}
                             hasChildren={hasChildren}
-                            isDragDisabled={layoutMode === "bento" || layoutMode === "semi_auto"}
+                            isDragDisabled={layoutMode === "bento"}
                             canvasScale={transformState.scale}
                             dockedItemId={dockedItemId}
                             layoutMode={layoutMode}
@@ -12573,6 +13952,7 @@ ${prompt}
                             workflowSkills={workflowSkills}
                             syncToCloud={syncToCloud}
                             customModels={customModels}
+                            config={config}
                             onCardContextMenu={handleCardContextMenu}
                           onSelect={(id) => {
                             if (interactionMode === "select") {
@@ -12626,7 +14006,7 @@ ${prompt}
                                         thumbnailUrl: isVideo ? p.imageUrl : undefined,
                                         mimeType: isVideo ? "video/mp4" : isAudio ? "audio/mpeg" : "image/png",
                                         type: isVideo ? "video" : isAudio ? "audio" : "image",
-                                        name: isAudio ? (p.config?.originalName || p.config?.title || "音频素材") : (p.config?.title || p.config?.originalName || "素材"),
+                                        name: isAudio ? (p.config?.originalName || p.config?.title || "Audio Asset") : (p.config?.title || p.config?.originalName || "Media Asset"),
                                       });
                                     }
                                   });
@@ -12638,8 +14018,8 @@ ${prompt}
                                 } else if (item.type === "gen_script") {
                                   setIsCollabModeActive(true);
                                   setCollabChatTargetId('xiaoluo_ai');
-                                  setCollabAiSkillRaw('createScript');
-                                  setScriptConfig((prev) => ({ ...prev, activeSubTab: "create" }));
+                                  setCollabAiSkillRaw('none');
+                                  setScriptConfig((prev) => ({ ...prev, activeSubTab: "none" }));
                                   if (mode !== "script") setMode("script");
                                 }
                               }
@@ -12676,11 +14056,20 @@ ${prompt}
                               const currentItemInState = prev.find((h) => h.id === item.id);
                               const finalX = currentItemInState?.position?.x ?? Math.round(pos.x);
                               const finalY = currentItemInState?.position?.y ?? Math.round(pos.y);
+                              const baseItem = currentItemInState || item;
+                              const itemSize = getCardSize(baseItem);
+                              const droppedSectionId =
+                                getCanvasSectionAtPoint(finalX + itemSize.width / 2, finalY + itemSize.height / 2) ||
+                                inferCanvasSectionId(baseItem);
 
                               const updatedItem = {
-                                ...item,
+                                ...baseItem,
+                                config: {
+                                  ...(baseItem.config || {}),
+                                  sectionId: droppedSectionId,
+                                },
                                 position: {
-                                  ...item.position,
+                                  ...baseItem.position,
                                   x: finalX,
                                   y: finalY,
                                   customX: finalX,
@@ -12692,7 +14081,7 @@ ${prompt}
                               const updated = prev.map((h) =>
                                 h.id === item.id ? updatedItem : h,
                               );
-                              const resolved = resolveOverlaps(updated, item.id);
+                              const resolved = layoutMode === "semi_auto" ? updated : resolveOverlaps(updated, item.id);
                               resolved.forEach((r) => {
                                 // Sync modified positions to cloud
                                 if (r.id === item.id || r.position?.x !== prev.find(p => p.id === r.id)?.position?.x || r.position?.y !== prev.find(p => p.id === r.id)?.position?.y) {
@@ -12801,7 +14190,7 @@ ${prompt}
                                 revisedPrompt: cleanPromptForDisplay(item.revisedPrompt)
                               });
                             } else if (item.type === "video" && item.videoUrl) {
-                              setSelectedImage(`${item.videoUrl}#video`);
+                                    setSelectedImage(item.videoUrl + "#video");
                             } else if (item.imageUrl) {
                               const suffix =
                                 item.config?.gridMode === "panorama"
@@ -12829,13 +14218,13 @@ ${prompt}
                               let finalData = targetItem.videoUrl;
                               if (targetItem.videoUrl && !targetItem.videoUrl.startsWith("data:")) {
                                 const base64Res = await urlToBase64(targetItem.videoUrl);
-                                finalData = `data:${base64Res.mimeType};base64,${base64Res.base64}`;
+                                finalData = "data:" + base64Res.mimeType + ";base64," + base64Res.base64;
                               }
                               setScriptConfig((prev) => ({
                                 ...prev,
                                 activeSubTab: "video",
                                 referenceFile: {
-                                  name: (targetItem.config as any)?.prompt ? `${(targetItem.config as any).prompt.substring(0, 15)}.mp4` : "video.mp4",
+                                  name: (targetItem.config as any)?.prompt ? (targetItem.config as any).prompt.substring(0, 15) + ".mp4" : "video.mp4",
                                   data: finalData || "",
                                   type: "video",
                                   duration: (targetItem.config as any)?.duration || 10,
@@ -12849,7 +14238,7 @@ ${prompt}
                                 ...prev,
                                 activeSubTab: "video",
                                 referenceFile: {
-                                  name: (targetItem.config as any)?.prompt ? `${(targetItem.config as any).prompt.substring(0, 15)}.mp4` : "video.mp4",
+                                  name: (targetItem.config as any)?.prompt ? (targetItem.config as any).prompt.substring(0, 15) + ".mp4" : "video.mp4",
                                   data: targetItem.videoUrl || "",
                                   type: "video",
                                   duration: (targetItem.config as any)?.duration || 10,
@@ -12866,10 +14255,10 @@ ${prompt}
                           <div
                             className="absolute z-[100] no-canvas-intercept"
                             style={{
-                              left: `${(item.position?.x || 0) + (getActualCanvasCardSizeAndPort(item).width - 640) / 2}px`,
-                              top: `${(item.position?.y || 0) + getActualCanvasCardSizeAndPort(item).height + 16}px`,
+                              left: String((item.position?.x || 0) + (getActualCanvasCardSizeAndPort(item).width - 640) / 2) + "px",
+                              top: String((item.position?.y || 0) + getActualCanvasCardSizeAndPort(item).height + 16) + "px",
                               width: "640px",
-                              transform: `scale(${1 / (transformState.scale || 1)})`,
+                              transform: "scale(" + 1 / (transformState.scale || 1) + ")",
                               transformOrigin: "top center"
                             }}
                             onClick={(e) => e.stopPropagation()}
@@ -12919,19 +14308,36 @@ ${prompt}
                             (
                               (item.revisedPrompt && item.revisedPrompt.includes("[Generative UI Plugin:")) ||
                               (plugin && plugin.instruction && plugin.instruction.includes("[Generative UI Plugin:")) ||
-                              (skillId && (skillId.startsWith("custom_") || skillId === "贪吃蛇" || isSystemModalPlugin))
+                              (skillId && (skillId.startsWith("custom_") || skillId === "璐悆铔?" || isSystemModalPlugin))
                             )
                           );
                           if (isGenerativeUIPlugin) return null;
+
+                          const cardSpec = getActualCanvasCardSizeAndPort(item);
+                          const documentKind = String(item.config?.documentKind || "").toLowerCase();
+                          const isPptDocument = skillId === "office-pitch-deck" || documentKind === "ppt";
+                          const isTableDocument = skillId === "office-excel-report" || documentKind === "table";
+                          const isDocumentConsole = isPptDocument || isTableDocument;
+                          const consoleGap = isDocumentConsole ? 8 : 16;
+                          const promptLabelOverride = isPptDocument
+                            ? "PPT 主题与大纲"
+                            : isTableDocument
+                              ? "表格需求与数据说明"
+                              : undefined;
+                          const promptPlaceholderOverride = isPptDocument
+                            ? "请输入 PPT 主题、演示目标、受众、页数或结构要求..."
+                            : isTableDocument
+                              ? "请输入表格主题、字段、数据口径、统计维度或分析要求..."
+                              : undefined;
 
                           return (
                             <div
                               className="absolute z-[100] no-canvas-intercept"
                               style={{
-                                left: `${(item.position?.x || 0) + (getActualCanvasCardSizeAndPort(item).width - 640) / 2}px`,
-                                top: `${(item.position?.y || 0) + getActualCanvasCardSizeAndPort(item).height + 16}px`,
+                                left: String((item.position?.x || 0) + (cardSpec.width - 640) / 2) + "px",
+                                top: String((item.position?.y || 0) + cardSpec.height + consoleGap) + "px",
                                 width: "640px",
-                                transform: `scale(${1 / (transformState.scale || 1)})`,
+                                transform: "scale(" + 1 / (transformState.scale || 1) + ")",
                                 transformOrigin: "top center"
                               }}
                               onClick={(e) => e.stopPropagation()}
@@ -12953,6 +14359,8 @@ ${prompt}
                                 workflowSkills={workflowSkills}
                                 removedSystemSkillIds={removedSystemSkillIds}
                                 config={config}
+                                promptLabelOverride={promptLabelOverride}
+                                promptPlaceholderOverride={promptPlaceholderOverride}
                               />
                             </div>
                           );
@@ -12965,10 +14373,10 @@ ${prompt}
                       <div
                         className="absolute border-2 border-dashed border-indigo-500 bg-slate-500/[0.12] rounded-3xl shadow-[0_0_24px_rgba(99,102,241,0.08)]"
                         style={{
-                          left: `${selectionBounds.minX - 10}px`,
-                          top: `${selectionBounds.minY - 10}px`,
-                          width: `${selectionBounds.width + 20}px`,
-                          height: `${selectionBounds.height + 20}px`,
+                          left: String(selectionBounds.minX - 10) + "px",
+                          top: String(selectionBounds.minY - 10) + "px",
+                          width: String(selectionBounds.width + 20) + "px",
+                          height: String(selectionBounds.height + 20) + "px",
                           pointerEvents: "none",
                           zIndex: 10,
                         }}
@@ -12979,9 +14387,9 @@ ${prompt}
                       <div
                         className="absolute z-[110] pointer-events-none rounded-2xl"
                         style={{
-                          left: `${batchPanelPosition.x}px`,
-                          top: `${batchPanelPosition.y}px`,
-                          transform: `translate(-50%, -100%) scale(${1 / (transformState.scale || 1)})`,
+                          left: String(batchPanelPosition.x) + "px",
+                          top: String(batchPanelPosition.y) + "px",
+                          transform: "translate(-50%, -100%) scale(" + 1 / (transformState.scale || 1) + ")",
                           transformOrigin: "bottom center",
                         }}
                       >
@@ -13001,7 +14409,7 @@ ${prompt}
                             e.preventDefault();
 
                             const initialPositions: { [id: string]: { x: number; y: number } } = {};
-                            history.forEach((h) => {
+                            displayHistory.forEach((h) => {
                               if (selectedIds.includes(h.id) && h.position) {
                                 initialPositions[h.id] = {
                                   x: h.position.x,
@@ -13065,9 +14473,9 @@ ${prompt}
                         <div
                           className="absolute z-[110] no-canvas-intercept arrow-drag-button"
                           style={{
-                            left: `${leftPos}px`,
-                            top: `${topPos}px`,
-                            transform: `translate(-50%, -50%) scale(${1 / (transformState.scale || 1)})`,
+                            left: String(leftPos) + "px",
+                            top: String(topPos) + "px",
+                            transform: "translate(-50%, -50%) scale(" + 1 / (transformState.scale || 1) + ")",
                             transformOrigin: "center center",
                             pointerEvents: "auto",
                           }}
@@ -13081,13 +14489,12 @@ ${prompt}
                             onPointerMove={handleArrowDragMove}
                             onPointerUp={handleArrowDragEnd}
                             onPointerCancel={handleArrowDragEnd}
-                            className="w-12 h-12 bg-zinc-950/90 border-2 border-zinc-700 hover:border-indigo-500 shadow-[0_8px_30px_rgb(0,0,0,0.4)] rounded-full text-white flex items-center justify-center cursor-grab active:cursor-grabbing hover:scale-110 active:scale-95 transition-all group pointer-events-auto select-none touch-none history-card-drag-area no-canvas-intercept arrow-drag-button"
-                            title="拖动箭头：拖拽或拉扯虚线指定空白位置新建卡片"
+                            className="w-8 h-8 bg-zinc-950/90 border-2 border-zinc-700 hover:border-indigo-500 shadow-[0_4px_16px_rgb(0,0,0,0.35)] rounded-full text-white flex items-center justify-center cursor-grab active:cursor-grabbing hover:scale-105 active:scale-95 transition-all group pointer-events-auto select-none touch-none history-card-drag-area no-canvas-intercept arrow-drag-button"
+                            title="拖动箭头：连接到已有专业节点"
                           >
-                            <ArrowRight className="w-5 h-5 text-gray-200 group-hover:text-white transition-transform group-hover:translate-x-0.5 duration-150" />
+                            <ArrowRight className="w-4 h-4 text-gray-200 group-hover:text-white transition-transform group-hover:translate-x-0.5 duration-150" />
                             
-                            {/* Pulsing indicator ring to show drag friendliness */}
-                            <div className="absolute inset-0 rounded-full border border-indigo-400/30 animate-ping opacity-75 scale-105 pointer-events-none" />
+                            <div className="absolute inset-0 rounded-full border border-indigo-400/20 pointer-events-none" />
                           </motion.div>
                         </div>
                       );
@@ -13130,11 +14537,11 @@ ${prompt}
                   }, 150);
                 }}
                 className="bg-white/95 backdrop-blur-md rounded-2xl h-[52px] px-7 shadow-[0_12px_32px_rgba(0,0,0,0.12)] hover:shadow-[0_16px_40px_rgba(0,0,0,0.18)] border border-slate-200/60 hover:border-indigo-300 flex items-center space-x-3 text-slate-700 transition-all cursor-pointer group active:scale-95 whitespace-nowrap"
-                title="打开AI意图控制台"
+                title="打开 Intent"
               >
                 <PanelLeftOpen className="w-5 h-5 text-slate-700 group-hover:text-indigo-500 transition-colors" />
                 <span className="text-sm font-extrabold text-slate-700 group-hover:text-indigo-600 transition-colors tracking-wide select-none">
-                  AI意图控制台
+                  Intent
                 </span>
               </div>
             </motion.div>
@@ -13162,7 +14569,7 @@ ${prompt}
                       <Sparkles className="w-4 h-4 text-[#7c3aed]" />
                     </div>
                     <span className="font-sans font-extrabold text-[16px] text-slate-800 tracking-tight">
-                      AI意图控制台
+                      Intent
                     </span>
                   </div>
 
@@ -13210,7 +14617,7 @@ ${prompt}
                   {/* Codex Component inside Panel */}
                   <div className="flex-1 overflow-hidden min-h-0 bg-white">
                     <Codex
-                      key={`collab-panel-codex-${user?.id || "guest"}`}
+                      key={"collab-panel-codex-" + (user?.id || "guest")}
                       userId={user?.id}
                       config={config}
                       userPoints={Math.max(user?.points || 0, user?.teamInfo?.teamPoints || 0)}
@@ -13245,7 +14652,7 @@ ${prompt}
                       externalActiveSubTab={collabActiveSubTab}
                       onExternalActiveSubTabChange={setCollabActiveSubTab}
                       externalScriptType={scriptConfig.genre.id}
-                      externalScriptAuthor={scriptConfig.author.name === "自定义" ? (scriptConfig.customAuthor || "自定义") : scriptConfig.author.name}
+                      externalScriptAuthor={scriptConfig.author.name === "Custom" ? (scriptConfig.customAuthor || "Custom") : scriptConfig.author.name}
                       externalScriptLength={scriptConfig.length.id}
                       externalScriptDuration={scriptConfig.duration.id}
                       externalCreationType={scriptConfig.creationType}
@@ -13631,7 +15038,7 @@ ${prompt}
                                                   src={
                                                     asset.data.includes("#")
                                                       ? asset.data
-                                                      : `${asset.data}#t=0.1`
+                                                      : asset.data + "#t=0.1"
                                                   }
                                                   className="w-full h-full object-cover opacity-80 group-hover:opacity-100 transition-opacity"
                                                   muted
@@ -13701,10 +15108,10 @@ ${prompt}
                                                   vidCount++;
                                               }
                                               if (currentAsset.type === "image")
-                                                return `图${imgCount}`;
+                                                return "Image " + imgCount;
                                               if (currentAsset.type === "video")
-                                                return `视频${vidCount}`;
-                                              return `图${idx + 1}`;
+                                                return "Video " + vidCount;
+                                              return "Asset " + (idx + 1);
                                             })()}
                                           </div>
                                           <button
@@ -13820,9 +15227,9 @@ ${prompt}
                                         : img.type === "environment"
                                           ? "场景"
                                           : img.type === "prop"
-                                            ? "道具"
+                                            ? "閬撳叿"
                                             : (img as any).name ||
-                                              `图${idx + 1}`}
+                                              "Image " + (idx + 1)}
                                     </div>
 
                                     <button
@@ -13891,13 +15298,12 @@ ${prompt}
                   {wfShowSkillDropdown && wfFilteredSkills.length > 0 && (
                     <div className="absolute bottom-[100%] left-4 mb-2 z-[10100] w-80 bg-white border border-gray-100 rounded-xl shadow-[0_8px_30px_rgb(0,0,0,0.12)] p-2 max-h-64 overflow-y-auto animate-in fade-in slide-in-from-bottom-2 duration-150 text-slate-800">
                       <div className="px-2.5 py-1 text-[10px] font-black tracking-wider text-gray-400 uppercase border-b border-gray-50 mb-1 flex items-center justify-between select-none">
-                        <span>💡 智选 & 调用 SKILL</span>
+                        <span>💡 智能 & 调用 SKILL</span>
                         <span className="text-[9px] lowercase text-gray-300">/ skill</span>
                       </div>
                       {wfFilteredSkills.map((skill, idx) => {
                         const isSelected = idx === wfSkillDropdownIndex;
-                        const hasIconEmoji = skill.icon && skill.name.startsWith(skill.icon);
-                        const displayName = hasIconEmoji ? skill.name : (skill.icon ? `${skill.icon} ${skill.name}` : skill.name);
+                        const displayName = skill.icon ? skill.icon + " " + getCleanSkillName(skill) : getCleanSkillName(skill);
                         
                         return (
                           <div
@@ -13907,21 +15313,23 @@ ${prompt}
                               wfHandleSelectSkill(skill);
                             }}
                             onMouseEnter={() => setWfSkillDropdownIndex(idx)}
-                            className={`flex flex-col px-2.5 py-1.5 rounded-lg cursor-pointer transition-colors ${
-                              isSelected 
-                                ? 'bg-indigo-50 text-indigo-900' 
-                                : 'hover:bg-gray-50 text-gray-700'
-                            }`}
+                            className={cn(
+                              "flex flex-col px-2.5 py-1.5 rounded-lg cursor-pointer transition-colors",
+                              isSelected
+                                ? "bg-indigo-50 text-indigo-900"
+                                : "hover:bg-gray-50 text-gray-700",
+                            )}
                           >
                             <div className="flex items-center justify-between">
                               <span className="text-xs font-bold">{displayName}</span>
-                              <span className={`text-[8px] px-1.5 py-0.5 rounded font-black border ${
-                                skill.category === 'image' 
-                                  ? 'bg-cyan-50 text-cyan-600 border-cyan-100/60' 
-                                  : skill.category === 'video' 
-                                    ? 'bg-purple-50 text-purple-600 border-purple-100/60' 
-                                    : 'bg-emerald-50 text-emerald-600 border-emerald-100/60'
-                              }`}>
+                              <span className={cn(
+                                "text-[8px] px-1.5 py-0.5 rounded font-black border",
+                                skill.category === "image"
+                                  ? "bg-cyan-50 text-cyan-600 border-cyan-100/60"
+                                  : skill.category === "video"
+                                    ? "bg-purple-50 text-purple-600 border-purple-100/60"
+                                    : "bg-emerald-50 text-emerald-600 border-emerald-100/60",
+                              )}>
                                 {skill.category === 'image' ? '生图' : skill.category === 'video' ? '视频' : '文本'}
                               </span>
                             </div>
@@ -13949,7 +15357,7 @@ ${prompt}
                     placeholder={
                       isCollabModeActive
                         ? (collabChatTargetId.endsWith('_ai')
-                          ? "在此输入消息或需求，同 AI 助手进行创作..."
+                          ? "在此输入消息或需求，向 AI 助手进行创作..."
                           : "在此输入消息，与团队成员进行沟通...")
                         : mode === "video"
                           ? "请输入你想生成的视频描述... (输入 @ 引用历史素材)"
@@ -13960,7 +15368,7 @@ ${prompt}
                                   : "请输入剧本主题或大纲..."
                                 : scriptConfig.activeSubTab === "video"
                                   ? "请输入视频 background 描述或直接上传视频文件..."
-                                  : "请输入或粘贴需要处理 of 剧本内容..."
+                                  : "请输入或粘贴需要处理的剧本内容..."
                               : mode === "director"
                                 ? "请输入或粘贴您的剧本内容..."
                                 : GRID_MODES.find(
@@ -14143,7 +15551,7 @@ ${prompt}
                             引用历史素材
                           </span>
                           <span className="text-[9px] text-gray-300">
-                            ↑↓ 选择, Enter 确认
+                            鈫戔啌 閫夋嫨, Enter 纭
                           </span>
                         </div>
                         <div className="max-h-48 overflow-y-auto p-1 text-slate-800">
@@ -14207,7 +15615,7 @@ ${prompt}
                                                 thumb.includes("video")
                                               ));
                                             if (isVideoAsset) {
-                                              const videoSrc = thumb.includes("#") ? thumb : `${thumb}#t=0.1`;
+                                  const videoSrc = thumb.includes("#") ? thumb : thumb + "#t=0.1";
                                               return (
                                                 <video
                                                   src={videoSrc}
@@ -14334,12 +15742,12 @@ ${prompt}
                         {isCollabModeActive && !collabChatTargetId.endsWith('_ai')
                           ? "协同空间"
                           : isCollabModeActive && collabChatTargetId.endsWith('_ai')
-                            ? (collabAiSkill === "general" ? "小逻: 意图引导" : "灵境创生")
+                            ? (collabAiSkill === "general" ? "小逻 意图引导" : "灵境创生")
                             : (mode as string) === "image"
                               ? "灵境生图"
                               : (mode as string) === "video"
                                 ? "灵境视频"
-                                : "小逻: 意图引导"}
+                                : "小逻 意图引导"}
                       </span>
                       <ChevronDown
                         className={cn(
@@ -14451,7 +15859,7 @@ ${prompt}
                                   灵境生图
                                 </p>
                                 <p className="text-[9px] text-[#818cf8] truncate">
-                                  仅载入SKILL与插件，不含智能体
+                                  仅载入 SKILL 与插件，不含智能体
                                 </p>
                               </div>
                             </button>
@@ -14480,7 +15888,7 @@ ${prompt}
                                   灵境视频
                                 </p>
                                 <p className="text-[9px] text-purple-400 truncate">
-                                  仅载入SKILL与插件，不含智能体
+                                  仅载入 SKILL 与插件，不含智能体
                                 </p>
                               </div>
                             </button>
@@ -14492,7 +15900,8 @@ ${prompt}
                                 setIsCollabModeActive(true);
                                 setIsCollabCollapsed(false);
                                 setCollabChatTargetId('xiaoluo_ai');
-                                setCollabAiSkill("createScript");
+                                setCollabAiSkill("none");
+                                setScriptConfig((prev) => ({ ...prev, activeSubTab: "none" }));
                                 setMode("script");
                               }}
                               className={cn(
@@ -14513,7 +15922,7 @@ ${prompt}
                                   )}
                                 </p>
                                 <p className="text-[9px] text-amber-500 truncate">
-                                  仅载入SKILL与插件，不含智能体
+                                  仅载入 SKILL 与插件，不含智能体
                                 </p>
                               </div>
                             </button>
@@ -14527,11 +15936,11 @@ ${prompt}
                     <>
                       <div className="hidden sm:block h-4 w-px bg-gray-100 mx-1 shrink-0" />
 
-                      {/* Dropdown 2: 小组名称 Selection */}
+                      {/* Dropdown 2: 灏忕粍鍚嶇О Selection */}
                       {collabGroups.length > 0 && (
                         <div className="relative flex items-center bg-gray-50 border border-gray-200/50 rounded-xl px-2.5 py-1 hover:bg-gray-100 transition-all cursor-pointer">
                           <Users className="w-3 h-3 text-emerald-500 mr-1.5" />
-                          <span className="text-[10px] text-gray-400 mr-1 select-none font-bold">小组名称:</span>
+                          <span className="text-[10px] text-gray-400 mr-1 select-none font-bold">灏忕粍鍚嶇О:</span>
                           <select 
                             value={collabChatTargetId}
                             onChange={(e) => {
@@ -14541,7 +15950,7 @@ ${prompt}
                             title="选择发布的群组"
                           >
                             {collabGroups.map(group => (
-                              <option key={group.id} value={`group_${group.id}`}>
+                              <option key={group.id} value={"group_" + group.id}>
                                 {group.name}
                               </option>
                             ))}
@@ -14633,8 +16042,10 @@ ${prompt}
                                           ? "prompt"
                                           : (collabAiSkill === "assetPromptSkill" || collabAiSkill === "asset-prompt-skill" || collabAiSkill === "asset_prompt")
                                             ? "asset_prompt"
-                                            : (collabAiSkill === "shotPromptSkill" || collabAiSkill === "shot-prompt-skill" || collabAiSkill === "shot_prompt")
+                                      : (collabAiSkill === "shotPromptSkill" || collabAiSkill === "shot-prompt-skill" || collabAiSkill === "shot_prompt")
                                               ? "shot_prompt"
+                                              : collabAiSkill === "none"
+                                                ? "none"
                                               : "xiaoluo_ai")
                                 : mode === "director"
                                   ? directorConfig.generationMode
@@ -14644,7 +16055,7 @@ ${prompt}
                                 ? collabAiSkill
                                 : (mode === "director"
                                   ? (directorConfig.generationMode === "prompt" ? "prompt-skill" : directorConfig.generationMode === "asset_prompt" ? "asset-prompt-skill" : "shot-prompt-skill")
-                                  : (scriptConfig.activeSubTab === "create" ? "create-script" : scriptConfig.activeSubTab === "analyze" ? "analyze-script" : scriptConfig.activeSubTab === "video" ? "video-dissect" : "rewrite-script"));
+                                  : (scriptConfig.activeSubTab === "none" ? "none" : scriptConfig.activeSubTab === "create" ? "create-script" : scriptConfig.activeSubTab === "analyze" ? "analyze-script" : scriptConfig.activeSubTab === "video" ? "video-dissect" : "rewrite-script"));
 
                               const normActiveId = activeSkillId === "createScript" ? "create-script" :
                                                    activeSkillId === "analyzeScript" ? "analyze-script" :
@@ -14659,6 +16070,9 @@ ${prompt}
                                 return <span className="text-xs leading-none">{activeSkill.icon}</span>;
                               }
 
+                              if (activeId === "none") {
+                                return <X className="w-3.5 h-3.5 text-amber-500" />;
+                              }
                               if (activeId === "xiaoluo_ai") {
                                 return <Bot className="w-3.5 h-3.5 text-blue-500" />;
                               }
@@ -14672,7 +16086,7 @@ ${prompt}
                               return <PenTool className="w-3 h-3" />;
                             })()}
                             <span>
-                              技能{" "}
+                              Skill{" "}
                               {isCollabModeActive
                                 ? (() => {
                                     const matched = workflowSkills.find(s => {
@@ -14687,31 +16101,33 @@ ${prompt}
                                     });
                                     if (matched) return matched.name;
 
-                                    if (collabAiSkill === "createScript" || collabAiSkill === "create-script") return "创作剧本";
-                                    if (collabAiSkill === "analyzeScript" || collabAiSkill === "analyze-script") return "分析剧本";
-                                    if (collabAiSkill === "videoDissect" || collabAiSkill === "video-dissect") return "影音拉片";
-                                    if (collabAiSkill === "rewriteScript" || collabAiSkill === "rewrite-script") return "改写剧本";
-                                    if (collabAiSkill === "promptSkill" || collabAiSkill === "prompt-skill") return "提示词";
-                                    if (collabAiSkill === "assetPromptSkill" || collabAiSkill === "asset-prompt-skill" || collabAiSkill === "asset_prompt") return "资产提示词";
-                                    if (collabAiSkill === "shotPromptSkill" || collabAiSkill === "shot-prompt-skill" || collabAiSkill === "shot_prompt") return "分镜提示词";
-                                    if (collabAiSkill === "general") return "意图引导";
-                                    return "意图引导";
+                                    if (collabAiSkill === "createScript" || collabAiSkill === "create-script") return "Create script";
+                                    if (collabAiSkill === "analyzeScript" || collabAiSkill === "analyze-script") return "Analyze script";
+                                    if (collabAiSkill === "videoDissect" || collabAiSkill === "video-dissect") return "Video breakdown";
+                                    if (collabAiSkill === "rewriteScript" || collabAiSkill === "rewrite-script") return "Rewrite script";
+                                    if (collabAiSkill === "promptSkill" || collabAiSkill === "prompt-skill") return "Prompt";
+                                    if (collabAiSkill === "assetPromptSkill" || collabAiSkill === "asset-prompt-skill" || collabAiSkill === "asset_prompt") return "Asset prompt";
+                                    if (collabAiSkill === "shotPromptSkill" || collabAiSkill === "shot-prompt-skill" || collabAiSkill === "shot_prompt") return "Shot prompt";
+                                    if (collabAiSkill === "none") return "无";
+                                    if (collabAiSkill === "general") return "Intent guide";
+                                    return "Intent guide";
                                   })()
                                 : (() => {
                                     const activeId = mode === "director"
                                       ? (directorConfig.generationMode === "prompt" ? "prompt-skill" : directorConfig.generationMode === "asset_prompt" ? "asset-prompt-skill" : "shot-prompt-skill")
-                                      : (scriptConfig.activeSubTab === "create" ? "create-script" : scriptConfig.activeSubTab === "analyze" ? "analyze-script" : scriptConfig.activeSubTab === "video" ? "video-dissect" : "rewrite-script");
+                                      : (scriptConfig.activeSubTab === "none" ? "none" : scriptConfig.activeSubTab === "create" ? "create-script" : scriptConfig.activeSubTab === "analyze" ? "analyze-script" : scriptConfig.activeSubTab === "video" ? "video-dissect" : "rewrite-script");
+                                    if (activeId === "none") return "无";
                                     const matched = workflowSkills.find(s => s.id === activeId);
                                     if (matched) return matched.name;
 
                                     if (mode === "director") {
-                                      return directorConfig.generationMode === "prompt" ? "提示词" :
-                                             directorConfig.generationMode === "asset_prompt" ? "资产提示词" :
-                                             directorConfig.generationMode === "shot_prompt" ? "分镜提示词" : "提示词";
+                                      return directorConfig.generationMode === "prompt" ? "Prompt" :
+                                             directorConfig.generationMode === "asset_prompt" ? "Asset prompt" :
+                                             directorConfig.generationMode === "shot_prompt" ? "Shot prompt" : "Prompt";
                                     } else {
-                                      return scriptConfig.activeSubTab === "create" ? "创作剧本" :
-                                             scriptConfig.activeSubTab === "analyze" ? "分析剧本" :
-                                             scriptConfig.activeSubTab === "video" ? "影音拉片" : "改写剧本";
+                                      return scriptConfig.activeSubTab === "create" ? "Create script" :
+                                             scriptConfig.activeSubTab === "analyze" ? "Analyze script" :
+                                             scriptConfig.activeSubTab === "video" ? "Video breakdown" : "Rewrite script";
                                     }
                                   })()}
                             </span>
@@ -14744,7 +16160,9 @@ ${prompt}
                                         ];
                                       } else {
                                         // 灵境创生 mode: show all text/script skills (transferred)
-                                        const baseItems = [];
+                                        const baseItems = [
+                                          { id: "none", name: "无", icon: X, isSystem: true, emoji: null }
+                                        ];
                                         const createDbSkill = workflowSkills.find(s => s.id === "create-script" || s.id === "createScript");
                                         const analyzeDbSkill = workflowSkills.find(s => s.id === "analyze-script" || s.id === "analyzeScript");
                                         const rewriteDbSkill = workflowSkills.find(s => s.id === "rewrite-script" || s.id === "rewriteScript");
@@ -14771,7 +16189,7 @@ ${prompt}
                                         if (!removedSystemSkillIds.includes("rewrite-script")) {
                                           baseItems.push({
                                             id: "rewriteScript",
-                                            name: rewriteDbSkill?.name || "改写剧本",
+                                            name: rewriteDbSkill?.name || "鏀瑰啓鍓ф湰",
                                             icon: RefreshCw,
                                             isSystem: true,
                                             emoji: rewriteDbSkill?.icon || null
@@ -14780,7 +16198,7 @@ ${prompt}
                                         if (!removedSystemSkillIds.includes("video-dissect")) {
                                           baseItems.push({
                                             id: "videoDissect",
-                                            name: videoDbSkill?.name || "影音拉片",
+                                            name: videoDbSkill?.name || "褰遍煶鎷夌墖",
                                             icon: Video,
                                             isSystem: true,
                                             emoji: videoDbSkill?.icon || null
@@ -14830,6 +16248,7 @@ ${prompt}
                                     }
 
                                     const baseItems = [
+                                      { id: "none", name: "无", icon: X, isSystem: true, emoji: null },
                                       { id: "xiaoluo_ai", name: "意图引导", icon: Bot, isSystem: true, emoji: null },
                                     ];
                                     const createDbSkill = workflowSkills.find(s => s.id === "create-script" || s.id === "createScript");
@@ -14858,7 +16277,7 @@ ${prompt}
                                     if (!removedSystemSkillIds.includes("rewrite-script")) {
                                       baseItems.push({
                                         id: "rewriteScript",
-                                        name: rewriteDbSkill?.name || "改写剧本",
+                                        name: rewriteDbSkill?.name || "鏀瑰啓鍓ф湰",
                                         icon: RefreshCw,
                                         isSystem: true,
                                         emoji: rewriteDbSkill?.icon || null
@@ -14867,7 +16286,7 @@ ${prompt}
                                     if (!removedSystemSkillIds.includes("video-dissect")) {
                                       baseItems.push({
                                         id: "videoDissect",
-                                        name: videoDbSkill?.name || "影音拉片",
+                                        name: videoDbSkill?.name || "褰遍煶鎷夌墖",
                                         icon: Video,
                                         isSystem: true,
                                         emoji: videoDbSkill?.icon || null
@@ -14920,6 +16339,13 @@ ${prompt}
                                         if (isCollabModeActive) {
                                           if (m.id === "xiaoluo_ai" || m.id === "general") {
                                             setCollabAiSkill("general");
+                                          } else if (m.id === "none") {
+                                            setCollabAiSkill("none");
+                                            setMode("script");
+                                            setScriptConfig((prev) => ({
+                                              ...prev,
+                                              activeSubTab: "none",
+                                            }));
                                           } else if (m.id === "create-script" || m.id === "create" || m.id === "createScript") {
                                             setCollabAiSkill("createScript");
                                             setScriptConfig((prev) => ({
@@ -14961,6 +16387,13 @@ ${prompt}
                                             setIsCollabCollapsed(false);
                                             setCollabChatTargetId('xiaoluo_ai');
                                             setCollabAiSkill("general");
+                                          } else if (m.id === "none") {
+                                            setIsCollabModeActive(false);
+                                            setMode("script");
+                                            setScriptConfig((prev) => ({
+                                              ...prev,
+                                              activeSubTab: "none",
+                                            }));
                                           } else if (
                                             m.id === "create-script" || m.id === "create" || m.id === "createScript" ||
                                             m.id === "analyze-script" || m.id === "analyze" || m.id === "analyzeScript" ||
@@ -15013,6 +16446,7 @@ ${prompt}
                                         "w-full px-3 py-2 rounded-lg text-[10px] font-bold text-left transition-colors flex items-center space-x-2",
                                         isCollabModeActive
                                           ? (
+                                              (m.id === "none" && collabAiSkill === "none") ||
                                               (m.id === "xiaoluo_ai" && collabAiSkill === "general") ||
                                               ((m.id === "create-script" || m.id === "create" || m.id === "createScript") && (collabAiSkill === "createScript" || collabAiSkill === "create-script")) ||
                                               ((m.id === "analyze-script" || m.id === "analyze" || m.id === "analyzeScript") && (collabAiSkill === "analyzeScript" || collabAiSkill === "analyze-script")) ||
@@ -15026,6 +16460,7 @@ ${prompt}
                                               ? (["prompt-skill", "prompt", "promptSkill", "asset-prompt-skill", "asset_prompt", "assetPromptSkill", "shot-prompt-skill", "shot_prompt", "shotPromptSkill"].includes(m.id) ? "bg-blue-100 text-blue-600 font-black" : "bg-amber-100 text-amber-600 font-black")
                                               : "hover:bg-gray-50 text-gray-500"
                                           : (
+                                              (m.id === "none" && mode === "script" && scriptConfig.activeSubTab === "none") ||
                                               ((m.id === "prompt-skill" || m.id === "prompt" || m.id === "promptSkill" || m.id === "asset-prompt-skill" || m.id === "asset_prompt" || m.id === "assetPromptSkill" || m.id === "shot-prompt-skill" || m.id === "shot_prompt" || m.id === "shotPromptSkill") && mode === "director" && directorConfig.generationMode === ((m.id === "prompt-skill" || m.id === "prompt" || m.id === "promptSkill") ? "prompt" : (m.id === "asset-prompt-skill" || m.id === "asset_prompt" || m.id === "assetPromptSkill") ? "asset_prompt" : "shot_prompt")) ||
                                               (mode === "script" && (m.id === "create-script" || m.id === "create" || m.id === "createScript" ? "create" : m.id === "analyze-script" || m.id === "analyze" || m.id === "analyzeScript" ? "analyze" : m.id === "rewrite-script" || m.id === "rewrite" || m.id === "rewriteScript" ? "rewrite" : m.id === "video-dissect" || m.id === "video" || m.id === "videoDissect" ? "video" : "") === scriptConfig.activeSubTab)
                                             )
@@ -15091,7 +16526,7 @@ ${prompt}
                                           >
                                             {[
                                               { id: "new", name: "全新创作", desc: "全新故事脚本", icon: Sparkles },
-                                              { id: "continue", name: "剧情续写", desc: "已有剧本延续", icon: GitFork }
+                                              { id: "continue", name: "剧情续写", desc: "已有剧本延展", icon: GitFork }
                                             ].map((item) => (
                                               <button
                                                 key={item.id}
@@ -15135,11 +16570,11 @@ ${prompt}
                                         setActiveDropdownId(null);
                                       }}
                                       className="px-3 py-1.5 text-[11px] font-bold flex items-center space-x-1 rounded-xl transition-all text-gray-700 bg-gray-50 hover:bg-gray-100 border border-gray-100 whitespace-nowrap"
-                                    >
+                            >
                             <BookOpen className="w-3 h-3 text-amber-500" />
-                            <span className="text-gray-400">风格：</span>
+                            <span className="text-gray-400">Style:</span>
                             <span>
-                              {scriptConfig.genre.name} · {scriptConfig.author.name === "自定义" ? (scriptConfig.customAuthor || "自定义") : scriptConfig.author.name}
+                              {scriptConfig.genre.name} / {scriptConfig.author.name === "Custom" ? (scriptConfig.customAuthor || "Custom") : scriptConfig.author.name}
                             </span>
                             <ChevronDown
                               className={cn(
@@ -15165,7 +16600,7 @@ ${prompt}
                                   <div className="w-[140px] border-r border-gray-100 p-1 overflow-y-auto custom-scrollbar flex flex-col gap-0.5 select-none bg-slate-50/50">
                                     <div className="px-2 py-1 mb-1">
                                       <span className="text-[9px] font-extrabold text-slate-400 uppercase tracking-widest block">
-                                        剧本类型
+                                        鍓ф湰绫诲瀷
                                       </span>
                                     </div>
                                     {SCRIPT_GENRES.map((genre) => {
@@ -15299,7 +16734,7 @@ ${prompt}
                                             >
                                               <input
                                                 type="text"
-                                                placeholder="如：马伯庸 / 三毛 (回车或点击空白处关闭菜单)..."
+                                                placeholder="例如：马伯庸 / 三毛 (回车或点击空白处关闭菜单)..."
                                                 value={scriptConfig.customAuthor}
                                                 onChange={(e) =>
                                                   setScriptConfig((prev) => ({
@@ -15337,7 +16772,7 @@ ${prompt}
                                       className="px-3 py-1.5 text-[11px] font-bold flex items-center space-x-1 rounded-xl transition-all text-gray-700 bg-gray-50 hover:bg-gray-100 border border-gray-100 whitespace-nowrap"
                                     >
                                       <Layers className="w-3 h-3 text-amber-500" />
-                                      <span>篇幅 {scriptConfig.length.label}</span>
+                                      <span>绡囧箙 {scriptConfig.length.label}</span>
                                       <ChevronDown
                                         className={cn(
                                           "w-3 h-3 transition-transform",
@@ -15394,7 +16829,8 @@ ${prompt}
                                 if (typeof currentVal === "object" && currentVal !== null) {
                                   currentVal = currentVal.label || currentVal.name || currentVal.id || JSON.stringify(currentVal);
                                 }
-                                const isOpen = activeDropdownId === `${activeSkillObj.id}_${opt.id}`;
+                                const dropdownId = activeSkillObj.id + "_" + opt.id;
+                                const isOpen = activeDropdownId === dropdownId;
                                 return (
                                   <div key={opt.id} className="relative">
                                     <button
@@ -15402,7 +16838,7 @@ ${prompt}
                                         setShowCreationTypeMenu(false);
                                         setShowGenreStyleMenu(false);
                                         setShowLengthMenu(false);
-                                        setActiveDropdownId(isOpen ? null : `${activeSkillObj.id}_${opt.id}`);
+                                        setActiveDropdownId(isOpen ? null : dropdownId);
                                       }}
                                       className="px-3 py-1.5 text-[11px] font-bold flex items-center space-x-1 rounded-xl transition-all text-gray-700 bg-gray-50 hover:bg-gray-100 border border-gray-100"
                                     >
@@ -15417,7 +16853,7 @@ ${prompt}
                                     </button>
                                     <AnimatePresence>
                                       {isOpen && (
-                                        <div key={`${activeSkillObj.id}_${opt.id}-menu`}>
+                                        <div key={dropdownId + "-menu"}>
                                           <div
                                             className="fixed inset-0 z-40"
                                             onClick={() => setActiveDropdownId(null)}
@@ -15471,7 +16907,7 @@ ${prompt}
                     const isAssetPromptSkill = activeSkillObjForDirector?.id === "asset-prompt-skill" || activeSkillObjForDirector?.id === "assetPromptSkill";
                     return (
                       <>
-                        {/* Segments/段数 Selector */}
+                        {/* Segments/娈垫暟 Selector */}
                         {!isAssetPromptSkill && (
                           <>
                             <div className="relative">
@@ -15485,7 +16921,7 @@ ${prompt}
                                 className="px-3 py-1.5 text-[11px] font-bold flex items-center space-x-1 rounded-xl transition-all text-gray-700 bg-gray-50 hover:bg-gray-100 border border-gray-100 whitespace-nowrap"
                               >
                                 <Layers className="w-3 h-3 text-amber-500" />
-                                <span>段数 {directorConfig.segments.label}</span>
+                                <span>娈垫暟 {directorConfig.segments.label}</span>
                                 <ChevronDown
                                   className={cn(
                                     "w-3 h-3 transition-transform",
@@ -15604,7 +17040,7 @@ ${prompt}
                             className="px-3 py-1.5 text-[11px] font-bold flex items-center space-x-1 rounded-xl transition-all text-gray-700 bg-gray-50 hover:bg-gray-100 border border-gray-100 max-w-[120px]"
                           >
                             <Video className="w-3 h-3 text-purple-500" />
-                            <span className="truncate">风格：{directorConfig.visualStyle.name}</span>
+                            <span className="truncate">Style: {directorConfig.visualStyle.name}</span>
                             <ChevronDown
                               className={cn(
                                 "w-3 h-3 transition-transform",
@@ -15664,7 +17100,7 @@ ${prompt}
                               className="px-3 py-1.5 text-[11px] font-bold flex items-center space-x-1 rounded-xl transition-all text-gray-700 bg-gray-50 hover:bg-gray-100 border border-gray-100 max-w-[120px]"
                             >
                               <User className="w-3 h-3 text-emerald-500" />
-                              <span className="truncate">导演：{directorConfig.directorName}</span>
+                              <span className="truncate">Director: {directorConfig.directorName}</span>
                               <ChevronDown
                                 className={cn(
                                   "w-3 h-3 transition-transform",
@@ -15687,7 +17123,7 @@ ${prompt}
                                   >
                                     {GENRES.flatMap(g => g.directors).map((dir, idx) => (
                                       <button
-                                        key={`${dir.name}-${idx}`}
+                                        key={dir.name + "-" + idx}
                                         onClick={() => {
                                           setDirectorConfig((prev) => ({
                                             ...prev,
@@ -15756,62 +17192,11 @@ ${prompt}
                               className="absolute bottom-full mb-2 left-0 z-50 w-44 bg-white rounded-2xl shadow-2xl border border-indigo-100 p-1 flex flex-col gap-1 max-h-60 overflow-y-auto custom-scrollbar"
                             >
                               {(() => {
-                                // Dynamic text models from config
-                                const dynamicTextModels: { id: string; name: string; icon: any }[] = [];
-                                if (config) {
-                                  const keys: (keyof Config)[] = ['script', 'image', 'video', 'videoSeedance', 'videoSeedanceMini', 'gptImage', 'claudeSonnet'];
-                                  keys.forEach(key => {
-                                    const section = config[key];
-                                    if (section && section.model) {
-                                      let isTypeMatch = section.modelType === 'text';
-                                      if (!section.modelType) {
-                                        isTypeMatch = (key === 'script' || key === 'claudeSonnet');
-                                      }
-                                      if (isTypeMatch) {
-                                        const defaultLabel = key === 'script' ? 'Gemini 3.5 Flash' :
-                                                             key === 'claudeSonnet' ? 'Claude-sonnet-5' : section.model;
-                                        dynamicTextModels.push({
-                                          id: section.model,
-                                          name: section.displayName || defaultLabel,
-                                          icon: Cpu
-                                        });
-                                      }
-                                    }
-                                  });
-
-                                  // Add custom interfaces of type 'text'
-                                  if (config.customInterfaces) {
-                                    Object.entries(config.customInterfaces).forEach(([key, section]) => {
-                                      if (section && section.model && section.modelType === 'text') {
-                                        dynamicTextModels.push({
-                                          id: key, // Use custom interface key (e.g. ZHURUI) as modelId
-                                          name: section.displayName || section.title || section.model,
-                                          icon: Cpu
-                                        });
-                                      }
-                                    });
-                                  }
-                                } else {
-                                  dynamicTextModels.push(
-                                    { id: "gemini-3.5-flash", name: "Gemini 3.5 Flash", icon: Cpu },
-                                    { id: "claude-sonnet-5", name: "Claude-sonnet-5", icon: Cpu }
-                                  );
-                                }
-
-                                const customTextModels = (customModels || [])
-                                  .filter((m: any) => m.type === "text" || m.type === "all" || !m.type || m.modelType === "text")
-                                  .map((m: any) => ({
-                                    id: m.model,
-                                    name: m.name || m.model || "Unnamed Model",
-                                    icon: Cpu,
-                                    endpoint: m.endpoint,
-                                    apiKey: m.apiKey,
-                                    provider: m.provider || 'Third Party',
-                                    path: m.path,
-                                  }));
-
-                                return [...dynamicTextModels, ...customTextModels]
-                                  .filter((v, i, self) => self.findIndex(t => t.id === v.id) === i);
+                                return getModelOptions(config, customModels, "text").map((option) => ({
+                                  id: option.value,
+                                  name: option.label,
+                                  icon: Cpu,
+                                }));
                               })().map((m: any) => (
                                 <button
                                   key={m.id}
@@ -15838,56 +17223,7 @@ ${prompt}
                   )}
 
                   {mode === "image" && !isCollabModeActive && (() => {
-                    // Dynamic image models from config
-                    const dynamicImageModels: { label: string; value: string }[] = [];
-                    if (config) {
-                      const keys: (keyof Config)[] = ['script', 'image', 'video', 'videoSeedance', 'videoSeedanceMini', 'gptImage', 'claudeSonnet'];
-                      keys.forEach(key => {
-                        const section = config[key];
-                        if (section && section.model) {
-                          let isTypeMatch = section.modelType === 'image';
-                          if (!section.modelType) {
-                            isTypeMatch = (key === 'image' || key === 'gptImage');
-                          }
-                          if (isTypeMatch) {
-                            const defaultLabel = key === 'image' ? 'nano banana 2' : (key === 'gptImage' ? 'GPT-Image-2' : section.model);
-                            dynamicImageModels.push({
-                              label: section.displayName || defaultLabel,
-                              value: section.model
-                            });
-                          }
-                        }
-                      });
-
-                      // Add custom interfaces of type 'image'
-                      if (config.customInterfaces) {
-                        Object.entries(config.customInterfaces).forEach(([key, section]) => {
-                          if (section && section.model && section.modelType === 'image') {
-                            dynamicImageModels.push({
-                              label: section.displayName || section.title || section.model,
-                              value: key // Use key as unique identifier
-                            });
-                          }
-                        });
-                      }
-                    } else {
-                      dynamicImageModels.push(
-                        { label: "nano banana 2", value: "gemini-3.1-flash-image-preview" },
-                        { label: "GPT-Image-2", value: "gpt-image-2" }
-                      );
-                    }
-
-                    const customImageModels = (customModels || [])
-                      .filter((m: any) => m.type === "image" || m.type === "all" || m.modelType === "image")
-                      .map((m: any) => ({
-                        label: m.name || m.model,
-                        value: m.model,
-                      }));
-
-                    const allAvailableModels = [
-                      ...dynamicImageModels,
-                      ...customImageModels
-                    ].filter((v, i, self) => self.findIndex(t => t.value === v.value) === i);
+                    const allAvailableModels = getModelOptions(config, customModels, "image");
 
                     const visibleModels = allAvailableModels;
                     const targetModelVal = (imageConfig?.model === "gemini-3.1-flash-image-preview" || !imageConfig?.model)
@@ -15919,9 +17255,9 @@ ${prompt}
                                 }
                                 if (activeCustomSkillIds.length > 0) {
                                   const s = workflowSkills.find(skillItem => skillItem.id === activeCustomSkillIds[0]);
-                                  if (s) return s.name;
+                                  if (s) return getCleanSkillName(s);
                                 }
-                                return "标准模式";
+                                return "无";
                               })()}
                             </span>
                             {(() => {
@@ -15960,19 +17296,21 @@ ${prompt}
                                   className="absolute bottom-full mb-2 left-0 z-50 w-72 bg-white rounded-2xl shadow-2xl border border-gray-100 p-2 flex flex-col gap-1 max-h-96 overflow-y-auto custom-scrollbar"
                                 >
                                   <div className="text-[10px] font-black text-gray-400 px-3 py-1.5 border-b border-gray-50 flex items-center justify-between">
-                                    <span>全部模式与插件</span>
-                                    <span className="text-[9px] font-normal text-gray-400">选择一项启用</span>
+                                    <span>All modes and plugins</span>
+                                    <span className="text-[9px] font-normal text-gray-400">Choose one</span>
                                   </div>
 
                                   <div className="flex flex-col gap-1 py-1 max-h-72 overflow-y-auto custom-scrollbar">
                                     {/* Standard Mode / none */}
                                     {(() => {
-                                      const isSelected = (imageConfig?.gridMode || 'none') === 'none';
+                                      const isSelected = (imageConfig?.gridMode || 'none') === 'none' && !cameraParams && activeCustomSkillIds.length === 0;
                                       return (
                                         <button
                                           key="plugin-none"
                                           onClick={() => {
                                             setImageConfig(prev => ({ ...prev, gridMode: 'none' }));
+                                            clearCameraParams();
+                                            setActiveCustomSkillIds([]);
                                             setShowSkillsDropdown(false);
                                           }}
                                           className={cn(
@@ -15985,8 +17323,8 @@ ${prompt}
                                               <ImageIcon className="w-3.5 h-3.5 text-orange-500" />
                                             </div>
                                             <div>
-                                              <p className="text-[11px] font-bold">标准模式</p>
-                                              <p className="text-[9px] text-gray-400">单图及多参模式</p>
+                                              <p className="text-[11px] font-bold">无</p>
+                                              <p className="text-[9px] text-gray-400">不启用任何图片模式及插件</p>
                                             </div>
                                           </div>
                                           {isSelected && <Check className="w-3.5 h-3.5 text-orange-500 shrink-0" />}
@@ -16008,7 +17346,7 @@ ${prompt}
                                       const isSelected = imageConfig?.gridMode === pluginVal;
                                       return (
                                         <button
-                                          key={`skill-grid-${pluginVal}`}
+                                              key={"skill-grid-" + pluginVal}
                                           onClick={() => {
                                             setImageConfig(prev => ({ ...prev, gridMode: pluginVal as any }));
                                             setShowSkillsDropdown(false);
@@ -16024,7 +17362,7 @@ ${prompt}
                                             </div>
                                             <div>
                                               <p className="text-[11px] font-bold">{item.label}</p>
-                                              <p className="text-[9px] text-gray-400">{item.desc || "高级画面布局生成技能"}</p>
+                                              <p className="text-[9px] text-gray-400">{item.desc || "Advanced image layout generation skill"}</p>
                                             </div>
                                           </div>
                                           {isSelected && <Check className="w-3.5 h-3.5 text-indigo-500 shrink-0" />}
@@ -16042,7 +17380,7 @@ ${prompt}
                                                            activeCustomSkillIds.includes(customSkill.id);
                                         return (
                                           <button
-                                            key={`skill-${customSkill.id}`}
+                                                key={"skill-" + customSkill.id}
                                             onClick={() => {
                                               if (customSkill.id === "promptSkill" || customSkill.id === "prompt-skill") {
                                                 setCollabAiSkill("prompt-skill");
@@ -16079,10 +17417,10 @@ ${prompt}
                                           >
                                             <div className="flex items-center space-x-2.5">
                                               <div className={cn("p-1.5 text-sm rounded-lg", isSelected ? "bg-purple-100/60" : "bg-gray-100")}>
-                                                {customSkill.icon || "⚡"}
+                                                {customSkill.icon || "鈿?"}
                                               </div>
                                               <div>
-                                                <p className="text-[11px] font-bold">{customSkill.name}</p>
+                                                <p className="text-[11px] font-bold">{getCleanSkillName(customSkill)}</p>
                                                 <p className="text-[9px] text-gray-400">{customSkill.desc || "自定义工作流辅助模式"}</p>
                                               </div>
                                             </div>
@@ -16094,7 +17432,7 @@ ${prompt}
 
                                     <div className="h-px bg-gray-100 my-1 mx-1" />
 
-                                    {/* Category 2: 我的插件 (工具与插件) */}
+                                    {/* Category 2: 我的插件 (工具与插件 */}
                                     <div className="px-3 py-1 text-[10px] font-bold text-amber-600 bg-amber-50 rounded-lg flex items-center justify-between">
                                       <span>我的插件</span>
                                       <span className="text-[8px] font-normal text-amber-500 font-mono">PLUGINS</span>
@@ -16107,7 +17445,7 @@ ${prompt}
                                           id: "perspective-sim",
                                           name: "3D导演台",
                                           icon: <Box className="w-3 h-3 text-blue-500" />,
-                                          desc: "精准控制3D场景与角色位置",
+                                          desc: "精准控制 3D 场景与角色位置",
                                           onClick: () => {
                                             setShowPerspectiveSim(true);
                                           },
@@ -16168,7 +17506,7 @@ ${prompt}
                                         const pluginVal = item.id;
                                         const isSelected = item.isSelected;
                                         return (
-                                          <div key={`plugin-${pluginVal}`} className="relative group">
+                                          <div key={"plugin-" + pluginVal} className="relative group">
                                             <button
                                               onClick={() => {
                                                 item.onClick();
@@ -16257,11 +17595,14 @@ ${prompt}
                                     <button
                                       key={m.value}
                                       onClick={() => {
-                                        const newConfig = {
-                                          ...imageConfig,
-                                          model: m.value,
-                                        };
-                                        const imageDefaults = resolveModelConfigByValue(m.value, "image")?.defaultGenerationSettings?.image;
+                                        const newConfig = applyImageGenerationDefaults(
+                                          {
+                                            ...imageConfig,
+                                            model: m.value,
+                                          },
+                                          config,
+                                          m.value,
+                                        ) as SmartImageConfig;
                                         if (m.value === "gpt-image-2") {
                                           newConfig.gptSize =
                                             imageConfig.gptSize || "1024x1536";
@@ -16269,29 +17610,6 @@ ${prompt}
                                             imageConfig.gptQuality || "auto";
                                           newConfig.gptFormat =
                                             imageConfig.gptFormat || "jpeg";
-
-                                          // Keep its active aspectRatio mapped from gptSize
-                                          const spec =
-                                            GPT_SPECS.find(
-                                              (s) =>
-                                                s.value === newConfig.gptSize,
-                                            ) || GPT_SPECS[2];
-                                          newConfig.aspectRatio =
-                                            spec.aspectRatio as any;
-                                        } else {
-                                          // Restore bananaAspectRatio for Model 1 (nano banana2)
-                                          newConfig.aspectRatio =
-                                            imageConfig.bananaAspectRatio ||
-                                            imageConfig.aspectRatio ||
-                                            "9:16";
-                                          newConfig.imageSize =
-                                            imageConfig.bananaImageSize ||
-                                            imageConfig.imageSize ||
-                                            "1K";
-                                        }
-                                        if (imageDefaults) {
-                                          newConfig.aspectRatio = imageDefaults.aspectRatio || newConfig.aspectRatio;
-                                          newConfig.imageSize = imageDefaults.imageSize || newConfig.imageSize;
                                         }
 
                                         // Update config.image if it's a custom interface
@@ -16346,7 +17664,7 @@ ${prompt}
                                     </button>
                                   ))}
                                   {visibleModels.length === 0 && (
-                                    <p className="text-[10px] text-gray-400 p-2 text-center">暂无可显示模型，请至配置页添加</p>
+                                    <p className="text-[10px] text-gray-400 p-2 text-center">No visible models. Add one in settings.</p>
                                   )}
                                 </motion.div>
                               </div>
@@ -16542,7 +17860,7 @@ ${prompt}
                                 )?.label ||
                                   imageConfig?.bananaImageSize ||
                                   imageConfig?.imageSize ||
-                                  "1K (标准)"}
+                                  "1K (鏍囧噯)"}
                               </span>
                               <ChevronDown
                                 className={cn(
@@ -16661,8 +17979,8 @@ ${prompt}
                                 className="absolute bottom-full mb-2 left-0 z-50 w-72 bg-white rounded-2xl shadow-2xl border border-gray-100 p-2 flex flex-col gap-1 max-h-96 overflow-y-auto custom-scrollbar"
                               >
                                 <div className="text-[10px] font-black text-gray-400 px-3 py-1.5 border-b border-gray-50 flex items-center justify-between">
-                                  <span>全部视频模式与插件</span>
-                                  <span className="text-[9px] font-normal text-gray-400">选择一项启用</span>
+                                  <span>All video modes and plugins</span>
+                                  <span className="text-[9px] font-normal text-gray-400">Choose one</span>
                                 </div>
 
                                 <div className="flex flex-col gap-1 py-1 max-h-72 overflow-y-auto custom-scrollbar">
@@ -16716,7 +18034,7 @@ ${prompt}
                                                          activeCustomSkillIds.includes(customSkill.id);
                                       return (
                                         <button
-                                          key={`video-skill-custom-${customSkill.id}`}
+                                                key={"video-skill-custom-" + customSkill.id}
                                           onClick={() => {
                                             if (customSkill.id === "videoDissect") {
                                               setCollabAiSkill("videoDissect");
@@ -16739,10 +18057,10 @@ ${prompt}
                                         >
                                           <div className="flex items-center space-x-2.5">
                                             <div className={cn("p-1.5 text-sm rounded-lg", isSelected ? "bg-purple-100/60" : "bg-gray-100")}>
-                                              {customSkill.icon || "⚡"}
+                                              {customSkill.icon || "鈿?"}
                                             </div>
                                             <div>
-                                              <p className="text-[11px] font-bold">{customSkill.name}</p>
+                                              <p className="text-[11px] font-bold">{getCleanSkillName(customSkill)}</p>
                                               <p className="text-[9px] text-gray-400">{customSkill.desc || "自定义视频工作流辅助模式"}</p>
                                             </div>
                                           </div>
@@ -16754,7 +18072,7 @@ ${prompt}
 
                                   <div className="h-px bg-gray-100 my-1 mx-1" />
 
-                                  {/* Category 2: 工具与插件 (我的插件) */}
+                                  {/* Category 2: 工具与插件(我的插件) */}
                                   <div className="px-3 py-1 text-[10px] font-bold text-amber-600 bg-amber-50 rounded-lg flex items-center justify-between">
                                     <span>我的插件</span>
                                     <span className="text-[8px] font-normal text-amber-500 font-mono">PLUGINS</span>
@@ -16765,7 +18083,7 @@ ${prompt}
                                         id: "perspective-sim",
                                         name: "3D导演台",
                                         icon: <Box className="w-3 h-3 text-blue-500" />,
-                                        desc: "精准控制3D场景与角色位置",
+                                        desc: "精准控制 3D 场景与角色位置",
                                         onClick: () => {
                                           setShowPerspectiveSim(true);
                                         },
@@ -16812,7 +18130,7 @@ ${prompt}
                                       const pluginVal = item.id;
                                       const isSelected = item.isSelected;
                                       return (
-                                        <div key={`video-plugin-${pluginVal}`} className="relative group">
+                                          <div key={"video-plugin-" + pluginVal} className="relative group">
                                           <button
                                             onClick={() => {
                                               item.onClick();
@@ -16865,52 +18183,7 @@ ${prompt}
                       {/* Video Model Selection */}
                       <div className="relative">
                         {(() => {
-                          // Dynamic video models from config
-                          const dynamicVideoModels: { label: string; value: string }[] = [];
-                          if (config) {
-                            const keys: (keyof Config)[] = ['videoSeedance', 'videoSeedanceMini'];
-                            keys.forEach(key => {
-                              const section = config[key];
-                              if (section && section.model) {
-                                const defaultLabel = key === 'videoSeedance' ? 'RH-SD2.0' :
-                                                     key === 'videoSeedanceMini' ? 'RH-SD2.0mini' : section.model;
-                                dynamicVideoModels.push({
-                                  label: section.displayName || defaultLabel,
-                                  value: section.model
-                                });
-                              }
-                            });
-
-                            // Add custom interfaces of type 'video'
-                            if (config.customInterfaces) {
-                              Object.entries(config.customInterfaces).forEach(([key, section]) => {
-                                if (section && section.model && section.modelType === 'video') {
-                                  dynamicVideoModels.push({
-                                    label: section.displayName || section.title || section.model,
-                                    value: key // Use key as unique identifier
-                                  });
-                                }
-                              });
-                            }
-                          } else {
-                            dynamicVideoModels.push(
-                              { label: "RH-SD2.0", value: "seedance2.0" },
-                              { label: "RH-SD2.0mini", value: "seedance-mini" },
-                              { label: "SD.25即将上线", value: "seedance2.5" }
-                            );
-                          }
-
-                          const customVideoModels = (customModels || [])
-                            .filter((m: any) => m.type === "video" || m.type === "all" || m.modelType === "video")
-                            .map((m: any) => ({
-                              label: m.name || m.model || "Unnamed Video Model",
-                              value: m.model,
-                            }));
-
-                          const allVideoModels = [
-                            ...dynamicVideoModels,
-                            ...customVideoModels
-                          ].filter((v, i, self) => self.findIndex(t => t.value === v.value) === i);
+                          const allVideoModels = getModelOptions(config, customModels, "video");
                           const activeModelLabel = allVideoModels.find((m) => m.value === (videoConfig?.model || "seedance2.0"))?.label || videoConfig?.model || "seedance2.0";
                           return (
                             <>
@@ -16949,15 +18222,16 @@ ${prompt}
                                         <button
                                           key={m.value}
                                           onClick={() => {
-                                            const videoDefaults = resolveModelConfigByValue(m.value, "video")?.defaultGenerationSettings?.video;
-                                            setVideoConfig({
-                                              ...videoConfig,
-                                              model: m.value,
-                                              videoMode: videoDefaults?.videoMode || (VIDEO_MODES[m.value] && VIDEO_MODES[m.value]?.[0]?.value) || "all-around",
-                                              duration: (videoDefaults?.duration || VIDEO_MODEL_CONFIGS[m.value]?.durations?.[0] || "4") as any,
-                                              aspectRatio: videoDefaults?.aspectRatio || videoConfig?.aspectRatio || "16:9",
-                                              resolution: (videoDefaults?.resolution || videoConfig?.resolution || "720p") as any,
-                                            });
+                                            setVideoConfig(
+                                              applyVideoGenerationDefaults(
+                                                {
+                                                  ...videoConfig,
+                                                  model: m.value,
+                                                },
+                                                config,
+                                                m.value,
+                                              ) as SmartVideoConfig,
+                                            );
 
                                             // Update config.video if it's a custom interface
                                             if (config) {
@@ -17109,7 +18383,7 @@ ${prompt}
                             时长{" "}
                             {videoConfig?.duration === "-1"
                               ? "自动"
-                              : `${videoConfig?.duration}s`}
+                              : String(videoConfig?.duration) + "s"}
                           </span>
                           <ChevronDown
                             className={cn(
@@ -17321,7 +18595,7 @@ ${prompt}
                                         videoConfig?.resolution || "720p";
                                       const cleanModel = videoConfig?.model === "seedance-mini" ? "seedance-mini" : videoConfig?.model === "seedance2.5" ? "seedance2.5" : "seedance2.0";
                                       const key =
-                                        `${cleanModel}-${res}-ref` as keyof typeof GENERATION_COSTS.VIDEO;
+                                        (cleanModel + "-" + res + "-ref") as keyof typeof GENERATION_COSTS.VIDEO;
                                       return (
                                         (GENERATION_COSTS.VIDEO as any)[key]?.[
                                           videoConfig?.duration || "15"
@@ -17499,9 +18773,9 @@ ${prompt}
 
               // 2. Add or update on the main canvas workspace
               // Check if we can update an existing placeholder card in-place (Approach 2)
-              const activeCanvasId = localStorage.getItem("aistudio_active_canvas_id") || "default";
+              const activeCanvasId = localStorage.getItem(ACTIVE_CANVAS_STORAGE_KEY) || DEFAULT_CANVAS_ID;
               const isPlaceholder = (h: HistoryItem) => 
-                (h.canvasId || "default") === (activeCanvasId || "default") &&
+                normalizeCanvasId(h.canvasId) === normalizeCanvasId(activeCanvasId) &&
                 (h.status === "draft_new" || h.status === "loading" || (!h.imageUrl && h.type === "image"));
 
               const targetPlaceholder = history.find((h) => {
@@ -17533,7 +18807,7 @@ ${prompt}
                 );
               } else {
                 // Approach 1: Create a brand new success node, connected to remixParentId via a line (parentId)
-                const safePos = findUnoccupiedPosition(0, 0, history);
+                const safePos = findUnoccupiedPosition(0, 0, getCanvasHistory(history, activeCanvasId));
                 let posX = safePos.x;
                 let posY = safePos.y;
 
@@ -17551,21 +18825,15 @@ ${prompt}
                 }
 
                 const historyItem: HistoryItem = {
-                  id: `marked-result-${Date.now()}`,
+                  id: "marked-result-" + Date.now(),
                   type: "image",
                   status: "success",
                   imageUrl: markedData,
-                  config: { ...imageConfig, gridMode: "point-and-shoot" as any },
+                  config: { ...imageConfig, gridMode: "point-and-shoot" as any, sectionId: "media-zone" },
                   timestamp: Date.now(),
                   parentId: remixParentId || undefined, // Sets the connection line to the parent card
-                  position: {
-                    x: posX,
-                    y: posY,
-                    customX: posX,
-                    customY: posY,
-                    bento: { x: posX, y: posY },
-                    mindmap: { x: posX, y: posY }
-                  },
+                  position: createCanvasPosition(posX, posY),
+                  canvasId: activeCanvasId,
                 };
 
                 setHistory((prev) => [historyItem, ...prev]);
@@ -17637,7 +18905,7 @@ ${prompt}
                       animate={{ opacity: 1, scale: 1 }}
                       className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 px-8 py-4 bg-white/10 backdrop-blur-3xl rounded-[2.5rem] border border-white/20 text-white font-black text-xl z-[120] shadow-[0_0_50px_rgba(0,0,0,0.5)] flex items-center space-x-4 pointer-events-none ring-1 ring-white/30"
                     >
-                      {captureMessage.includes("✅") ? (
+                      {/(captured|added|saved|success)/i.test(captureMessage) ? (
                         <div className="w-10 h-10 bg-green-500 rounded-full flex items-center justify-center">
                           <Check className="w-6 h-6 text-white stroke-[4]" />
                         </div>
@@ -17661,7 +18929,7 @@ ${prompt}
                           !baseSrc.includes(window.location.host) &&
                           !baseSrc.includes("blob:")
                         ) {
-                          return `/api/proxy-asset?url=${encodeURIComponent(baseSrc)}`;
+              return "/api/proxy-asset?url=" + encodeURIComponent(baseSrc);
                         }
                         return baseSrc;
                       })()}
@@ -17761,7 +19029,7 @@ ${prompt}
                     className="px-6 py-3 bg-zinc-800 hover:bg-zinc-700 text-[#D4AF37] rounded-2xl font-bold flex items-center space-x-2 shadow-xl border border-white/10 hover:border-white/20 active:scale-95 transition-all"
                   >
                     <Camera className="w-5 h-5" />
-                    <span>捕捉静态画面</span>
+                    <span>Capture frame</span>
                   </button>
                 )}
                 <button
@@ -17861,7 +19129,7 @@ ${prompt}
                   className="px-8 py-2.5 bg-indigo-500 hover:bg-indigo-600 text-white rounded-xl font-bold shadow-lg shadow-indigo-200 transition-all active:scale-95 flex items-center space-x-2"
                 >
                   <CheckCircle2 className="w-4 h-4" />
-                  <span>保存修改</span>
+                  <span>淇濆瓨淇敼</span>
                 </button>
               </div>
             </motion.div>
@@ -17885,7 +19153,7 @@ ${prompt}
                 </div>
                 <div className="flex flex-col">
                   <h1 className="text-sm font-black tracking-tight text-white flex items-center">
-                    3D 导演台 <span className="mx-2 text-slate-700">/</span> DIRECTOR_STAGE (SANDBOX)
+                    3D 导演台<span className="mx-2 text-slate-700">/</span> DIRECTOR_STAGE (SANDBOX)
                   </h1>
                   <span className="text-[9px] font-black text-slate-500 uppercase tracking-[0.2em]">3D Cinematic Director Stage</span>
                 </div>
@@ -17894,7 +19162,7 @@ ${prompt}
                 onClick={() => setShowPerspectiveSim(false)}
                 className="w-10 h-10 flex items-center justify-center rounded-xl bg-slate-900 text-slate-500 hover:bg-red-500/10 hover:text-red-500 transition-all border border-slate-800/50"
               >
-                <span className="text-lg font-bold">✕</span>
+                <span className="text-lg font-bold">X</span>
               </button>
             </div>
             <div className="flex-1 relative bg-slate-950">
@@ -17969,6 +19237,58 @@ ${prompt}
                   className="flex-1 py-3 px-4 bg-red-500 text-white font-bold rounded-2xl hover:bg-red-600 shadow-lg shadow-red-200 transition-all"
                 >
                   确认清空
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+
+
+
+        {canvasToDelete && (
+          <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setCanvasToDelete(null)}
+              className="absolute inset-0 bg-black/40 backdrop-blur-sm"
+            />
+            <motion.div
+              initial={{ opacity: 0, scale: 0.9, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.9, y: 20 }}
+              className="relative bg-white rounded-[32px] p-8 max-w-sm w-full shadow-2xl"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="w-16 h-16 bg-red-50 rounded-2xl flex items-center justify-center mb-6 mx-auto">
+                <Trash2 className="w-8 h-8 text-red-500" />
+              </div>
+              <h3 className="text-xl font-bold text-gray-900 text-center mb-2">
+                确认删除画布？
+              </h3>
+              <p className="text-gray-500 text-center mb-3 text-sm leading-relaxed">
+                将删除「{canvasToDelete.name || "未命名画布"}」以及其中的{" "}
+                <span className="font-extrabold text-red-600">
+                  {getCanvasHistory(history, canvasToDelete.id).length}
+                </span>{" "}
+                个资产或卡片。
+              </p>
+              <p className="text-gray-400 text-center mb-8 text-xs leading-relaxed">
+                确认后会同步移除本地画布缓存和服务器记录，此操作无法恢复。
+              </p>
+              <div className="flex gap-3">
+                <button
+                  onClick={() => setCanvasToDelete(null)}
+                  className="flex-1 py-3 px-4 bg-gray-50 text-gray-600 font-bold rounded-2xl hover:bg-gray-100 transition-all"
+                >
+                  取消
+                </button>
+                <button
+                  onClick={confirmDeleteCanvas}
+                  className="flex-1 py-3 px-4 bg-red-500 text-white font-bold rounded-2xl hover:bg-red-600 shadow-lg shadow-red-200 transition-all"
+                >
+                  确认删除
                 </button>
               </div>
             </motion.div>
@@ -18098,20 +19418,13 @@ ${prompt}
             onContextMenu={(e) => {
               e.preventDefault();
               setHoveredContextItem(null);
-              const canvasEl = document.getElementById("infinite-canvas-grid");
-              let cx = e.clientX;
-              let cy = e.clientY;
-              if (canvasEl) {
-                const rect = canvasEl.getBoundingClientRect();
-                cx = (e.clientX - rect.left) / transformState.scale;
-                cy = (e.clientY - rect.top) / transformState.scale;
-              }
+              const canvasPoint = getCanvasPointFromClient(e.clientX, e.clientY);
               setContextMenu({
                 visible: true,
                 x: e.clientX,
                 y: e.clientY,
-                canvasX: cx,
-                canvasY: cy,
+                canvasX: canvasPoint.x,
+                canvasY: canvasPoint.y,
               });
             }}
           />
@@ -18125,158 +19438,32 @@ ${prompt}
               top: Math.min(contextMenu.y, window.innerHeight - 350),
               left: Math.min(contextMenu.x, window.innerWidth - 230),
             }}
-            className="fixed z-[9999] w-[210px] bg-zinc-900/95 backdrop-blur-md rounded-2xl shadow-[0_12px_40px_rgba(0,0,0,0.5)] border border-zinc-800/80 p-1.5 flex flex-col"
+            className="fixed z-[9999] w-[210px] overflow-visible bg-zinc-900/95 backdrop-blur-md rounded-2xl shadow-[0_12px_40px_rgba(0,0,0,0.5)] border border-zinc-800/80 p-1.5 flex flex-col"
             onClick={(e) => e.stopPropagation()}
+            onMouseDown={(e) => e.stopPropagation()}
+            onMouseMove={(e) => e.stopPropagation()}
+            onPointerDown={(e) => e.stopPropagation()}
+            onPointerMove={(e) => e.stopPropagation()}
+            onWheel={(e) => e.stopPropagation()}
+            onContextMenu={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+            }}
           >
-
-            {/* 新建占位：图片卡片 */}
-            <button
-              onClick={() => {
-                const newDraftItem: HistoryItem = {
-                  id: `draft-new-${Date.now()}`,
-                  type: "image",
-                  status: "draft_new",
-                  parentId: contextMenu.arrowDragSourceIds ? contextMenu.arrowDragSourceIds.join(",") : "",
-                  timestamp: Date.now(),
-                  canvasId: activeCanvasId,
-                  position: {
-                    x: contextMenu.canvasX - 180,
-                    y: contextMenu.canvasY - 170, // Align exactly with placeholder top-left mapping
-                    customX: contextMenu.canvasX - 180,
-                    customY: contextMenu.canvasY - 170,
-                    mindmap: {
-                      x: contextMenu.canvasX - 180,
-                      y: contextMenu.canvasY - 170,
-                    },
-                    bento: {
-                      x: contextMenu.canvasX - 180,
-                      y: contextMenu.canvasY - 170,
-                    },
-                  },
-                  config: {
-                    prompt: "",
-                    aspectRatio: "1:1",
-                    imageSize: "1K",
-                    gridMode: "none",
-                  }
-                };
-
-                setHistory((prev) => [newDraftItem, ...prev]);
-                setSelectedHistoryId(newDraftItem.id);
-                setSelectedIds([]);
-                syncToCloud(newDraftItem);
-                if (mode !== "image") setMode("image");
-                setError("已成功新建图片生成占位卡片！请在下方主输入框中输入描述词进行生成。");
-                setIsCriticalError(false);
-                setContextMenu(null);
-              }}
-              className="w-full text-left px-3 py-2 text-xs font-semibold text-zinc-300 hover:text-white hover:bg-zinc-800/80 rounded-xl transition-all flex items-center space-x-2.5 cursor-pointer group"
-            >
-              <ImageIcon className="w-4 h-4 text-zinc-400 group-hover:text-indigo-400" />
-              <span>新建图片生成卡片</span>
-            </button>
-
-            {/* 新建文本 */}
-            <button
-              onClick={() => {
-                const timestamp = Date.now();
-                const newTextItem: HistoryItem = {
-                  id: `text-${timestamp}`,
-                  type: "gen_script",
-                  status: "success",
-                  parentId: contextMenu.arrowDragSourceIds ? contextMenu.arrowDragSourceIds.join(",") : "",
-                  revisedPrompt: "",
-                  timestamp: timestamp,
-                  canvasId: activeCanvasId,
-                  position: {
-                    x: contextMenu.canvasX - 180,
-                    y: contextMenu.canvasY - 170, // Align exactly with placeholder top-left mapping
-                    customX: contextMenu.canvasX - 180,
-                    customY: contextMenu.canvasY - 170,
-                    mindmap: {
-                      x: contextMenu.canvasX - 180,
-                      y: contextMenu.canvasY - 170,
-                    },
-                    bento: {
-                      x: contextMenu.canvasX - 180,
-                      y: contextMenu.canvasY - 170,
-                    },
-                  },
-                  config: {
-                    title: `文本_${Date.now().toString().substring(8)}`,
-                    isUpload: false,
-                  }
-                };
-
-                setHistory((prev) => [newTextItem, ...prev]);
-                setSelectedHistoryId(newTextItem.id);
-                setSelectedIds([]);
-                syncToCloud(newTextItem);
-                setError("已成功新建文本占位卡片！双击或选择「查看与修改」即可自由编辑文本。");
-                setIsCriticalError(false);
-                setContextMenu(null);
-              }}
-              className="w-full text-left px-3 py-2 text-xs font-semibold text-zinc-300 hover:text-white hover:bg-zinc-800/80 rounded-xl transition-all flex items-center space-x-2.5 cursor-pointer group"
-            >
-              <FileText className="w-4 h-4 text-zinc-400 group-hover:text-amber-400" />
-              <span>文本占位卡片</span>
-            </button>
-
-            {/* 新建占位：视频卡片 */}
-            <button
-              onClick={() => {
-                const newDraftItem: HistoryItem = {
-                  id: `draft-new-${Date.now()}`,
-                  type: "video",
-                  status: "draft_new",
-                  parentId: contextMenu.arrowDragSourceIds ? contextMenu.arrowDragSourceIds.join(",") : "",
-                  timestamp: Date.now(),
-                  canvasId: activeCanvasId,
-                  position: {
-                    x: contextMenu.canvasX - 180,
-                    y: contextMenu.canvasY - 170, // Align exactly with placeholder top-left mapping
-                    customX: contextMenu.canvasX - 180,
-                    customY: contextMenu.canvasY - 170,
-                    mindmap: {
-                      x: contextMenu.canvasX - 180,
-                      y: contextMenu.canvasY - 170,
-                    },
-                    bento: {
-                      x: contextMenu.canvasX - 180,
-                      y: contextMenu.canvasY - 170,
-                    },
-                  },
-                  config: {
-                    prompt: "",
-                    resolution: "1080p",
-                    aspectRatio: "16:9",
-                    duration: "5",
-                    model: "seedance2.0",
-                  }
-                };
-
-                setHistory((prev) => [newDraftItem, ...prev]);
-                setSelectedHistoryId(newDraftItem.id);
-                setSelectedIds([]);
-                syncToCloud(newDraftItem);
-                if (mode !== "video") setMode("video");
-                setError("已成功新建视频生成占位卡片！请在下方主输入框中输入描述词进行生成。");
-                setIsCriticalError(false);
-                setContextMenu(null);
-              }}
-              className="w-full text-left px-3 py-2 text-xs font-semibold text-zinc-300 hover:text-white hover:bg-zinc-800/80 rounded-xl transition-all flex items-center space-x-2.5 cursor-pointer group"
-            >
-              <Film className="w-4 h-4 text-zinc-400 group-hover:text-purple-400" />
-              <span>新建视频生成卡片</span>
-            </button>
-
-            {/* Submenu Trigger: 添加 AI 插件卡片 */}
+            {/* AI plugin card submenu */}
             <div
               className="relative w-full"
               onMouseEnter={() => setHoveredContextItem("plugin")}
               onMouseLeave={() => setHoveredContextItem(null)}
             >
-              <div className="w-full text-left px-3 py-2 text-xs font-semibold text-zinc-300 hover:text-white hover:bg-zinc-800/80 rounded-xl transition-all flex items-center justify-between cursor-pointer group">
+              <div
+                onClick={() =>
+                  setHoveredContextItem((prev) =>
+                    prev === "plugin" ? null : "plugin"
+                  )
+                }
+                className="w-full text-left px-3 py-2 text-xs font-semibold text-zinc-300 hover:text-white hover:bg-zinc-800/80 rounded-xl transition-all flex items-center justify-between cursor-pointer group"
+              >
                 <div className="flex items-center space-x-2.5">
                   <Puzzle className="w-4 h-4 text-zinc-400 group-hover:text-amber-400" />
                   <span>添加 AI 插件卡片</span>
@@ -18284,7 +19471,6 @@ ${prompt}
                 <ChevronRight className="w-3.5 h-3.5 text-zinc-500 group-hover:text-zinc-300" />
               </div>
 
-              {/* Submenu popup panel for plugins */}
               <AnimatePresence>
                 {hoveredContextItem === "plugin" && (
                   <motion.div
@@ -18292,75 +19478,64 @@ ${prompt}
                     animate={{ opacity: 1, x: 0 }}
                     exit={{ opacity: 0, x: -10 }}
                     transition={{ duration: 0.12 }}
-                    className="absolute top-0 left-full ml-1 w-[220px] max-h-[300px] overflow-y-auto bg-zinc-900 rounded-xl border border-zinc-800 shadow-[0_8px_30px_rgba(0,0,0,0.5)] p-1 flex flex-col z-[10000] custom-scrollbar"
+                    className="absolute top-0 left-full ml-0 w-[220px] max-h-[300px] overflow-y-auto bg-zinc-900 rounded-xl border border-zinc-800 shadow-[0_8px_30px_rgba(0,0,0,0.5)] p-1 flex flex-col z-[10000] custom-scrollbar"
                   >
                     {PLUGINS.filter((skill) => selectedPluginIds.includes(skill.id)).map((skill) => (
                       <button
                         key={skill.id}
                         onClick={() => {
                           const timestamp = Date.now();
+                          const defaultSectionId: CanvasSectionId = "workflow-zone";
+                          const targetSectionId = getContextMenuTargetSectionId(defaultSectionId) || defaultSectionId;
+                          const position = getContextMenuInsertPosition(targetSectionId);
                           const isCameraControl = skill.id === "camera-control";
-                          const defaultCameraPrompt = "Camera: 全画幅电影级数码相机.";
+                          const defaultCameraPrompt = "Camera control: set camera movement, lens, lighting, and framing.";
                           const newSkillItem: HistoryItem = {
-                            id: `skill-${timestamp}`,
+                            id: "skill-" + timestamp,
                             type: "gen_script",
                             status: "success",
                             parentId: contextMenu.arrowDragSourceIds ? contextMenu.arrowDragSourceIds.join(",") : "",
-                            revisedPrompt: isCameraControl 
-                              ? defaultCameraPrompt 
-                              : (skill.instruction || `【${skill.name}】插件节点已就绪。连接上游节点并点击下方执行。`),
-                            timestamp: timestamp,
+                            revisedPrompt: isCameraControl ? defaultCameraPrompt : (skill.instruction || ("Use " + skill.name + " to process this canvas node.")),
+                            timestamp,
                             canvasId: activeCanvasId,
-                            position: {
-                              x: contextMenu.canvasX - 180,
-                              y: contextMenu.canvasY - 170,
-                              customX: contextMenu.canvasX - 180,
-                              customY: contextMenu.canvasY - 170,
-                              mindmap: {
-                                x: contextMenu.canvasX - 180,
-                                y: contextMenu.canvasY - 170,
-                              },
-                              bento: {
-                                x: contextMenu.canvasX - 180,
-                                y: contextMenu.canvasY - 170,
-                              },
-                            },
+                            position,
                             config: {
                               isSkillNode: true,
                               skillId: skill.id,
                               title: skill.name,
-                              icon: skill.icon || "🧩",
+                              icon: skill.icon || "Plugin",
                               prompt: isCameraControl ? defaultCameraPrompt : "",
                               cameraParams: isCameraControl ? {
-                                model: "全画幅电影级数码相机",
-                                lensType: "无特定镜头",
-                                focalLength: "自动",
-                                aperture: "自动",
-                                colorTone: "默认",
-                                lighting: "默认",
-                                lightingType: "默认"
+                                model: "standard",
+                                lensType: "auto",
+                                focalLength: "auto",
+                                aperture: "auto",
+                                colorTone: "auto",
+                                lighting: "auto",
+                                lightingType: "auto",
                               } : undefined,
-                            }
+                              sectionId: targetSectionId,
+                            },
                           };
 
                           setHistory((prev) => [newSkillItem, ...prev]);
                           setSelectedHistoryId(newSkillItem.id);
                           setSelectedIds([]);
                           syncToCloud(newSkillItem);
-                          setError(`已成功新建【${skill.name}】插件卡片！`);
+                          setError("已添加 AI 插件卡片: " + skill.name);
                           setIsCriticalError(false);
                           setContextMenu(null);
                           setHoveredContextItem(null);
                         }}
                         className="w-full text-left px-2.5 py-2 text-[11px] font-semibold text-zinc-300 hover:text-white hover:bg-zinc-800/80 rounded-lg transition-all flex items-center space-x-2 cursor-pointer group"
                       >
-                        <span className="text-sm shrink-0">{skill.icon || "🧩"}</span>
+                        <SkillIcon icon={skill.icon} className="w-4 h-4 shrink-0 text-zinc-400 group-hover:text-white" />
                         <span className="truncate">{skill.name}</span>
                       </button>
                     ))}
                     {PLUGINS.filter((skill) => selectedPluginIds.includes(skill.id)).length === 0 && (
                       <div className="text-[10px] text-zinc-500 p-3 text-center">
-                        暂无选中的插件，请去插件页面选择并激活插件
+                        暂无已启用插件
                       </div>
                     )}
                   </motion.div>
@@ -18368,9 +19543,153 @@ ${prompt}
               </AnimatePresence>
             </div>
 
+            <div
+              className="relative w-full"
+              onMouseEnter={() => setHoveredContextItem("text-card-create")}
+              onMouseLeave={() => setHoveredContextItem(null)}
+            >
+              <div
+                onClick={() =>
+                  setHoveredContextItem((prev) =>
+                    prev === "text-card-create" ? null : "text-card-create"
+                  )
+                }
+                className="w-full text-left px-3 py-2 text-xs font-semibold text-zinc-300 hover:text-white hover:bg-zinc-800/80 rounded-xl transition-all flex items-center justify-between cursor-pointer group"
+              >
+                <div className="flex items-center space-x-2.5">
+                  <FileText className="w-4 h-4 text-zinc-400 group-hover:text-cyan-400" />
+                  <span>文本占位卡片</span>
+                </div>
+                <ChevronRight className="w-3.5 h-3.5 text-zinc-500 group-hover:text-zinc-300" />
+              </div>
+
+              <AnimatePresence>
+                {hoveredContextItem === "text-card-create" && (
+                  <motion.div
+                    initial={{ opacity: 0, x: -10 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    exit={{ opacity: 0, x: -10 }}
+                    transition={{ duration: 0.12 }}
+                    className="absolute top-0 left-full ml-0 w-[180px] bg-zinc-900 rounded-xl border border-zinc-800 shadow-[0_8px_30px_rgba(0,0,0,0.5)] p-1 flex flex-col z-[10000]"
+                  >
+                    <button
+                      onClick={() => createCanvasTextCard("plain")}
+                      className="w-full text-left px-3 py-2 text-xs font-semibold text-zinc-300 hover:text-white hover:bg-zinc-800 rounded-lg transition-all flex items-center space-x-2 cursor-pointer"
+                    >
+                      <FileText className="w-4 h-4 text-zinc-400" />
+                      <span>文本卡片</span>
+                    </button>
+                    <button
+                      onClick={() => createCanvasTextCard("script")}
+                      className="w-full text-left px-3 py-2 text-xs font-semibold text-zinc-300 hover:text-white hover:bg-zinc-800 rounded-lg transition-all flex items-center space-x-2 cursor-pointer"
+                    >
+                      <BookOpen className="w-4 h-4 text-zinc-400" />
+                      <span>剧本卡片</span>
+                    </button>
+                    <button
+                      onClick={() => createCanvasTextCard("shot")}
+                      className="w-full text-left px-3 py-2 text-xs font-semibold text-zinc-300 hover:text-white hover:bg-zinc-800 rounded-lg transition-all flex items-center space-x-2 cursor-pointer"
+                    >
+                      <Clapperboard className="w-4 h-4 text-zinc-400" />
+                      <span>分镜卡片</span>
+                    </button>
+                    <button
+                      onClick={() => createCanvasTextCard("asset")}
+                      className="w-full text-left px-3 py-2 text-xs font-semibold text-zinc-300 hover:text-white hover:bg-zinc-800 rounded-lg transition-all flex items-center space-x-2 cursor-pointer"
+                    >
+                      <Layers className="w-4 h-4 text-zinc-400" />
+                      <span>资产卡片</span>
+                    </button>
+                    <button
+                      onClick={() => createCanvasTextCard("ppt")}
+                      className="w-full text-left px-3 py-2 text-xs font-semibold text-zinc-300 hover:text-white hover:bg-zinc-800 rounded-lg transition-all flex items-center space-x-2 cursor-pointer"
+                    >
+                      <LayoutDashboard className="w-4 h-4 text-zinc-400" />
+                      <span>PPT卡片</span>
+                    </button>
+                    <button
+                      onClick={() => createCanvasTextCard("table")}
+                      className="w-full text-left px-3 py-2 text-xs font-semibold text-zinc-300 hover:text-white hover:bg-zinc-800 rounded-lg transition-all flex items-center space-x-2 cursor-pointer"
+                    >
+                      <Grid className="w-4 h-4 text-zinc-400" />
+                      <span>表格卡片</span>
+                    </button>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+            </div>
+            <button
+              onClick={() => createCanvasPlaceholderCard("image")}
+              className="w-full text-left px-3 py-2 text-xs font-semibold text-zinc-300 hover:text-white hover:bg-zinc-800/80 rounded-xl transition-all flex items-center space-x-2.5 cursor-pointer group"
+            >
+              <ImageIcon className="w-4 h-4 text-zinc-400 group-hover:text-cyan-400" />
+              <span>图片占位卡片</span>
+            </button>
+            <button
+              onClick={() => createCanvasPlaceholderCard("video")}
+              className="w-full text-left px-3 py-2 text-xs font-semibold text-zinc-300 hover:text-white hover:bg-zinc-800/80 rounded-xl transition-all flex items-center space-x-2.5 cursor-pointer group"
+            >
+              <Film className="w-4 h-4 text-zinc-400 group-hover:text-cyan-400" />
+              <span>视频占位卡片</span>
+            </button>
+
+            <div
+              className="relative w-full"
+              onMouseEnter={() => setHoveredContextItem("node-create")}
+              onMouseLeave={() => setHoveredContextItem(null)}
+            >
+              <div
+                onClick={() =>
+                  setHoveredContextItem((prev) =>
+                    prev === "node-create" ? null : "node-create"
+                  )
+                }
+                className="w-full text-left px-3 py-2 text-xs font-semibold text-zinc-300 hover:text-white hover:bg-zinc-800/80 rounded-xl transition-all flex items-center justify-between cursor-pointer group"
+              >
+                <div className="flex items-center space-x-2.5">
+                  <Workflow className="w-4 h-4 text-zinc-400 group-hover:text-indigo-400" />
+                  <span>新建专业节点</span>
+                </div>
+                <ChevronRight className="w-3.5 h-3.5 text-zinc-500 group-hover:text-zinc-300" />
+              </div>
+
+              <AnimatePresence>
+                {hoveredContextItem === "node-create" && (
+                  <motion.div
+                    initial={{ opacity: 0, x: -10 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    exit={{ opacity: 0, x: -10 }}
+                    transition={{ duration: 0.12 }}
+                    className="absolute top-0 left-full ml-0 w-[170px] bg-zinc-900 rounded-xl border border-zinc-800 shadow-[0_8px_30px_rgba(0,0,0,0.5)] p-1 flex flex-col z-[10000]"
+                  >
+                    <button
+                      onClick={() => createCanvasProfessionalNode("text")}
+                      className="w-full text-left px-3 py-2 text-xs font-semibold text-zinc-300 hover:text-white hover:bg-zinc-800 rounded-lg transition-all flex items-center space-x-2 cursor-pointer"
+                    >
+                      <FileText className="w-4 h-4 text-zinc-400" />
+                      <span>文本节点</span>
+                    </button>
+                    <button
+                      onClick={() => createCanvasProfessionalNode("image")}
+                      className="w-full text-left px-3 py-2 text-xs font-semibold text-zinc-300 hover:text-white hover:bg-zinc-800 rounded-lg transition-all flex items-center space-x-2 cursor-pointer"
+                    >
+                      <ImageIcon className="w-4 h-4 text-zinc-400" />
+                      <span>图片节点</span>
+                    </button>
+                    <button
+                      onClick={() => createCanvasProfessionalNode("video")}
+                      className="w-full text-left px-3 py-2 text-xs font-semibold text-zinc-300 hover:text-white hover:bg-zinc-800 rounded-lg transition-all flex items-center space-x-2 cursor-pointer"
+                    >
+                      <Film className="w-4 h-4 text-zinc-400" />
+                      <span>视频节点</span>
+                    </button>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+            </div>
+
             <div className="border-t border-zinc-800/60 my-1 mx-1.5" />
 
-            {/* 撤销 */}
             <button
               onClick={() => {
                 setContextMenu(null);
@@ -18391,14 +19710,13 @@ ${prompt}
               <span className="text-[10px] text-zinc-500 font-medium font-mono group-hover:text-zinc-400 group-disabled:text-zinc-600">Ctrl+Z</span>
             </button>
 
-            {/* 多选 */}
             <button
               onClick={() => {
                 setContextMenu(null);
                 const isNowSelect = interactionMode !== "select";
                 setInteractionMode(isNowSelect ? "select" : "pan");
                 if (isNowSelect) {
-                  setError("多选框选模式已开启，按住鼠标左键在画布上拖拽即可批量多选！");
+                  setError("已进入多选模式");
                   setIsCriticalError(false);
                 } else {
                   setSelectedIds([]);
@@ -18415,7 +19733,6 @@ ${prompt}
               )}
             </button>
 
-            {/* Submenu Trigger: 一键整理 */}
             <div
               className="relative w-full"
               onMouseEnter={() => setHoveredContextItem("layout")}
@@ -18429,7 +19746,6 @@ ${prompt}
                 <ChevronRight className="w-3.5 h-3.5 text-zinc-500 group-hover:text-zinc-300" />
               </div>
 
-              {/* Submenu popup panel */}
               <AnimatePresence>
                 {hoveredContextItem === "layout" && (
                   <motion.div
@@ -18437,7 +19753,7 @@ ${prompt}
                     animate={{ opacity: 1, x: 0 }}
                     exit={{ opacity: 0, x: -10 }}
                     transition={{ duration: 0.12 }}
-                    className="absolute top-0 left-full ml-1 w-[160px] bg-zinc-900 rounded-xl border border-zinc-800 shadow-[0_8px_30px_rgba(0,0,0,0.5)] p-1 flex flex-col z-[10000]"
+                    className="absolute top-0 left-full ml-0 w-[160px] bg-zinc-900 rounded-xl border border-zinc-800 shadow-[0_8px_30px_rgba(0,0,0,0.5)] p-1 flex flex-col z-[10000]"
                   >
                     <button
                       onClick={() => {
@@ -18449,7 +19765,7 @@ ${prompt}
                       className="w-full text-left px-3 py-2 text-xs font-semibold text-zinc-300 hover:text-white hover:bg-zinc-800 rounded-lg transition-all flex items-center space-x-2 cursor-pointer"
                     >
                       <span className="w-1.5 h-1.5 rounded-full bg-purple-500 mr-0.5" />
-                      <span>自由脑图流</span>
+                      <span>思维导图</span>
                     </button>
                     <button
                       onClick={() => {
@@ -18461,21 +19777,24 @@ ${prompt}
                       className="w-full text-left px-3 py-2 text-xs font-semibold text-zinc-300 hover:text-white hover:bg-zinc-800 rounded-lg transition-all flex items-center space-x-2 cursor-pointer"
                     >
                       <span className="w-1.5 h-1.5 rounded-full bg-teal-500 mr-0.5" />
-                      <span>整齐网格流</span>
+                      <span>网格整理</span>
                     </button>
                   </motion.div>
                 )}
               </AnimatePresence>
             </div>
 
-            {/* Divider line in the image */}
             <div className="border-t border-zinc-800/60 my-1 mx-1.5" />
 
-            {/* 上传 */}
             <button
               onClick={() => {
-                const centerPos = getViewportCenterPosition();
-                uploadTargetPositionRef.current = centerPos;
+                const targetSectionId = getContextMenuTargetSectionId() || null;
+                const targetPosition = getContextMenuInsertPosition(targetSectionId || undefined);
+                uploadTargetPositionRef.current = {
+                  x: targetPosition.x,
+                  y: targetPosition.y,
+                };
+                uploadTargetSectionIdRef.current = targetSectionId;
                 setContextMenu(null);
                 canvasUploadInputRef.current?.click();
               }}
@@ -18524,7 +19843,7 @@ ${prompt}
               <span>复制</span>
             </button>
 
-            {/* 做同款 */}
+            {/* 鍋氬悓娆?*/}
             {cardContextMenu.item.type !== "gen_script" && (
               <button
                 onClick={() => {
@@ -18534,7 +19853,7 @@ ${prompt}
                 className="w-full text-left px-3 py-2 text-xs font-semibold text-zinc-700 dark:text-zinc-300 hover:text-black dark:hover:text-white hover:bg-zinc-100 dark:hover:bg-zinc-800/80 rounded-xl transition-all flex items-center space-x-2.5 cursor-pointer group"
               >
                 <Sparkles className="w-4 h-4 text-zinc-400 group-hover:text-zinc-600 dark:group-hover:text-zinc-200" />
-                <span>做同款</span>
+                <span>Remix</span>
               </button>
             )}
 

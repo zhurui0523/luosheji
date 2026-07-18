@@ -40,7 +40,7 @@ import {
   Search,
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
-import { HistoryItem, SmartImageConfig, SmartVideoConfig } from "../types";
+import { Config, HistoryItem, SmartImageConfig, SmartVideoConfig } from "../types";
 import { getThumbnailUrl } from "../services/utils";
 import { generatePPT, generatePDF, generateExcel, parseDocumentContent } from "../lib/documentGenerator";
 import {
@@ -61,6 +61,7 @@ import { CameraControl } from "./CameraControl";
 import { PointAndShootEditor } from "./PointAndShootEditor";
 import { PanoramaCreationModal } from "./PanoramaCreationModal";
 import { ImageViewer, VideoViewer, AudioCardView, PPTViewer, ExcelViewer, CodeSandboxViewer, GenerativeUIViewer } from "./canvas-elements";
+import { getModelOptions, ModelKind, ModelOption } from "../lib/modelOptions";
 
 function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
@@ -71,6 +72,23 @@ function formatSkillOptionLabel(skill: { id: string; name?: string; icon?: strin
   const cleanedName = rawName.replace(/^[^\p{L}\p{N}]+/u, "").trim();
   const displayName = cleanedName || rawName || skill.id;
   return `${skill.icon || "🔧"} ${displayName}`;
+}
+
+function ensureModelOption(options: ModelOption[], currentValue: string) {
+  if (!currentValue || options.some((option) => option.value === currentValue)) return options;
+  return [{ label: currentValue, value: currentValue }, ...options];
+}
+
+function getDefaultNodeModel(kind: ModelKind) {
+  if (kind === "image") return "gemini-3.1-flash-image-preview";
+  if (kind === "video") return "seedance2.0";
+  return "gemini-3.5-flash";
+}
+
+function getSkillCategoryForNode(nodeType: string) {
+  if (nodeType === "image") return "image";
+  if (nodeType === "video") return "video";
+  return "text";
 }
 
 interface HistoryCardProps {
@@ -123,6 +141,7 @@ interface HistoryCardProps {
   syncToCloud?: (item: HistoryItem) => Promise<any>;
   history?: HistoryItem[];
   customModels?: any[];
+  config?: Config;
   onCardContextMenu?: (e: React.MouseEvent, item: HistoryItem) => void;
 }
 
@@ -190,6 +209,7 @@ export const HistoryCard = React.memo(
     syncToCloud,
     history = [],
     customModels = [],
+    config,
     onCardContextMenu,
   }: HistoryCardProps) => {
     const [naturalAspectRatio, setNaturalAspectRatio] = useState<number | null>(item.naturalAspectRatio || null);
@@ -248,6 +268,15 @@ export const HistoryCard = React.memo(
         setLocalPos({ x: item.position?.x || 0, y: item.position?.y || 0 });
       }
     }, [item.position?.x, item.position?.y, isDraggingThisCard]);
+
+    const stopCanvasControlEvent = (e: React.SyntheticEvent<HTMLElement>) => {
+      e.stopPropagation();
+    };
+
+    const focusCanvasControl = (e: React.SyntheticEvent<HTMLElement>) => {
+      e.stopPropagation();
+      e.currentTarget.focus();
+    };
 
     const handlePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
       if (isDragDisabled) return;
@@ -782,6 +811,18 @@ export const HistoryCard = React.memo(
       const prompt = item.config?.prompt || "";
       const aspectRatio = item.config?.aspectRatio || "1:1";
       const duration = item.config?.duration || "5";
+      const modelKind: ModelKind = nodeType === "image" ? "image" : nodeType === "video" ? "video" : "text";
+      const configuredModelOptions = getModelOptions(config, customModels, modelKind);
+      const currentModelValue = item.config?.modelId || item.config?.model || configuredModelOptions[0]?.value || getDefaultNodeModel(modelKind);
+      const modelOptions = ensureModelOption(configuredModelOptions, currentModelValue);
+      const pluginIds = new Set(PLUGINS.map(plugin => plugin.id));
+      const nodeSkillCategory = getSkillCategoryForNode(nodeType);
+      const nodeSkillOptions = (workflowSkills.length > 0 ? workflowSkills : SYSTEM_SKILLS)
+        .filter((skill: any) => !pluginIds.has(skill.id))
+        .filter((skill: any) => {
+          const category = skill.category || "text";
+          return category === "all" || category === nodeSkillCategory;
+        });
 
       if (isPending || isRunning || isFailed || isCompleted) {
         return (
@@ -906,18 +947,23 @@ export const HistoryCard = React.memo(
                     placeholder="输入节点名称..."
                     onClick={(e) => e.stopPropagation()}
                     onKeyDown={(e) => e.stopPropagation()}
-                    onPointerDown={(e) => e.stopPropagation()}
+                    onKeyUp={stopCanvasControlEvent}
+                    onMouseDown={focusCanvasControl}
+                    onMouseUp={stopCanvasControlEvent}
+                    onPointerDown={focusCanvasControl}
+                    onPointerUp={stopCanvasControlEvent}
+                    onDoubleClick={stopCanvasControlEvent}
                   />
                 </div>
               </div>
 
-              {/* Model & Socket (插座) Selectors */}
+              {/* Model & SKILL Selectors */}
               <div className="grid grid-cols-2 gap-3.5">
                 {/* Column 1: Execution Model */}
                 <div className="flex flex-col space-y-1">
                   <label className="text-[10px] text-zinc-500 font-bold tracking-wider uppercase pl-1">执行算力 (Model)</label>
                   <select
-                    value={item.config?.modelId || (nodeType === "image" ? "gemini-3.1-flash-image-preview" : nodeType === "video" ? "gemini-video" : "gemini-3.5-flash")}
+                    value={currentModelValue}
                     disabled={isRunning}
                     onChange={(e) => {
                       const val = e.target.value;
@@ -930,27 +976,17 @@ export const HistoryCard = React.memo(
                     className="bg-zinc-900 border border-zinc-800/80 hover:border-zinc-700 text-zinc-200 rounded-xl px-2.5 py-1.5 text-[11px] font-bold focus:outline-none focus:border-indigo-500 w-full transition-all cursor-pointer"
                     onClick={(e) => e.stopPropagation()}
                     onKeyDown={(e) => e.stopPropagation()}
-                    onPointerDown={(e) => e.stopPropagation()}
+                    onKeyUp={stopCanvasControlEvent}
+                    onMouseDown={focusCanvasControl}
+                    onMouseUp={stopCanvasControlEvent}
+                    onPointerDown={focusCanvasControl}
+                    onPointerUp={stopCanvasControlEvent}
                   >
-                    {nodeType === "image" ? (
-                      <>
-                        <option value="gemini-3.1-flash-image-preview">♊ Gemini 3.1 Flash</option>
-                        <option value="gpt-image-2">🎨 DALL-E 3 Style</option>
-                        <option value="imagen-3">🌌 Imagen 3 Pro</option>
-                      </>
-                    ) : nodeType === "video" ? (
-                      <>
-                        <option value="gemini-video">♊ Gemini Video</option>
-                        <option value="hunyuan-video">🎬 Hunyuan Video</option>
-                        <option value="sora-video">🎥 Sora Video</option>
-                      </>
-                    ) : (
-                      <>
-                        <option value="gemini-3.5-flash">♊ Gemini 3.5 Flash</option>
-                        <option value="deepseek-r1">🧠 DeepSeek R1</option>
-                        <option value="claude-3-5-sonnet">🎭 Claude 3.5 Sonnet</option>
-                      </>
-                    )}
+                    {modelOptions.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
                   </select>
                 </div>
 
@@ -958,23 +994,27 @@ export const HistoryCard = React.memo(
                 <div className="flex flex-col space-y-1">
                   <label className="text-[10px] text-zinc-500 font-bold tracking-wider uppercase pl-1">关联 SKILL</label>
                   <select
-                    value={item.config?.skillId || ""}
+                    value={item.config?.skillId || "none"}
                     disabled={isRunning}
                     onChange={(e) => {
                       const val = e.target.value;
                       setHistory?.(prev => prev.map(h => 
                         h.id === item.id 
-                          ? { ...h, config: { ...h.config, skillId: val || undefined } } 
+                          ? { ...h, config: { ...h.config, skillId: val === "none" ? "none" : val || undefined } } 
                           : h
                       ));
                     }}
                     className="bg-zinc-900 border border-zinc-800/80 hover:border-zinc-700 text-zinc-200 rounded-xl px-2.5 py-1.5 text-[11px] font-bold focus:outline-none focus:border-indigo-500 w-full transition-all cursor-pointer"
                     onClick={(e) => e.stopPropagation()}
                     onKeyDown={(e) => e.stopPropagation()}
-                    onPointerDown={(e) => e.stopPropagation()}
+                    onKeyUp={stopCanvasControlEvent}
+                    onMouseDown={focusCanvasControl}
+                    onMouseUp={stopCanvasControlEvent}
+                    onPointerDown={focusCanvasControl}
+                    onPointerUp={stopCanvasControlEvent}
                   >
-                    <option value="">⚡ 直通模式 (Direct)</option>
-                    {SYSTEM_SKILLS.map(s => (
+                    <option value="none">无</option>
+                    {nodeSkillOptions.map((s: any) => (
                       <option key={s.id} value={s.id}>
                         {formatSkillOptionLabel(s)}
                       </option>
@@ -1004,7 +1044,12 @@ export const HistoryCard = React.memo(
                   placeholder="输入或修改该步骤的生成提示词..."
                   onClick={(e) => e.stopPropagation()}
                   onKeyDown={(e) => e.stopPropagation()}
-                  onPointerDown={(e) => e.stopPropagation()}
+                  onKeyUp={stopCanvasControlEvent}
+                  onMouseDown={focusCanvasControl}
+                  onMouseUp={stopCanvasControlEvent}
+                  onPointerDown={focusCanvasControl}
+                  onPointerUp={stopCanvasControlEvent}
+                  onDoubleClick={stopCanvasControlEvent}
                 />
               </div>
 
@@ -1150,10 +1195,24 @@ export const HistoryCard = React.memo(
       }
     }
 
+    if (
+      item.status === "draft_new" &&
+      item.type !== "image" &&
+      item.type !== "video" &&
+      item.type !== "code" &&
+      item.type !== "ui" &&
+      !item.config?.isPlaceholder &&
+      !item.config?.isSkillNode &&
+      !item.config?.isIntegratedModelNode &&
+      !item.config?.isPipelineNode
+    ) {
+      return null;
+    }
+
     if (item.status === "draft_new") {
       // Choose icon and label based on item type
       let cardIcon = <Sparkles className="w-4 h-4 text-zinc-400" />;
-      let cardTitle = "Script Gen";
+      let cardTitle = "Draft";
 
       if (item.type === "image") {
         cardIcon = <ImageIcon className="w-4 h-4 text-zinc-400" />;
@@ -1966,6 +2025,14 @@ export const HistoryCard = React.memo(
                             }}
                             className="w-full h-full p-2 bg-white rounded-xl border border-slate-200 focus:border-indigo-400 focus:ring-1 focus:ring-indigo-400 font-mono text-[9px] leading-relaxed text-slate-700 resize-none outline-none transition-all no-drag custom-scrollbar"
                             placeholder="在此处直接输入或编辑代码..."
+                            onClick={stopCanvasControlEvent}
+                            onKeyDown={stopCanvasControlEvent}
+                            onKeyUp={stopCanvasControlEvent}
+                            onMouseDown={focusCanvasControl}
+                            onMouseUp={stopCanvasControlEvent}
+                            onPointerDown={focusCanvasControl}
+                            onPointerUp={stopCanvasControlEvent}
+                            onDoubleClick={stopCanvasControlEvent}
                           />
                         </div>
                       </div>
@@ -2167,12 +2234,14 @@ export const HistoryCard = React.memo(
                         );
                         syncToCloud?.({ ...item, revisedPrompt: newText });
                       }}
-                      onPointerDown={(e) => e.stopPropagation()}
-                      onMouseDown={(e) => e.stopPropagation()}
-                      onKeyDown={(e) => e.stopPropagation()}
-                      onKeyUp={(e) => e.stopPropagation()}
-                      onDoubleClick={(e) => e.stopPropagation()}
-                      onClick={(e) => e.stopPropagation()}
+                      onPointerDown={focusCanvasControl}
+                      onPointerUp={stopCanvasControlEvent}
+                      onMouseDown={focusCanvasControl}
+                      onMouseUp={stopCanvasControlEvent}
+                      onKeyDown={stopCanvasControlEvent}
+                      onKeyUp={stopCanvasControlEvent}
+                      onDoubleClick={stopCanvasControlEvent}
+                      onClick={stopCanvasControlEvent}
                       className="w-full h-full p-4 bg-white/70 rounded-2xl border border-amber-100/60 focus:border-indigo-400 focus:bg-white shadow-inner font-sans text-[12px] leading-relaxed text-gray-700 resize-none outline-none transition-all no-drag custom-scrollbar"
                       placeholder="在此处直接输入或编辑您的想法..."
                     />
@@ -2309,22 +2378,6 @@ export const HistoryCard = React.memo(
                           return (
                             <>
                               <button
-                                onClick={async (e) => {
-                                  e.stopPropagation();
-                                  await handleRegenerateScriptSubtype?.(item);
-                                }}
-                                disabled={isGenerating}
-                                className={cn(
-                                  "h-8 px-2.5 hover:bg-emerald-500/10 text-emerald-400 hover:text-emerald-350 rounded-full flex items-center space-x-1.5 transition-all active:scale-95 text-xs font-semibold",
-                                  isGenerating && "opacity-50 cursor-not-allowed"
-                                )}
-                                title="根据剧本重新生成相应的资产"
-                              >
-                                <RefreshCw className={cn("w-3.5 h-3.5", isGenerating && "animate-spin")} />
-                                <span>重新生成</span>
-                              </button>
-
-                              <button
                                 onClick={(e) => {
                                   e.stopPropagation();
                                   onAssetDissection?.(item);
@@ -2340,22 +2393,6 @@ export const HistoryCard = React.memo(
                         } else if (isDirector) {
                           return (
                             <>
-                              <button
-                                onClick={async (e) => {
-                                  e.stopPropagation();
-                                  await handleRegenerateScriptSubtype?.(item);
-                                }}
-                                disabled={isGenerating}
-                                className={cn(
-                                  "h-8 px-2.5 hover:bg-emerald-500/10 text-emerald-400 hover:text-emerald-350 rounded-full flex items-center space-x-1.5 transition-all active:scale-95 text-xs font-semibold",
-                                  isGenerating && "opacity-50 cursor-not-allowed"
-                                )}
-                                title="根据剧本重新生成相应的分镜提示词"
-                              >
-                                <RefreshCw className={cn("w-3.5 h-3.5", isGenerating && "animate-spin")} />
-                                <span>重新生成</span>
-                              </button>
-
                               <button
                                 onClick={(e) => {
                                   e.stopPropagation();
@@ -2488,20 +2525,6 @@ export const HistoryCard = React.memo(
                         <Share2 className="w-3.5 h-3.5" />
                         <span>转发协作</span>
                       </button>
-
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          onMaximize(item);
-                        }}
-                        className="h-8 px-2.5 hover:bg-zinc-800/80 text-zinc-300 hover:text-white rounded-full flex items-center space-x-1.5 transition-all active:scale-95 text-xs font-semibold"
-                        title="查看与修改剧本"
-                      >
-                        <Maximize2 className="w-3.5 h-3.5" />
-                        <span>查看与修改</span>
-                      </button>
-
-
                     </>
                   ) : (
                     <>

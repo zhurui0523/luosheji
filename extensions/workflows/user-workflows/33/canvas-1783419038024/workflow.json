@@ -1,0 +1,107 @@
+{
+  "id": "canvas_1783419038024",
+  "name": "1.生成三位不同发型和肤色的欧",
+  "history": [
+    {
+      "id": "mrai1wt60rmdzg6",
+      "user_id": 33,
+      "type": "image",
+      "status": "success",
+      "image_url": "https://zhurui.oss-cn-hangzhou.aliyuncs.com/luosheji/history/33/mrai1wt60rmdzg6_image.png",
+      "thumbnail_url": null,
+      "video_url": null,
+      "revised_prompt": "",
+      "is_optimized": 0,
+      "error": null,
+      "config": {
+        "model": "gpt-image-2",
+        "prompt": "1.生成三位不同发型和肤色的欧美中年男性的全身正面图，脸部要符合邪恶的反派特征，服装符合欧美地区的现代黑社会的服饰。生成三位人物全身的高清白底正面图，\n\n 图片背景为白底，不得添加任何文字。\n\n人脸皮肤质感保持真实自然,面部不要有油光和多余的打光，所有人物不得出现纹身",
+        "gptSize": "1024x1536",
+        "gptFormat": "jpeg",
+        "imageSize": "2K",
+        "gptQuality": "auto",
+        "aspectRatio": "9:16",
+        "referenceImages": []
+      },
+      "ark_original_url": null,
+      "timestamp": 1783419717247,
+      "position": {
+        "x": 501,
+        "y": 189,
+        "bento": {
+          "x": 501,
+          "y": 189
+        },
+        "customX": 501,
+        "customY": 189,
+        "mindmap": {
+          "x": 501,
+          "y": 189
+        }
+      },
+      "hidden_from_canvas": 0,
+      "parent_id": null,
+      "canvas_id": "canvas_1783419038024",
+      "isOptimized": false,
+      "hiddenFromCanvas": false,
+      "canvasId": "canvas_1783419038024",
+      "imageUrl": "https://zhurui.oss-cn-hangzhou.aliyuncs.com/luosheji/history/33/mrai1wt60rmdzg6_image.png",
+      "videoUrl": null,
+      "arkOriginalUrl": null,
+      "revisedPrompt": "",
+      "naturalAspectRatio": 1.849240780911063
+    }
+  ],
+  "nodes": [
+    {
+      "id": "mrai1wt60rmdzg6",
+      "user_id": 33,
+      "type": "image",
+      "status": "success",
+      "image_url": "https://zhurui.oss-cn-hangzhou.aliyuncs.com/luosheji/history/33/mrai1wt60rmdzg6_image.png",
+      "thumbnail_url": null,
+      "video_url": null,
+      "revised_prompt": "",
+      "is_optimized": 0,
+      "error": null,
+      "config": {
+        "model": "gpt-image-2",
+        "prompt": "1.生成三位不同发型和肤色的欧美中年男性的全身正面图，脸部要符合邪恶的反派特征，服装符合欧美地区的现代黑社会的服饰。生成三位人物全身的高清白底正面图，\n\n 图片背景为白底，不得添加任何文字。\n\n人脸皮肤质感保持真实自然,面部不要有油光和多余的打光，所有人物不得出现纹身",
+        "gptSize": "1024x1536",
+        "gptFormat": "jpeg",
+        "imageSize": "2K",
+        "gptQuality": "auto",
+        "aspectRatio": "9:16",
+        "referenceImages": []
+      },
+      "ark_original_url": null,
+      "timestamp": 1783419717247,
+      "position": {
+        "x": 501,
+        "y": 189,
+        "bento": {
+          "x": 501,
+          "y": 189
+        },
+        "customX": 501,
+        "customY": 189,
+        "mindmap": {
+          "x": 501,
+          "y": 189
+        }
+      },
+      "hidden_from_canvas": 0,
+      "parent_id": null,
+      "canvas_id": "canvas_1783419038024",
+      "isOptimized": false,
+      "hiddenFromCanvas": false,
+      "canvasId": "canvas_1783419038024",
+      "imageUrl": "https://zhurui.oss-cn-hangzhou.aliyuncs.com/luosheji/history/33/mrai1wt60rmdzg6_image.png",
+      "videoUrl": null,
+      "arkOriginalUrl": null,
+      "revisedPrompt": "",
+      "naturalAspectRatio": 1.849240780911063
+    }
+  ],
+  "source": "shared_canvas"
+}

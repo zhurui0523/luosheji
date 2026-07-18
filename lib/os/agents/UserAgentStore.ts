@@ -5,101 +5,104 @@ const LEGACY_STORAGE_KEY = 'user_agents';
 const SCOPED_STORAGE_PREFIX = 'user_agents:';
 
 function getToken() {
-  if (typeof window === 'undefined' || !window.localStorage) {
-    return null;
-  }
+  if (typeof window === 'undefined' || !window.localStorage) return null;
   return window.localStorage.getItem('token');
 }
 
-function agentFromManifest(manifest: any): UserAgentDefinition | null {
-  const contributed = manifest?.contributes?.agents?.[0];
-  const source = contributed || manifest?.metadata?.userAgent;
-  if (!source || !source.id) {
-    return null;
-  }
+function getScopedKey(userId?: string) {
+  return userId ? `${SCOPED_STORAGE_PREFIX}${userId}` : LEGACY_STORAGE_KEY;
+}
+
+function readLocalStorage(key: string): UserAgentDefinition[] {
+  if (typeof window === 'undefined' || !window.localStorage) return [];
 
   try {
-    return normalizeUserAgent({
-      ...source,
-      metadata: {
-        ...(source.metadata || {}),
-        extensionId: manifest.id,
-        packagePath: manifest.metadata?.packagePath,
-        physicalPackage: Boolean(manifest.metadata?.physicalPackage),
-      },
-    });
+    const raw = window.localStorage.getItem(key);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.map(item => normalizeUserAgent(item));
   } catch (error) {
-    console.warn('Failed to normalize agent package manifest:', error);
+    console.warn(`Failed to read user agents from ${key}:`, error);
+    return [];
+  }
+}
+
+function writeLocalStorage(key: string, agents: UserAgentDefinition[]) {
+  if (typeof window === 'undefined' || !window.localStorage) return;
+  window.localStorage.setItem(key, JSON.stringify(agents));
+}
+
+async function readServerAgents(): Promise<UserAgentDefinition[] | null> {
+  const token = getToken();
+  if (!token || typeof fetch === 'undefined') return null;
+
+  try {
+    const res = await fetch('/api/agents', {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    if (!Array.isArray(data?.agents)) return [];
+    return data.agents.map((item: any) => normalizeUserAgent(item));
+  } catch (error) {
+    console.warn('Failed to read agent packages from server:', error);
     return null;
   }
 }
 
+async function syncServerAgents(agents: UserAgentDefinition[]): Promise<UserAgentDefinition[]> {
+  const token = getToken();
+  if (!token || typeof fetch === 'undefined') return agents;
+
+  const res = await fetch('/api/agents/packages/sync', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({ agents, replaceAll: true }),
+  });
+
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const message = Array.isArray(data?.errors)
+      ? data.errors.join('\n')
+      : data?.error || 'Agent 保存失败。';
+    throw new Error(message);
+  }
+
+  if (Array.isArray(data?.agents)) {
+    return data.agents.map((item: any) => normalizeUserAgent(item));
+  }
+
+  return agents;
+}
+
 class UserAgentStoreService {
-  private getScopedKey(userId?: string) {
-    return userId ? `${SCOPED_STORAGE_PREFIX}${userId}` : LEGACY_STORAGE_KEY;
-  }
-
-  private readLocalStorage(key: string): UserAgentDefinition[] {
-    if (typeof window === 'undefined' || !window.localStorage) {
-      return [];
-    }
-
-    try {
-      const raw = window.localStorage.getItem(key);
-      if (!raw) {
-        return [];
-      }
-      const parsed = JSON.parse(raw);
-      if (!Array.isArray(parsed)) {
-        return [];
-      }
-      return parsed.map(item => normalizeUserAgent(item));
-    } catch (error) {
-      console.warn(`Failed to read user agents from ${key}:`, error);
-      return [];
-    }
-  }
-
-  private writeLocalStorage(key: string, agents: UserAgentDefinition[]) {
-    if (typeof window === 'undefined' || !window.localStorage) {
-      return;
-    }
-    window.localStorage.setItem(key, JSON.stringify(agents));
-  }
-
   async listUserAgents(userId?: string): Promise<UserAgentDefinition[]> {
-    const scopedKey = this.getScopedKey(userId);
-    const scopedAgents = this.readLocalStorage(scopedKey);
+    const scopedKey = getScopedKey(userId);
+    const serverAgents = await readServerAgents();
 
-    const packageAgents = await this.listPackageAgents();
-    if (packageAgents.length > 0) {
-      this.writeLocalStorage(scopedKey, packageAgents);
-      if (scopedKey !== LEGACY_STORAGE_KEY) {
-        this.writeLocalStorage(LEGACY_STORAGE_KEY, packageAgents);
-      }
-      return packageAgents;
+    if (serverAgents) {
+      writeLocalStorage(scopedKey, serverAgents);
+      if (scopedKey !== LEGACY_STORAGE_KEY) writeLocalStorage(LEGACY_STORAGE_KEY, serverAgents);
+      return serverAgents;
     }
 
-    if (userId && scopedAgents.length > 0) {
-      return scopedAgents;
-    }
-
-    return this.readLocalStorage(LEGACY_STORAGE_KEY);
+    const scopedAgents = readLocalStorage(scopedKey);
+    if (userId && scopedAgents.length > 0) return scopedAgents;
+    return readLocalStorage(LEGACY_STORAGE_KEY);
   }
 
   async saveAllUserAgents(agents: UserAgentDefinition[], userId?: string): Promise<UserAgentDefinition[]> {
     const normalized = agents.map(item => normalizeUserAgent(item));
-    const scopedKey = this.getScopedKey(userId);
+    const saved = await syncServerAgents(normalized);
+    const scopedKey = getScopedKey(userId);
 
-    this.writeLocalStorage(scopedKey, normalized);
-
-    // Keep the legacy key in sync until every runtime path can read a scoped user store.
-    if (scopedKey !== LEGACY_STORAGE_KEY) {
-      this.writeLocalStorage(LEGACY_STORAGE_KEY, normalized);
-    }
-
-    await this.syncPackageAgents(normalized);
-    return normalized;
+    writeLocalStorage(scopedKey, saved);
+    if (scopedKey !== LEGACY_STORAGE_KEY) writeLocalStorage(LEGACY_STORAGE_KEY, saved);
+    return saved;
   }
 
   async saveUserAgent(agent: UserAgentDefinition, userId?: string): Promise<UserAgentDefinition[]> {
@@ -109,82 +112,29 @@ class UserAgentStoreService {
     const next = exists
       ? current.map(item => item.id === normalized.id ? normalized : item)
       : [...current, normalized];
-
     return this.saveAllUserAgents(next, userId);
   }
 
   async updateUserAgent(id: string, patch: Partial<UserAgentDefinition>, userId?: string): Promise<UserAgentDefinition[]> {
     const current = await this.listUserAgents(userId);
-    const next = current.map(item => {
-      if (item.id !== id) {
-        return item;
-      }
-      return normalizeUserAgent({
-        ...item,
-        ...patch,
-        updatedAt: Date.now()
-      });
-    });
-
+    const next = current.map(item => item.id === id
+      ? normalizeUserAgent({ ...item, ...patch, updatedAt: Date.now() })
+      : item
+    );
     return this.saveAllUserAgents(next, userId);
   }
 
   async deleteUserAgent(id: string, userId?: string): Promise<UserAgentDefinition[]> {
     const current = await this.listUserAgents(userId);
-    const next = await this.saveAllUserAgents(current.filter(item => item.id !== id), userId);
+    const next = current.filter(item => item.id !== id);
+    const saved = await this.saveAllUserAgents(next, userId);
     await this.deletePackageAgent(id);
-    return next;
-  }
-
-  private async listPackageAgents(): Promise<UserAgentDefinition[]> {
-    const token = getToken();
-    if (!token || typeof fetch === 'undefined') {
-      return [];
-    }
-
-    try {
-      const res = await fetch('/api/extensions/packages?kind=agent', {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      if (!res.ok) {
-        return [];
-      }
-      const data = await res.json();
-      const packages = Array.isArray(data?.packages) ? data.packages : [];
-      return packages
-        .map((item: any) => agentFromManifest(item.manifest))
-        .filter(Boolean) as UserAgentDefinition[];
-    } catch (error) {
-      console.warn('Failed to read agent packages:', error);
-      return [];
-    }
-  }
-
-  private async syncPackageAgents(agents: UserAgentDefinition[]) {
-    const token = getToken();
-    if (!token || typeof fetch === 'undefined') {
-      return;
-    }
-
-    try {
-      await fetch('/api/agents/packages/sync', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({ agents, replaceAll: true }),
-      });
-    } catch (error) {
-      console.warn('Failed to sync agent packages:', error);
-    }
+    return saved;
   }
 
   private async deletePackageAgent(id: string) {
     const token = getToken();
-    if (!token || typeof fetch === 'undefined') {
-      return;
-    }
+    if (!token || typeof fetch === 'undefined') return;
 
     try {
       await fetch(`/api/agents/packages/${encodeURIComponent(id)}`, {

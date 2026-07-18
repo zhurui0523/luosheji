@@ -57,6 +57,7 @@ export interface UserModelConnection {
   endpoint: string;
   path?: string;
   model: string;
+  modelType?: "text" | "image" | "video" | string;
   apiKeyRef?: string;
   apiKey?: string;
   capabilityKinds: ModelCapabilityKind[];
@@ -64,9 +65,23 @@ export interface UserModelConnection {
   state?: ModelConnectionState;
   isCustom?: boolean;
   displayName?: string;
+  defaultGenerationSettings?: {
+    image?: {
+      aspectRatio?: string;
+      imageSize?: string;
+    };
+    video?: {
+      videoMode?: string;
+      duration?: string;
+      aspectRatio?: string;
+      resolution?: string;
+    };
+    [key: string]: any;
+  };
   headers?: Record<string, string>;
   requestMapping?: Record<string, any>;
   responseMapping?: Record<string, any>;
+  metadata?: Record<string, any>;
   createdAt?: number;
   updatedAt?: number;
   lastTestedAt?: number;

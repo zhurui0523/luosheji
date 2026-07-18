@@ -1,0 +1,98 @@
+{
+  "id": "user-workflow-canvas-1783419038024",
+  "name": "1.生成三位不同发型和肤色的欧",
+  "version": "1.0.0",
+  "description": "User saved workflow preset.",
+  "type": "workflow",
+  "author": "Yitong",
+  "category": "workflow",
+  "icon": "🧰",
+  "permissions": [
+    "read_canvas",
+    "write_canvas"
+  ],
+  "sandbox": "none",
+  "runtime": {
+    "kind": "prompt",
+    "entry": "workflow.ts"
+  },
+  "contributes": {
+    "workflowPresets": [
+      {
+        "id": "canvas_1783419038024",
+        "name": "1.生成三位不同发型和肤色的欧",
+        "description": "User saved workflow preset.",
+        "category": "workflow",
+        "nodes": [
+          {
+            "id": "mrai1wt60rmdzg6",
+            "user_id": 33,
+            "type": "image",
+            "status": "success",
+            "image_url": "https://zhurui.oss-cn-hangzhou.aliyuncs.com/luosheji/history/33/mrai1wt60rmdzg6_image.png",
+            "thumbnail_url": null,
+            "video_url": null,
+            "revised_prompt": "",
+            "is_optimized": 0,
+            "error": null,
+            "config": {
+              "model": "gpt-image-2",
+              "prompt": "1.生成三位不同发型和肤色的欧美中年男性的全身正面图，脸部要符合邪恶的反派特征，服装符合欧美地区的现代黑社会的服饰。生成三位人物全身的高清白底正面图，\n\n 图片背景为白底，不得添加任何文字。\n\n人脸皮肤质感保持真实自然,面部不要有油光和多余的打光，所有人物不得出现纹身",
+              "gptSize": "1024x1536",
+              "gptFormat": "jpeg",
+              "imageSize": "2K",
+              "gptQuality": "auto",
+              "aspectRatio": "9:16",
+              "referenceImages": []
+            },
+            "ark_original_url": null,
+            "timestamp": 1783419717247,
+            "position": {
+              "x": 501,
+              "y": 189,
+              "bento": {
+                "x": 501,
+                "y": 189
+              },
+              "customX": 501,
+              "customY": 189,
+              "mindmap": {
+                "x": 501,
+                "y": 189
+              }
+            },
+            "hidden_from_canvas": 0,
+            "parent_id": null,
+            "canvas_id": "canvas_1783419038024",
+            "isOptimized": false,
+            "hiddenFromCanvas": false,
+            "canvasId": "canvas_1783419038024",
+            "imageUrl": "https://zhurui.oss-cn-hangzhou.aliyuncs.com/luosheji/history/33/mrai1wt60rmdzg6_image.png",
+            "videoUrl": null,
+            "arkOriginalUrl": null,
+            "revisedPrompt": "",
+            "naturalAspectRatio": 1.849240780911063
+          }
+        ],
+        "edges": [],
+        "path": "workflow.json",
+        "metadata": {
+          "source": "shared_canvas",
+          "ownerId": "33",
+          "sourceRecordId": "canvas_1783419038024",
+          "createdAt": 1784305791879
+        }
+      }
+    ]
+  },
+  "metadata": {
+    "source": "shared_canvas",
+    "sourceRecordId": "canvas_1783419038024",
+    "createdAt": 1784305791879,
+    "ownerId": "33",
+    "packageKind": "workflow",
+    "packagePath": "extensions/workflows/user-workflows/33/canvas-1783419038024",
+    "physicalPackage": true,
+    "updatedAt": 1784305791879
+  }
+}

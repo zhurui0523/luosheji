@@ -147,6 +147,48 @@ class UserExtensionStoreService {
     return manifests;
   }
 
+  async refreshFromServer(kind?: ExtensionPackageKind, userId?: string): Promise<UserExtensionIndexRecord[]> {
+    if (typeof window === 'undefined' || !window.localStorage) return [];
+
+    const token = window.localStorage.getItem('token');
+    if (!token || token === 'guest') return this.listIndex(userId);
+
+    try {
+      const query = kind ? `?kind=${encodeURIComponent(kind)}` : '';
+      const res = await fetch(`/api/extensions/packages${query}`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (!res.ok) return this.listIndex(userId);
+
+      const data = await res.json();
+      const cloudRecords: UserExtensionIndexRecord[] = Array.isArray(data?.packages)
+        ? data.packages
+            .filter((pkg: any) => pkg?.manifest?.id)
+            .map((pkg: any) => ({
+              id: pkg.manifest.id,
+              kind: pkg.kind || inferExtensionKind(pkg.manifest),
+              manifest: pkg.manifest,
+              state: 'enabled',
+              packagePath: pkg.packagePath || getExtensionPackagePath(pkg.manifest),
+              installedAt: pkg.createdAt ? new Date(pkg.createdAt).getTime() : Date.now(),
+              updatedAt: pkg.updatedAt ? new Date(pkg.updatedAt).getTime() : Date.now(),
+              source: {
+                type: 'manifest',
+                uri: pkg.storageUri || pkg.packagePath
+              }
+            }))
+        : [];
+
+      const nextIndex = kind
+        ? [...this.listIndex(userId).filter(record => record.kind !== kind), ...cloudRecords]
+        : cloudRecords;
+      return this.saveIndex(nextIndex, userId);
+    } catch (err) {
+      console.warn('[UserExtensionStore] Failed to refresh cloud extension packages:', err);
+      return this.listIndex(userId);
+    }
+  }
+
   private readManifestKey(key: string): ExtensionManifest[] {
     if (typeof window === 'undefined' || !window.localStorage) {
       return [];

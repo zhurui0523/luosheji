@@ -287,6 +287,26 @@ export const getActualCanvasCardSizeAndPort = (item: HistoryItem) => {
       portY: h / 2,
     };
   }
+
+  const documentKind = String(item.config?.documentKind || "").toLowerCase();
+  const isDocumentCanvasCard = item.type === "gen_script" && (
+    item.config?.skillId === "office-pitch-deck" ||
+    item.config?.skillId === "office-excel-report" ||
+    documentKind === "ppt" ||
+    documentKind === "table"
+  );
+
+  if (isDocumentCanvasCard) {
+    const w = 360;
+    const h = 360;
+    return {
+      width: w,
+      height: h,
+      portX: w + 15,
+      portY: h / 2,
+    };
+  }
+
   if (item.type === "audio") {
     const w = 360;
     const h = 270;
@@ -406,7 +426,30 @@ export const getActualCanvasCardSizeAndPort = (item: HistoryItem) => {
   };
 };
 
+const SEMI_AUTO_SECTION_BORDER_STYLES: Record<string, string> = {
+  "text-planning": "border-amber-500 shadow-[0_0_15px_rgba(245,158,11,0.12)] hover:border-amber-400 hover:shadow-amber-400/20",
+  "asset-zone": "border-emerald-500 shadow-[0_0_15px_rgba(16,185,129,0.12)] hover:border-emerald-400 hover:shadow-emerald-400/20",
+  "shot-zone": "border-sky-500 shadow-[0_0_15px_rgba(14,165,233,0.12)] hover:border-sky-400 hover:shadow-sky-400/20",
+  "media-zone": "border-violet-500 shadow-[0_0_15px_rgba(139,92,246,0.12)] hover:border-violet-400 hover:shadow-violet-400/20",
+  "document-zone": "border-indigo-500 shadow-[0_0_15px_rgba(99,102,241,0.12)] hover:border-indigo-400 hover:shadow-indigo-400/20",
+  "interactive-zone": "border-cyan-500 shadow-[0_0_15px_rgba(6,182,212,0.12)] hover:border-cyan-400 hover:shadow-cyan-400/20",
+  "workflow-zone": "border-slate-500 shadow-[0_0_15px_rgba(100,116,139,0.14)] hover:border-slate-400 hover:shadow-slate-400/20",
+};
+
+const SEMI_AUTO_SECTION_ACTIVE_STYLES: Record<string, string> = {
+  "text-planning": "border-amber-400 ring-4 ring-amber-500/25 shadow-[0_0_20px_rgba(245,158,11,0.3)] bg-amber-950/20",
+  "asset-zone": "border-emerald-400 ring-4 ring-emerald-500/25 shadow-[0_0_20px_rgba(16,185,129,0.3)] bg-emerald-950/20",
+  "shot-zone": "border-sky-400 ring-4 ring-sky-500/25 shadow-[0_0_20px_rgba(14,165,233,0.3)] bg-sky-950/20",
+  "media-zone": "border-violet-400 ring-4 ring-violet-500/25 shadow-[0_0_20px_rgba(139,92,246,0.3)] bg-violet-950/20",
+  "document-zone": "border-indigo-400 ring-4 ring-indigo-500/25 shadow-[0_0_20px_rgba(99,102,241,0.3)] bg-indigo-950/20",
+  "interactive-zone": "border-cyan-400 ring-4 ring-cyan-500/25 shadow-[0_0_20px_rgba(6,182,212,0.3)] bg-cyan-950/20",
+  "workflow-zone": "border-slate-400 ring-4 ring-slate-500/25 shadow-[0_0_20px_rgba(100,116,139,0.3)] bg-slate-950/20",
+};
+
 export const getSemiAutoBorderStyles = (item: any) => {
+  const sectionStyle = SEMI_AUTO_SECTION_BORDER_STYLES[item?.config?.sectionId || ""];
+  if (sectionStyle) return sectionStyle;
+
   if (item.type === "gen_script") {
     return "border-purple-500 shadow-[0_0_15px_rgba(168,85,247,0.1)] hover:border-purple-400 hover:shadow-purple-400/20";
   }
@@ -447,6 +490,9 @@ export const safeParseParentIds = (parentId: any): string[] => {
 };
 
 export const getSemiAutoActiveStyles = (item: any) => {
+  const sectionStyle = SEMI_AUTO_SECTION_ACTIVE_STYLES[item?.config?.sectionId || ""];
+  if (sectionStyle) return sectionStyle;
+
   if (item.type === "gen_script") {
     return "border-purple-400 ring-4 ring-purple-500/25 shadow-[0_0_20px_rgba(168,85,247,0.3)] bg-purple-950/20";
   }

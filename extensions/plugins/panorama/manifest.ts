@@ -17,7 +17,7 @@ export const panoramaPluginManifest: ExtensionManifest = {
     entry: './skill.ts'
   },
   contributes: {
-    skills: [panoramaSkill]
+    skills: [{ ...panoramaSkill, description: panoramaSkill.desc, category: panoramaSkill.category || 'image' }]
   },
   metadata: {
     builtin: true,

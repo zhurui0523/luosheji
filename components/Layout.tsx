@@ -278,7 +278,7 @@ export const Layout: React.FC<LayoutProps> = ({
   const navItems = [
     { id: 'space', name: '灵境', icon: ImageIcon },
     { id: 'tasks', name: '资产', icon: LayoutGrid },
-    { id: 'skills', name: '插座', icon: Cpu },
+    { id: 'skills', name: 'SKILL', icon: Cpu },
   ];
 
   const allMenuItems = [

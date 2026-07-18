@@ -43,6 +43,7 @@ export interface PackageWriteResult {
   packagePath: string;
   absolutePath: string;
   manifest: ExtensionManifest;
+  files: PackageWriteFile[];
 }
 
 export function sanitizePackageSegment(value: any, fallback = "package") {
@@ -105,7 +106,7 @@ export function writeExtensionPackage(
     fs.writeFileSync(target, file.content, "utf8");
   }
 
-  return { packagePath, absolutePath, manifest: normalizedManifest };
+  return { packagePath, absolutePath, manifest: normalizedManifest, files };
 }
 
 export function deleteUserExtensionPackage(kind: ExtensionPackageKind, ownerId: any, packageId: any) {
@@ -153,13 +154,137 @@ export function listUserExtensionPackages(kind?: ExtensionPackageKind, ownerId?:
   return records;
 }
 
+const VALID_AGENT_CAPABILITY_KINDS = new Set([
+  "text",
+  "image",
+  "video",
+  "vision",
+  "audio",
+  "code",
+  "tools",
+  "workflow",
+  "ui",
+  "data",
+  "browser",
+]);
+
+export interface AgentPackageValidationResult {
+  ok: boolean;
+  errors: string[];
+  agents: any[];
+}
+
+export function normalizeUserAgentPackageRecord(input: any) {
+  const now = Date.now();
+  const id = sanitizePackageSegment(input?.id, "agent");
+  const rawKinds = Array.isArray(input?.capabilityKinds) ? input.capabilityKinds : ["text"];
+  const capabilityKinds = rawKinds
+    .map((kind: any) => String(kind || "").trim().toLowerCase())
+    .filter((kind: string) => VALID_AGENT_CAPABILITY_KINDS.has(kind));
+
+  return {
+    id,
+    name: String(input?.name || id).trim(),
+    role: String(input?.role || "Custom Agent").trim(),
+    description: input?.description ? String(input.description).trim() : "",
+    icon: input?.icon ? String(input.icon).trim() : "Bot",
+    systemInstruction: String(input?.systemInstruction || "").trim(),
+    capabilityKinds: capabilityKinds.length > 0 ? capabilityKinds : ["text"],
+    skillIds: Array.isArray(input?.skillIds) ? input.skillIds.map((id: any) => String(id)) : [],
+    modelPreferences: input?.modelPreferences && typeof input.modelPreferences === "object" ? input.modelPreferences : {},
+    outputSchema: input?.outputSchema,
+    enabled: input?.enabled !== false,
+    isCustom: true,
+    createdAt: typeof input?.createdAt === "number" ? input.createdAt : now,
+    updatedAt: typeof input?.updatedAt === "number" ? input.updatedAt : now,
+    metadata: input?.metadata && typeof input.metadata === "object" ? input.metadata : {},
+  };
+}
+
+export function agentFromPackageManifest(manifest: any) {
+  const contributed = manifest?.contributes?.agents?.[0];
+  const source = contributed || manifest?.metadata?.userAgent;
+  if (!source || !source.id) return null;
+
+  return normalizeUserAgentPackageRecord({
+    ...source,
+    metadata: {
+      ...(source.metadata || {}),
+      extensionId: manifest.id,
+      packagePath: manifest.metadata?.packagePath,
+      physicalPackage: Boolean(manifest.metadata?.physicalPackage),
+      packageKind: manifest.metadata?.packageKind || "agent",
+    },
+  });
+}
+
+export function validateAgentPackageRecords(inputAgents: any[]): AgentPackageValidationResult {
+  const errors: string[] = [];
+  const agents = (Array.isArray(inputAgents) ? inputAgents : []).map(normalizeUserAgentPackageRecord);
+  const ids = new Set<string>();
+  const names = new Set<string>();
+
+  agents.forEach((agent, index) => {
+    const label = agent.name || agent.id || `Agent #${index + 1}`;
+    if (!agent.id) errors.push(`${label}: Agent ID 不能为空。`);
+    if (!/^[a-z0-9-]+$/.test(agent.id)) errors.push(`${label}: Agent ID 只能包含小写字母、数字和短横线。`);
+    if (!agent.name) errors.push(`${agent.id}: Agent 名称不能为空。`);
+    if (!agent.role) errors.push(`${agent.name}: 专业角色不能为空。`);
+    if (!agent.systemInstruction) errors.push(`${agent.name}: 系统提示词不能为空。`);
+    if (!Array.isArray(agent.capabilityKinds) || agent.capabilityKinds.length === 0) {
+      errors.push(`${agent.name}: 至少需要一个能力类型。`);
+    }
+    if (ids.has(agent.id)) errors.push(`${agent.name}: Agent ID 重复，不能保存。`);
+    ids.add(agent.id);
+
+    const normalizedName = agent.name.trim().toLowerCase();
+    if (normalizedName) {
+      if (names.has(normalizedName)) errors.push(`${agent.name}: Agent 名称重复，用户会误认为是同一个 Agent。`);
+      names.add(normalizedName);
+    }
+  });
+
+  return { ok: errors.length === 0, errors, agents };
+}
+
+export function listUserAgentPackages(ownerId?: any) {
+  return listUserExtensionPackages("agent", ownerId)
+    .map(record => {
+      const agent = agentFromPackageManifest(record.manifest);
+      return agent
+        ? {
+            ...agent,
+            metadata: {
+              ...(agent.metadata || {}),
+              packagePath: record.packagePath,
+            },
+          }
+        : null;
+    })
+    .filter(Boolean) as any[];
+}
+
+export function deleteUserAgentPackage(ownerId: any, agentId: any) {
+  const safeAgentId = sanitizePackageSegment(agentId, "agent");
+  const packages = listUserExtensionPackages("agent", ownerId);
+  const matchingPackage = packages.find(record => {
+    const manifestAgent = agentFromPackageManifest(record.manifest);
+    return manifestAgent?.id === safeAgentId || record.manifest?.metadata?.sourceRecordId === safeAgentId;
+  });
+
+  const packageId = matchingPackage
+    ? path.basename(matchingPackage.packagePath)
+    : safeAgentId;
+  return deleteUserExtensionPackage("agent", ownerId, packageId);
+}
+
 export function buildSkillPackage(skill: any, owner: { id: any; username?: string }) {
   const manifestId = `user-skill-${sanitizePackageSegment(skill.id || skill.name, "skill")}`;
   const skillDef = {
     id: skill.id,
     name: skill.name,
     description: skill.desc || skill.description || "",
-    icon: skill.icon || "⚡",
+    icon: skill.icon || "SKILL",
     category: skill.category || "text",
     instruction: skill.instruction || "",
     customOptions: safeParseMaybeJson(skill.custom_options ?? skill.customOptions),
@@ -182,7 +307,7 @@ export function buildSkillPackage(skill: any, owner: { id: any; username?: strin
     type: "skill",
     author: owner.username || "XiaoLuo User",
     category: skill.category || "text",
-    icon: skill.icon || "⚡",
+    icon: skill.icon || "SKILL",
     permissions: ["call_model"],
     sandbox: "none",
     runtime: { kind: "prompt", entry: "skill.ts" },
@@ -211,6 +336,9 @@ export function buildAgentPackage(agent: any, owner: { id: any; username?: strin
   const sourceId = agent.id || `agent-${Date.now()}`;
   const manifestId = `user-agent-${sanitizePackageSegment(sourceId, "agent")}`;
   const now = Date.now();
+  const metadataSource = agent.metadata?.source === "system-agent-override"
+    ? "system-agent-override"
+    : "user_agent";
   const agentDef = {
     id: sourceId,
     name: agent.name || sourceId,
@@ -230,7 +358,7 @@ export function buildAgentPackage(agent: any, owner: { id: any; username?: strin
     updatedAt: agent.updatedAt || now,
     metadata: {
       ...(agent.metadata || {}),
-      source: "user_agent",
+      source: metadataSource,
       sourceRecordId: sourceId,
       ownerId: String(owner.id),
     },
@@ -252,7 +380,7 @@ export function buildAgentPackage(agent: any, owner: { id: any; username?: strin
       agents: [agentDef as any],
     },
     metadata: {
-      source: "user_agent",
+      source: metadataSource,
       sourceRecordId: sourceId,
     },
   };
@@ -420,7 +548,7 @@ export function syncModelPackagesFromConfig(config: any, owner: { id: any; usern
       type: "model",
       author: owner.username || "XiaoLuo User",
       category: kinds[0] || "text",
-      icon: "⚙️",
+      icon: "MODEL",
       permissions: ["call_model", "use_network"],
       sandbox: "server",
       runtime: { kind: "http", entry: "model.ts", baseUrl: connection.endpoint || "user-configured" },
@@ -450,6 +578,7 @@ export function syncModelPackagesFromConfig(config: any, owner: { id: any; usern
 export function buildWorkflowPackage(workflow: any, owner: { id: any; username?: string }) {
   const sourceId = workflow.id || `workflow-${Date.now()}`;
   const manifestId = `user-workflow-${sanitizePackageSegment(sourceId, "workflow")}`;
+  const createdAt = workflow.createdAt || workflow.timestamp || Date.now();
   const preset = {
     id: sourceId,
     name: workflow.name || "Untitled workflow",
@@ -462,6 +591,7 @@ export function buildWorkflowPackage(workflow: any, owner: { id: any; username?:
       source: workflow.source || "user_workflow",
       ownerId: String(owner.id),
       sourceRecordId: sourceId,
+      createdAt,
     },
   };
 
@@ -483,6 +613,7 @@ export function buildWorkflowPackage(workflow: any, owner: { id: any; username?:
     metadata: {
       source: preset.metadata.source,
       sourceRecordId: sourceId,
+      createdAt,
     },
   } as any;
 
@@ -513,6 +644,7 @@ export function buildPluginPackageFromCode(input: {
   const sourceId = input.id || `plugin-${Date.now()}`;
   const manifestId = `user-plugin-${sanitizePackageSegment(sourceId, "plugin")}`;
   const skillId = `${manifestId}-skill`;
+  const createdAt = Date.now();
   const manifest: ExtensionManifest = {
     id: manifestId,
     name: input.name || sourceId,
@@ -536,12 +668,15 @@ export function buildPluginPackageFromCode(input: {
         metadata: {
           source: "user_plugin_code",
           packageId: manifestId,
+          sourceRecordId: sourceId,
         },
       } as any],
     },
     metadata: {
       source: "user_plugin_code",
       sourceRecordId: sourceId,
+      entry: "index.tsx",
+      createdAt,
     },
   };
 
@@ -553,3 +688,4 @@ export function buildPluginPackageFromCode(input: {
     },
   ]);
 }
+

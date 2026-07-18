@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { motion, AnimatePresence } from "motion/react";
-import { 
+import {
   Sparkles, 
   Send, 
   X, 
@@ -19,6 +19,7 @@ import {
   Paperclip
 } from "lucide-react";
 import * as Icons from "lucide-react";
+import { getModelOptions } from "../lib/modelOptions";
 
 const SkillIcon = ({ icon, className = "w-3.5 h-3.5" }: { icon: any; className?: string }) => {
   if (!icon) return <Sparkles className={className} />;
@@ -63,7 +64,7 @@ interface InlineScriptConsoleProps {
     customAuthor: string;
     length: { id: string; label: string };
     duration: { id: string; label: string };
-    activeSubTab: "create" | "analyze" | "rewrite" | "video" | "director";
+    activeSubTab: "none" | "create" | "analyze" | "rewrite" | "video" | "director";
     [key: string]: any;
   };
   setScriptConfig: React.Dispatch<React.SetStateAction<any>>;
@@ -79,6 +80,8 @@ interface InlineScriptConsoleProps {
   workflowSkills: any[];
   removedSystemSkillIds: string[];
   config: any;
+  promptLabelOverride?: string;
+  promptPlaceholderOverride?: string;
 }
 
 export const InlineScriptConsole: React.FC<InlineScriptConsoleProps> = ({
@@ -97,6 +100,8 @@ export const InlineScriptConsole: React.FC<InlineScriptConsoleProps> = ({
   workflowSkills,
   removedSystemSkillIds,
   config,
+  promptLabelOverride,
+  promptPlaceholderOverride,
 }) => {
   const [promptText, setPromptText] = useState("");
   const [showCreationTypeMenu, setShowCreationTypeMenu] = useState(false);
@@ -158,7 +163,21 @@ export const InlineScriptConsole: React.FC<InlineScriptConsoleProps> = ({
        });
     }
     
-    return skills;
+    return [
+      {
+        id: "none",
+        originalId: "none",
+        name: "无",
+        icon: X,
+        isDirector: false,
+        customOptions: null,
+        enableUpload: false,
+        uploadType: undefined,
+        promptLabel: undefined,
+        promptPlaceholder: undefined,
+      },
+      ...skills,
+    ];
   }, [workflowSkills, removedSystemSkillIds]);
 
   const activeId = scriptConfig.activeSubTab === "director" ? directorConfig?.generationMode : scriptConfig.activeSubTab;
@@ -270,24 +289,16 @@ export const InlineScriptConsole: React.FC<InlineScriptConsoleProps> = ({
       onClick={(e) => e.stopPropagation()}
       onMouseDown={(e) => e.stopPropagation()}
     >
-      {/* Header Row: Agent Badge & Close button */}
-      <div className="flex items-center justify-between w-full">
-        <div className="flex items-center gap-1.5 bg-amber-50/80 dark:bg-amber-950/40 border border-amber-200/50 dark:border-amber-900/50 text-amber-600 dark:text-amber-400 font-bold text-[10px] px-2.5 py-1 rounded-full shadow-sm">
-          <span className="animate-pulse flex items-center justify-center">
-            <SkillIcon icon={currentWs?.icon} className="w-3 h-3 text-amber-500 shrink-0" />
-          </span>
-          <span>小逻: {currentWs ? currentWs.name : "灵境创生"}</span>
-        </div>
-
-        {onClose && (
+      {onClose && (
+        <div className="flex items-center justify-end w-full">
           <button 
             onClick={onClose}
             className="w-7 h-7 flex items-center justify-center rounded-full hover:bg-zinc-100 dark:hover:bg-zinc-800 text-zinc-400 hover:text-zinc-600 transition-colors"
           >
             <X className="w-4 h-4" />
           </button>
-        )}
-      </div>
+        </div>
+      )}
 
       {/* Upload Area for Custom Skills with Upload Enabled */}
       {currentWs && currentWs.enableUpload && (
@@ -368,7 +379,7 @@ export const InlineScriptConsole: React.FC<InlineScriptConsoleProps> = ({
       {/* Prompt Area */}
       <div className="flex flex-col gap-1.5 w-full">
         <span className="text-zinc-400 dark:text-zinc-500 font-bold text-[11px] uppercase tracking-wider">
-          {currentWs?.promptLabel || "剧本大纲与主题"}
+          {promptLabelOverride || currentWs?.promptLabel || "剧本大纲与主题"}
         </span>
 
         <div className="relative w-full">
@@ -382,7 +393,7 @@ export const InlineScriptConsole: React.FC<InlineScriptConsoleProps> = ({
               }
             }}
             placeholder={
-              currentWs?.promptPlaceholder || (
+              promptPlaceholderOverride || currentWs?.promptPlaceholder || (
                 scriptConfig.creationType === "continue"
                   ? "请粘贴您已有的剧本内容，并写下续写剧本的要求或剧情反转..."
                   : "请输入剧本主题或故事大纲..."
@@ -866,6 +877,9 @@ export const InlineScriptConsole: React.FC<InlineScriptConsoleProps> = ({
               <Cpu className="w-3.5 h-3.5 text-zinc-400 mr-1.5" />
               <span className="text-[11px] text-zinc-400 font-medium">
                 模型: {(() => {
+                  const activeTextModel = getModelOptions(config, customModels, "text").find((model) => model.value === localTextModel || model.apiConfig?.model === localTextModel);
+                  if (activeTextModel) return activeTextModel.label;
+
                   if (config?.customInterfaces?.[localTextModel]) {
                     return config.customInterfaces[localTextModel].displayName || config.customInterfaces[localTextModel].title || localTextModel;
                   }
@@ -902,54 +916,21 @@ export const InlineScriptConsole: React.FC<InlineScriptConsoleProps> = ({
                     className="absolute bottom-full mb-2 right-0 z-[160] w-48 bg-white dark:bg-zinc-950 rounded-2xl shadow-2xl border border-gray-100 dark:border-zinc-850 p-1 flex flex-col gap-1 max-h-60 overflow-y-auto custom-scrollbar"
                   >
                     {(() => {
-                      const baseTextModels = [
-                        {
-                          id: config?.script?.model || "gemini-3.5-flash",
-                          name: config?.script?.displayName || (config?.script?.model && config.script.model !== "gemini-3.5-flash" ? config.script.model : "Gemini 3.5 Flash (推荐)"),
-                          icon: Cpu,
-                        },
-                        {
-                          id: config?.claudeSonnet?.model || "claude-sonnet-5",
-                          name: config?.claudeSonnet?.displayName || (config?.claudeSonnet?.model && config.claudeSonnet.model !== "claude-sonnet-5" ? config.claudeSonnet.model : "Claude-sonnet-5"),
-                          icon: Cpu,
-                        }
-                      ];
-                      
-                      if (config?.customInterfaces) {
-                        Object.entries(config.customInterfaces).forEach(([key, sec]) => {
-                          const section = sec as any;
-                          if (section && section.model && section.modelType === 'text') {
-                            baseTextModels.push({
-                              id: key,
-                              name: section.displayName || section.title || section.model,
-                              icon: Cpu,
-                            });
-                          }
-                        });
-                      }
-
-                      const customTextModels = customModels
-                        .filter((m: any) => m.type === "text" || m.type === "all" || !m.type)
-                        .map((m: any, idx: number) => ({
-                          id: m.model || m.id || m.name || `custom-text-${idx}`,
-                          name: m.name || m.model || "Unnamed Model",
-                          icon: Cpu,
-                        }));
-                      return [...baseTextModels, ...customTextModels].map((m) => (
+                      return getModelOptions(config, customModels, "text").map((m) => (
                         <button
-                          key={m.id}
+                          key={m.value}
                           onClick={() => {
-                            setLocalTextModel(m.id);
+                            setLocalTextModel(m.value);
                             setShowModelMenu(false);
                           }}
                           className={`w-full px-3 py-2 rounded-lg text-[10px] font-bold text-left transition-colors flex items-center space-x-2 ${
-                            localTextModel === m.id
+                            localTextModel === m.value
                               ? "bg-indigo-50 dark:bg-indigo-900/30 text-indigo-600 dark:text-indigo-400"
                               : "hover:bg-gray-50 dark:hover:bg-zinc-900 text-gray-500 dark:text-zinc-400"
                           }`}
                         >
-                          <m.icon className="w-3 h-3 animate-none shrink-0" />
-                          <span className="truncate">{m.name}</span>
+                          <Cpu className="w-3 h-3 animate-none shrink-0" />
+                          <span className="truncate">{m.label}</span>
                         </button>
                       ));
                     })()}

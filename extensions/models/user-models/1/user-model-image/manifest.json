@@ -1,0 +1,106 @@
+{
+  "id": "user-model-image",
+  "name": "nano banana2",
+  "version": "1.0.0",
+  "description": "nano banana2 user model interface package.",
+  "type": "model",
+  "author": "zhurui",
+  "category": "image",
+  "icon": "MODEL",
+  "permissions": [
+    "call_model",
+    "use_network"
+  ],
+  "sandbox": "server",
+  "runtime": {
+    "kind": "http",
+    "entry": "model.ts",
+    "baseUrl": "https://api.vectorengine.ai/v1beta/models/gemini-3.1-flash-image:generateContent"
+  },
+  "contributes": {
+    "models": [
+      {
+        "id": "image",
+        "name": "nano banana2",
+        "provider": "Third Party",
+        "protocol": "google",
+        "capabilityKinds": [
+          "image"
+        ],
+        "modelType": "image",
+        "endpoint": "https://api.vectorengine.ai/v1beta/models/gemini-3.1-flash-image:generateContent",
+        "model": "gemini-3.1-flash-image",
+        "apiKeyRef": "user:1:api_config:image",
+        "defaultGenerationSettings": {
+          "image": {
+            "aspectRatio": "1:1",
+            "imageSize": "1K"
+          }
+        },
+        "config": {
+          "path": "",
+          "defaultGenerationSettings": {
+            "image": {
+              "aspectRatio": "1:1",
+              "imageSize": "1K"
+            }
+          }
+        },
+        "metadata": {
+          "userConnection": {
+            "id": "image",
+            "name": "nano banana2",
+            "displayName": "nano banana2",
+            "provider": "Third Party",
+            "protocol": "google",
+            "endpoint": "https://api.vectorengine.ai/v1beta/models/gemini-3.1-flash-image:generateContent",
+            "path": "",
+            "model": "gemini-3.1-flash-image",
+            "apiKeyRef": "user:1:api_config:image",
+            "capabilityKinds": [
+              "image"
+            ],
+            "modelType": "image",
+            "enabled": true,
+            "isCustom": false,
+            "defaultGenerationSettings": {
+              "image": {
+                "aspectRatio": "1:1",
+                "imageSize": "1K"
+              }
+            },
+            "metadata": {
+              "secretStoredIn": "user_preferences.api_config",
+              "sourceConfigKey": "image",
+              "defaultGenerationSettings": {
+                "image": {
+                  "aspectRatio": "1:1",
+                  "imageSize": "1K"
+                }
+              }
+            }
+          },
+          "source": "user_model_connection",
+          "sourceConfigKey": "image",
+          "secretStoredIn": "user_preferences.api_config",
+          "defaultGenerationSettings": {
+            "image": {
+              "aspectRatio": "1:1",
+              "imageSize": "1K"
+            }
+          }
+        }
+      }
+    ]
+  },
+  "metadata": {
+    "source": "user_model_connection",
+    "sourceConfigKey": "image",
+    "apiKeyStoredSeparately": true,
+    "ownerId": "1",
+    "packageKind": "model",
+    "packagePath": "extensions/models/user-models/1/user-model-image",
+    "physicalPackage": true,
+    "updatedAt": 1784352437389
+  }
+}

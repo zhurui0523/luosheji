@@ -1,0 +1,59 @@
+{
+  "id": "user-skill-videodissect",
+  "name": "影音拉片",
+  "version": "1.0.0",
+  "description": "深入拉片并拆解影音内容，精准提取每一个镜头、音轨及景别视听信息。用户上传视频或输入视频描述后，分析视频并按精确的时间轴格式进行镜头级拆解。",
+  "type": "skill",
+  "author": "官方默认",
+  "category": "text",
+  "icon": "🎥",
+  "permissions": [
+    "call_model"
+  ],
+  "sandbox": "none",
+  "runtime": {
+    "kind": "prompt",
+    "entry": "skill.ts"
+  },
+  "contributes": {
+    "skills": [
+      {
+        "id": "videoDissect",
+        "name": "影音拉片",
+        "description": "深入拉片并拆解影音内容，精准提取每一个镜头、音轨及景别视听信息。用户上传视频或输入视频描述后，分析视频并按精确的时间轴格式进行镜头级拆解。",
+        "icon": "🎥",
+        "category": "text",
+        "instruction": "你是一位顶级影音拉片与分镜拆解专家。当用户上传视频或提供视频描述时，你的核心任务是深度分析该视频内容，精确提取每一个镜头、音轨、景别、运镜和角色台词。\n\n你必须严格按照以下格式输出分析结果（不要有多余的解释，直接输出符合该格式的内容）：\n\n场景：[场景名称]=@场景[序号]\n[开始时间]–[结束时间]s（[景别]、[距离]、[角度]、[拍摄方式/运动]）：[画面细节描述，包括角色、动作、服饰、光影、环境细节]。[台词（如有）]。[音效/特效（如有，格式为 SFX: xxx）]\n\n【重要输出格式范例】：\n场景：商船甲板=@场景1\n0–3s（大远景、远距离、正前方平视、手持拍摄）：夜幕如墨，巨浪翻卷，一艘悬挂着红色纸灯笼的木质商船在漆黑海面中孤独摇曳。\n3–7s（中景、中距离、侧前方平视、慢速前推）：商人身穿精致的青色丝绸长衫，发髻有些散乱，商人的身体因风浪晃动而重心前倾，商人疑惑地扭头望向身后高耸的桅杆。商人：“这桅杆上怎么会挂着这么大的灯笼……”\n7–11s（特写、近距离、正前方平视、手持拍摄）：高悬在桅杆上的巨大灯笼突然以诡异的弧度转动了一下，月光破开乌云，透露出一双泛着冰冷金黄光泽的巨兽瞳孔。\n11–15s（全景、远距离、仰视、变焦）：长着巨大长角的鲸妖猛地破水而出，张开布满利齿的深渊巨口，带着排山倒海的气势将商船一口吞入腹中。商人：“啊！！！！！” SFX: 惊天巨浪与商船爆裂声",
+        "customOptions": [
+          {
+            "id": "dissectFormat",
+            "name": "拆解格式",
+            "choices": [
+              "时间轴精细拆解",
+              "镜头列表",
+              "视听拉片报告"
+            ]
+          }
+        ],
+        "enableUpload": true,
+        "uploadType": "video",
+        "isSystem": true,
+        "isPublic": true,
+        "metadata": {
+          "source": "user_skill",
+          "sourceRecordId": "videoDissect",
+          "ownerId": "null"
+        }
+      }
+    ]
+  },
+  "metadata": {
+    "source": "user_skill",
+    "sourceRecordId": "videoDissect",
+    "ownerId": "anonymous",
+    "packageKind": "skill",
+    "packagePath": "extensions/skills/user-skills/anonymous/videodissect",
+    "physicalPackage": true,
+    "updatedAt": 1784182756434
+  }
+}

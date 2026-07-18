@@ -1,4 +1,4 @@
-﻿
+
 import express from "express";
 import fs from "fs";
 import path from "path";
@@ -32,7 +32,8 @@ import { GoogleGenAI, Type } from "@google/genai";
 import { volcFetch } from "./lib/volcengine.ts";
 import { imageAgent } from "./components/agents/imageAgent.ts";
 import { videoAgent } from "./components/agents/videoAgent.ts";
-import db, { initDb, getLastError, testDatabaseConnection, repairDatabaseSchema } from "./services/database.ts";
+import { directorAgent } from "./components/agents/directorAgent.ts";
+import db, { initDb, getLastError, testDatabaseConnection, repairDatabaseSchema, requiresCloudStorage, allowsLocalDatabaseFallback } from "./services/database.ts";
 import { testOSSConnection, updateOSSConfig, getOSSClient, uploadToOSS } from "./services/oss.ts";
 import { persistFromBase64, persistFromUrl } from "./services/storage.ts";
 import {
@@ -40,10 +41,14 @@ import {
   buildAgentPackage,
   buildSkillPackage,
   buildWorkflowPackage,
+  deleteUserAgentPackage,
   deleteUserExtensionPackage,
+  agentFromPackageManifest,
+  listUserAgentPackages,
   listUserExtensionPackages,
   syncAgentPackagesFromList,
   syncModelPackagesFromConfig,
+  validateAgentPackageRecords,
   writeExtensionPackage,
   sanitizePackageSegment,
   type ExtensionPackageKind
@@ -56,6 +61,16 @@ const __dirname_path = typeof __dirname !== 'undefined' ? __dirname : process.cw
 
 import sharp from "sharp";
 import { SYSTEM_SKILLS } from "./skills/definitions/index.ts";
+
+const BUILT_IN_PLUGIN_IDS = new Set([
+  "perspective-sim",
+  "point-and-shoot",
+  "camera-control",
+  "panorama",
+  "ai-creative-director",
+]);
+const USER_SKILL_PACKAGE_INDEX_KEY = "user_skill_package_index";
+const REMOVED_SYSTEM_SKILLS_PREF_KEY = "removed_system_skills";
 
 // Global dispatcher configuration remains same
 const globalAgent = new Agent({
@@ -170,6 +185,7 @@ const API_CONFIG_SLOT_TYPES: Record<string, 'text' | 'image' | 'video'> = {
   videoVeoFast: 'video',
   videoSeedance: 'video',
   videoSeedanceMini: 'video',
+  videoOmni: 'video',
 };
 
 const cloneJson = <T,>(value: T): T => JSON.parse(JSON.stringify(value ?? {}));
@@ -196,6 +212,14 @@ function defaultGenerationSettingsFor(modelType: 'text' | 'image' | 'video', exi
   return undefined;
 }
 
+function normalizeCapabilityKinds(modelType: 'text' | 'image' | 'video', rawKinds?: any) {
+  const allowed = new Set(['text', 'image', 'video']);
+  const kinds = Array.isArray(rawKinds)
+    ? rawKinds.filter((kind: any) => typeof kind === 'string' && allowed.has(kind))
+    : [];
+  return kinds.length > 0 ? kinds : [modelType];
+}
+
 function inferApiModelType(key: string, section: any): 'text' | 'image' | 'video' {
   if (section?.modelType === 'text' || section?.modelType === 'image' || section?.modelType === 'video') {
     return section.modelType;
@@ -218,10 +242,29 @@ function normalizeApiConfigShape(rawConfig: any) {
       ...(defaults as any)[key],
       ...userSection,
       modelType,
-      capabilityKinds: Array.isArray(userSection.capabilityKinds) && userSection.capabilityKinds.length > 0
-        ? userSection.capabilityKinds
-        : [modelType],
+      capabilityKinds: normalizeCapabilityKinds(modelType, userSection.capabilityKinds),
       defaultGenerationSettings: defaultGenerationSettingsFor(modelType, userSection.defaultGenerationSettings),
+    };
+    if (modelType === 'text') {
+      delete config[key].defaultGenerationSettings;
+    }
+  }
+
+  const reservedKeys = new Set([...Object.keys(defaults), 'customInterfaces']);
+  for (const [key, section] of Object.entries(config)) {
+    if (reservedKeys.has(key) || !section || typeof section !== 'object' || Array.isArray(section)) continue;
+    const existingSection = section as any;
+    const hasApiShape = existingSection.model || existingSection.endpoint || existingSection.path || existingSection.provider;
+    if (!hasApiShape) continue;
+
+    const modelType = inferApiModelType(key, existingSection);
+    config[key] = {
+      ...existingSection,
+      modelType,
+      capabilityKinds: normalizeCapabilityKinds(modelType, existingSection.capabilityKinds),
+      enabled: existingSection.enabled !== false,
+      title: existingSection.title || existingSection.displayName || existingSection.model || key,
+      defaultGenerationSettings: defaultGenerationSettingsFor(modelType, existingSection.defaultGenerationSettings),
     };
     if (modelType === 'text') {
       delete config[key].defaultGenerationSettings;
@@ -238,9 +281,7 @@ function normalizeApiConfigShape(rawConfig: any) {
     normalizedCustom[key] = {
       ...(section as any),
       modelType,
-      capabilityKinds: Array.isArray((section as any).capabilityKinds) && (section as any).capabilityKinds.length > 0
-        ? (section as any).capabilityKinds
-        : [modelType],
+      capabilityKinds: normalizeCapabilityKinds(modelType, (section as any).capabilityKinds),
       enabled: (section as any).enabled !== false,
       isCustom: (section as any).isCustom !== false,
       title: (section as any).title || (section as any).displayName || key,
@@ -253,6 +294,30 @@ function normalizeApiConfigShape(rawConfig: any) {
   config.customInterfaces = normalizedCustom;
 
   return config;
+}
+
+async function normalizeAndPersistUserApiConfig(userId: number, username?: string) {
+  const val = await readUserPreferenceValue(userId, 'api_config');
+  if (!val) return null;
+
+  const parsed = typeof val === 'string' ? JSON.parse(val) : val;
+  const normalized = normalizeApiConfigShape(parsed);
+  const changed = JSON.stringify(parsed) !== JSON.stringify(normalized);
+  if (changed) {
+    await writeUserPreferenceValue(userId, 'api_config', JSON.stringify(normalized));
+  }
+
+  try {
+    const existingPackages = await listExtensionPackagesFromCloud("model", userId);
+    if (changed || existingPackages.length === 0) {
+      const packages = syncModelPackagesFromConfig(normalized, { id: userId, username });
+      await replaceCloudExtensionPackages("model", userId, packages);
+    }
+  } catch (packageErr: any) {
+    console.error("Failed to sync normalized user model packages:", packageErr);
+  }
+
+  return normalized;
 }
 
 const USER_DATA_DIR = path.join(process.cwd(), "data");
@@ -312,10 +377,14 @@ function listFilePreferences(userId: any) {
   }));
 }
 
-async function readUserPreferenceValue(userId: any, prefKey: string) {
-  const filePref = getFilePreference(userId, prefKey);
-  if (filePref) return filePref.pref_value;
+function allowsFilePreferenceFallback() {
+  const explicit = process.env.ALLOW_FILE_PREFERENCE_FALLBACK || process.env.XIAOLUO_ALLOW_FILE_PREFERENCE_FALLBACK;
+  if (['1', 'true', 'yes', 'on'].includes(String(explicit || '').toLowerCase())) return true;
+  if (['0', 'false', 'no', 'off'].includes(String(explicit || '').toLowerCase())) return false;
+  return !requiresCloudStorage();
+}
 
+async function readUserPreferenceValue(userId: any, prefKey: string) {
   try {
     const [prefRows]: any = await db.query(
       "SELECT pref_value FROM user_preferences WHERE user_id = ? AND pref_key = ?",
@@ -323,32 +392,41 @@ async function readUserPreferenceValue(userId: any, prefKey: string) {
     );
     if (prefRows.length > 0) return prefRows[0].pref_value;
   } catch (error) {
+    if (!allowsFilePreferenceFallback()) throw error;
     console.warn("Database preference read failed, using file fallback:", error);
+  }
+
+  if (allowsFilePreferenceFallback()) {
+    const filePref = getFilePreference(userId, prefKey);
+    if (filePref) return filePref.pref_value;
   }
 
   return null;
 }
 
 async function listUserPreferences(userId: any) {
-  const fileRows = listFilePreferences(userId);
   try {
     const [dbRows]: any = await db.query(
       "SELECT pref_key, pref_value, updated_at FROM user_preferences WHERE user_id = ?",
       [userId]
     );
+    if (!allowsFilePreferenceFallback()) return dbRows;
+
+    const fileRows = listFilePreferences(userId);
     const merged = new Map<string, any>();
     for (const row of dbRows) merged.set(row.pref_key, row);
-    for (const row of fileRows) merged.set(row.pref_key, row);
+    for (const row of fileRows) {
+      if (!merged.has(row.pref_key)) merged.set(row.pref_key, row);
+    }
     return Array.from(merged.values());
   } catch (error) {
+    if (!allowsFilePreferenceFallback()) throw error;
     console.warn("Database preference list failed, using file fallback:", error);
-    return fileRows;
+    return listFilePreferences(userId);
   }
 }
 
 async function writeUserPreferenceValue(userId: any, prefKey: string, prefValue: any) {
-  setFilePreference(userId, prefKey, prefValue);
-
   try {
     await db.query("DELETE FROM user_preferences WHERE user_id = ? AND pref_key = ?", [userId, prefKey]);
     await db.query("INSERT INTO user_preferences (user_id, pref_key, pref_value) VALUES (?, ?, ?)", [
@@ -357,7 +435,14 @@ async function writeUserPreferenceValue(userId: any, prefKey: string, prefValue:
       prefValue,
     ]);
   } catch (error) {
+    if (!allowsFilePreferenceFallback()) throw error;
+    setFilePreference(userId, prefKey, prefValue);
     console.warn("Database preference write failed; file-backed preference was saved:", error);
+    return;
+  }
+
+  if (allowsFilePreferenceFallback()) {
+    setFilePreference(userId, prefKey, prefValue);
   }
 }
 
@@ -391,6 +476,837 @@ const safeParseJson = (val: any, defaultVal: any = null) => {
     return defaultVal;
   }
 };
+
+type GenerationJobKind = "image" | "video" | "text";
+type GenerationJobStatus = "running" | "success" | "error";
+
+const activeGenerationJobs = new Map<string, Promise<void>>();
+
+function isNonCloudMediaUrl(url: any) {
+  if (!url || typeof url !== "string") return false;
+  if (url.startsWith("data:") || url.startsWith("blob:")) return true;
+  if (url.startsWith("http://") || url.startsWith("https://")) {
+    return !url.includes(".aliyuncs.com") && !url.includes("oss-");
+  }
+  return false;
+}
+
+function inferMediaExtension(data: string, fallback: string) {
+  const match = String(data || "").match(/data:([a-zA-Z0-9]+\/[a-zA-Z0-9-.+]+);base64,/);
+  if (!match?.[1]) return fallback;
+  const mime = match[1];
+  if (mime.startsWith("audio/")) return mime.split("/")[1] || "mp3";
+  if (mime.startsWith("video/")) return mime.split("/")[1] || "mp4";
+  if (mime.startsWith("image/")) return mime.split("/")[1] || "png";
+  return fallback;
+}
+
+async function persistHistoryMediaValue(userId: any, historyId: string, value: any, filename: string) {
+  if (!isNonCloudMediaUrl(value)) return value;
+  try {
+    if (String(value).startsWith("data:")) {
+      return await persistFromBase64(value, filename);
+    }
+    return await persistFromUrl(value, filename);
+  } catch (err) {
+    if (requiresCloudStorage()) {
+      throw err;
+    }
+    console.error(`[History] Failed to persist media for ${userId}/${historyId}; falling back to original value:`, err);
+    return value;
+  }
+}
+
+async function persistHistoryConfigMedia(userId: any, historyId: string, obj: any, prefix: string): Promise<any> {
+  if (!obj || typeof obj !== "object") return obj;
+  if (Array.isArray(obj)) {
+    return Promise.all(obj.map((value, index) => persistHistoryConfigMedia(userId, historyId, value, `${prefix}_${index}`)));
+  }
+
+  const next: any = { ...obj };
+  for (const [key, value] of Object.entries(next)) {
+    if (typeof value === "string" && isNonCloudMediaUrl(value)) {
+      const ext = inferMediaExtension(value, "png");
+      next[key] = await persistHistoryMediaValue(
+        userId,
+        historyId,
+        value,
+        `luosheji/history/${userId}/${historyId}_${prefix}_${key}.${ext}`,
+      );
+    } else if (value && typeof value === "object") {
+      next[key] = await persistHistoryConfigMedia(userId, historyId, value, `${prefix}_${key}`);
+    }
+  }
+  return next;
+}
+
+async function saveHistoryItemForUser(userId: any, item: any) {
+  if (!item?.id) {
+    throw new Error("Missing history item id");
+  }
+
+  let finalImageUrl = item.imageUrl;
+  let finalVideoUrl = item.videoUrl;
+
+  if (finalImageUrl && isNonCloudMediaUrl(finalImageUrl)) {
+    const ext = inferMediaExtension(finalImageUrl, "png");
+    finalImageUrl = await persistHistoryMediaValue(
+      userId,
+      item.id,
+      finalImageUrl,
+      `luosheji/history/${userId}/${item.id}_image.${ext}`,
+    );
+  }
+
+  if (finalVideoUrl && isNonCloudMediaUrl(finalVideoUrl)) {
+    const ext = item.type === "audio" ? "mp3" : inferMediaExtension(finalVideoUrl, "mp4");
+    finalVideoUrl = await persistHistoryMediaValue(
+      userId,
+      item.id,
+      finalVideoUrl,
+      `luosheji/history/${userId}/${item.id}_video.${ext}`,
+    );
+  }
+
+  const finalConfig = item.config
+    ? await persistHistoryConfigMedia(userId, item.id, item.config, "config")
+    : item.config;
+
+  await db.query(
+    `INSERT INTO history (id, user_id, type, status, image_url, video_url, ark_original_url, revised_prompt, is_optimized, error, config, timestamp, position, hidden_from_canvas, parent_id, canvas_id, operation_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON DUPLICATE KEY UPDATE
+     status = VALUES(status),
+     image_url = VALUES(image_url),
+     video_url = VALUES(video_url),
+     ark_original_url = VALUES(ark_original_url),
+     revised_prompt = VALUES(revised_prompt),
+     is_optimized = VALUES(is_optimized),
+     error = VALUES(error),
+     config = VALUES(config),
+     position = VALUES(position),
+     hidden_from_canvas = VALUES(hidden_from_canvas),
+     parent_id = VALUES(parent_id),
+     canvas_id = VALUES(canvas_id),
+     operation_id = VALUES(operation_id)`,
+    [
+      item.id,
+      userId,
+      item.type !== undefined ? item.type : null,
+      item.status !== undefined ? item.status : null,
+      finalImageUrl !== undefined ? finalImageUrl : null,
+      finalVideoUrl !== undefined ? finalVideoUrl : null,
+      item.arkOriginalUrl !== undefined ? item.arkOriginalUrl : null,
+      item.revisedPrompt !== undefined ? item.revisedPrompt : null,
+      item.isOptimized ? 1 : 0,
+      item.error !== undefined ? item.error : null,
+      finalConfig !== undefined && finalConfig !== null ? JSON.stringify(finalConfig) : null,
+      item.timestamp !== undefined ? item.timestamp : Date.now(),
+      item.position !== undefined && item.position !== null ? JSON.stringify(item.position) : null,
+      item.hiddenFromCanvas ? 1 : 0,
+      item.parentId !== undefined ? item.parentId : null,
+      item.canvasId !== undefined ? item.canvasId : "default",
+      item.operationId !== undefined ? item.operationId : null,
+    ],
+  );
+
+  return {
+    ...item,
+    imageUrl: finalImageUrl,
+    videoUrl: finalVideoUrl,
+    ossUrl: finalImageUrl || finalVideoUrl || item.ossUrl,
+    config: finalConfig,
+    canvasId: item.canvasId || "default",
+    operationId: item.operationId,
+  };
+}
+
+function serializeHistoryRow(row: any) {
+  if (!row) return null;
+  const config = safeParseJson(row.config, {});
+  return {
+    ...row,
+    config,
+    position: safeParseJson(row.position, null),
+    isOptimized: Boolean(row.is_optimized),
+    hiddenFromCanvas: Boolean(row.hidden_from_canvas),
+    canvasId: row.canvas_id || "default",
+    imageUrl: row.image_url,
+    videoUrl: row.video_url,
+    arkOriginalUrl: row.ark_original_url,
+    revisedPrompt: row.revised_prompt,
+    parentId: row.parent_id || undefined,
+    operationId: row.operation_id || config?.operationId || undefined,
+  };
+}
+
+function serializeGenerationJobRow(row: any) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    userId: row.user_id,
+    historyId: row.history_id,
+    kind: row.kind,
+    status: row.status,
+    externalTaskId: row.external_task_id || undefined,
+    request: safeParseJson(row.request_payload, null),
+    result: safeParseJson(row.result_payload, null),
+    error: row.error || undefined,
+    createdAtMs: Number(row.created_at_ms || 0),
+    updatedAtMs: Number(row.updated_at_ms || 0),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+async function upsertGenerationJob(input: {
+  id: string;
+  userId: any;
+  historyId: string;
+  kind: GenerationJobKind;
+  status: GenerationJobStatus;
+  externalTaskId?: string | null;
+  request?: any;
+  result?: any;
+  error?: string | null;
+}) {
+  const now = Date.now();
+  const requestPayload = input.request === undefined ? null : JSON.stringify(input.request);
+  const resultPayload = input.result === undefined ? null : JSON.stringify(input.result);
+
+  if (db.getMode() === "sqlite") {
+    const [rows]: any = await db.query("SELECT id FROM generation_jobs WHERE id = ?", [input.id]);
+    if (rows.length > 0) {
+      await db.query(
+        `UPDATE generation_jobs
+         SET user_id = ?, history_id = ?, kind = ?, status = ?, external_task_id = ?, request_payload = COALESCE(?, request_payload),
+             result_payload = ?, error = ?, updated_at_ms = ?, updated_at = CURRENT_TIMESTAMP
+         WHERE id = ?`,
+        [input.userId, input.historyId, input.kind, input.status, input.externalTaskId || null, requestPayload, resultPayload, input.error || null, now, input.id],
+      );
+    } else {
+      await db.query(
+        `INSERT INTO generation_jobs (id, user_id, history_id, kind, status, external_task_id, request_payload, result_payload, error, created_at_ms, updated_at_ms)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [input.id, input.userId, input.historyId, input.kind, input.status, input.externalTaskId || null, requestPayload, resultPayload, input.error || null, now, now],
+      );
+    }
+    return;
+  }
+
+  await db.query(
+    `INSERT INTO generation_jobs (id, user_id, history_id, kind, status, external_task_id, request_payload, result_payload, error, created_at_ms, updated_at_ms)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON DUPLICATE KEY UPDATE
+     user_id = VALUES(user_id),
+     history_id = VALUES(history_id),
+     kind = VALUES(kind),
+     status = VALUES(status),
+     external_task_id = VALUES(external_task_id),
+     request_payload = COALESCE(VALUES(request_payload), request_payload),
+     result_payload = VALUES(result_payload),
+     error = VALUES(error),
+     updated_at_ms = VALUES(updated_at_ms),
+     updated_at = CURRENT_TIMESTAMP`,
+    [input.id, input.userId, input.historyId, input.kind, input.status, input.externalTaskId || null, requestPayload, resultPayload, input.error || null, now, now],
+  );
+}
+
+const VALID_EXTENSION_PACKAGE_KINDS: ExtensionPackageKind[] = [
+  "skill",
+  "plugin",
+  "agent",
+  "model",
+  "adapter",
+  "workflow",
+  "template",
+  "bundle",
+];
+
+function getPackageIdFromPathOrManifest(packagePath: any, manifest: any, fallback = "package") {
+  const sourceRecordId = manifest?.metadata?.sourceRecordId || manifest?.contributes?.skills?.[0]?.metadata?.sourceRecordId;
+  const fromPath = packagePath ? path.basename(String(packagePath).replace(/\\/g, "/")) : "";
+  return sanitizePackageSegment(fromPath || sourceRecordId || manifest?.id || fallback, fallback);
+}
+
+async function uploadExtensionPackageBundleToOSS(input: {
+  ownerId: any;
+  kind: ExtensionPackageKind;
+  packageId: string;
+  packagePath?: string;
+  manifest: any;
+  files?: any[];
+}) {
+  if (!getOSSClient()) {
+    if (requiresCloudStorage()) {
+      throw new Error("OSS is required for cloud package file persistence.");
+    }
+    return { storageBackend: "mysql", storageUri: null };
+  }
+
+  const bundle = {
+    kind: input.kind,
+    packageId: input.packageId,
+    packagePath: input.packagePath,
+    manifest: input.manifest,
+    files: Array.isArray(input.files) ? input.files : [],
+    exportedAt: Date.now(),
+  };
+  const filename = `luosheji/packages/${input.ownerId}/${input.kind}/${input.packageId}/package.json`;
+  const storageUri = await uploadToOSS(Buffer.from(JSON.stringify(bundle, null, 2), "utf8"), filename, "application/json");
+  return { storageBackend: "oss+mysql", storageUri };
+}
+
+async function saveExtensionPackageToCloud(input: {
+  kind: ExtensionPackageKind;
+  ownerId: any;
+  packageId?: any;
+  packagePath?: string;
+  manifest: any;
+  files?: any[];
+}) {
+  const packageId = sanitizePackageSegment(
+    input.packageId || getPackageIdFromPathOrManifest(input.packagePath, input.manifest),
+    "package",
+  );
+  const packagePath =
+    input.packagePath ||
+    `extensions/${input.kind}s/user-${input.kind}s/${sanitizePackageSegment(input.ownerId, "anonymous")}/${packageId}`;
+  const manifest = {
+    ...(input.manifest || {}),
+    metadata: {
+      ...(input.manifest?.metadata || {}),
+      ownerId: String(input.ownerId ?? "anonymous"),
+      packageKind: input.kind,
+      packagePath,
+      cloudPackage: true,
+      updatedAt: Date.now(),
+    },
+  };
+  const files = Array.isArray(input.files) ? input.files : [];
+  const storage = await uploadExtensionPackageBundleToOSS({
+    ownerId: input.ownerId,
+    kind: input.kind,
+    packageId,
+    packagePath,
+    manifest,
+    files,
+  });
+
+  const values = [
+    input.ownerId,
+    input.kind,
+    packageId,
+    manifest.id || packageId,
+    packagePath,
+    JSON.stringify(manifest),
+    JSON.stringify(files),
+    storage.storageBackend,
+    storage.storageUri,
+  ];
+
+  if (db.getMode() === "sqlite") {
+    const [rows]: any = await db.query(
+      "SELECT id FROM user_extension_packages WHERE user_id = ? AND kind = ? AND package_id = ?",
+      [input.ownerId, input.kind, packageId],
+    );
+    if (rows.length > 0) {
+      await db.query(
+        "UPDATE user_extension_packages SET manifest_id = ?, package_path = ?, manifest = ?, files = ?, storage_backend = ?, storage_uri = ?, updated_at = CURRENT_TIMESTAMP WHERE user_id = ? AND kind = ? AND package_id = ?",
+        [manifest.id || packageId, packagePath, JSON.stringify(manifest), JSON.stringify(files), storage.storageBackend, storage.storageUri, input.ownerId, input.kind, packageId],
+      );
+    } else {
+      await db.query(
+        "INSERT INTO user_extension_packages (user_id, kind, package_id, manifest_id, package_path, manifest, files, storage_backend, storage_uri) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        values,
+      );
+    }
+  } else {
+    await db.query(
+      `INSERT INTO user_extension_packages (user_id, kind, package_id, manifest_id, package_path, manifest, files, storage_backend, storage_uri)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON DUPLICATE KEY UPDATE
+       manifest_id = VALUES(manifest_id),
+       package_path = VALUES(package_path),
+       manifest = VALUES(manifest),
+       files = VALUES(files),
+       storage_backend = VALUES(storage_backend),
+       storage_uri = VALUES(storage_uri),
+       updated_at = CURRENT_TIMESTAMP`,
+      values,
+    );
+  }
+
+  return {
+    kind: input.kind,
+    packagePath,
+    manifest,
+    files,
+    storageBackend: storage.storageBackend,
+    storageUri: storage.storageUri,
+  };
+}
+
+async function saveExtensionWriteResultToCloud(kind: ExtensionPackageKind, ownerId: any, result: any) {
+  if (!result?.manifest) return null;
+  return saveExtensionPackageToCloud({
+    kind,
+    ownerId,
+    packageId: getPackageIdFromPathOrManifest(result.packagePath, result.manifest),
+    packagePath: result.packagePath,
+    manifest: result.manifest,
+    files: result.files || [],
+  });
+}
+
+async function listExtensionPackagesFromCloud(kind?: ExtensionPackageKind, ownerId?: any) {
+  const params: any[] = [];
+  let sql = "SELECT user_id, kind, package_id, manifest_id, package_path, manifest, files, storage_backend, storage_uri, created_at, updated_at FROM user_extension_packages";
+  const where: string[] = [];
+  if (ownerId !== undefined && ownerId !== null) {
+    where.push("user_id = ?");
+    params.push(ownerId);
+  }
+  if (kind) {
+    where.push("kind = ?");
+    params.push(kind);
+  }
+  if (where.length > 0) {
+    sql += ` WHERE ${where.join(" AND ")}`;
+  }
+  sql += " ORDER BY updated_at DESC";
+
+  const [rows]: any = await db.query(sql, params);
+  return (rows || []).map((row: any) => ({
+    kind: row.kind,
+    ownerId: row.user_id,
+    packageId: row.package_id,
+    manifestId: row.manifest_id,
+    packagePath: row.package_path,
+    manifest: safeParseJson(row.manifest, {}),
+    files: safeParseJson(row.files, []),
+    storageBackend: row.storage_backend,
+    storageUri: row.storage_uri,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  })).filter((record: any) => record.manifest?.id);
+}
+
+async function listExtensionPackagesCloudFirst(kind?: ExtensionPackageKind, ownerId?: any) {
+  try {
+    const cloudRecords = await listExtensionPackagesFromCloud(kind, ownerId);
+    if (cloudRecords.length > 0 || !allowsLocalDatabaseFallback()) {
+      return cloudRecords;
+    }
+  } catch (error) {
+    if (!allowsLocalDatabaseFallback()) throw error;
+    console.warn("Cloud extension package list failed, using local package cache:", error);
+  }
+  return listUserExtensionPackages(kind, ownerId);
+}
+
+async function deleteExtensionPackageFromCloud(kind: ExtensionPackageKind, ownerId: any, packageIdOrManifestId: any) {
+  const id = String(packageIdOrManifestId || "");
+  const safeId = sanitizePackageSegment(id, "package");
+  const cloudRecords = await listExtensionPackagesFromCloud(kind, ownerId);
+  const matching = cloudRecords.find((record: any) => {
+    const sourceRecordId = String(record.manifest?.metadata?.sourceRecordId || record.manifest?.contributes?.skills?.[0]?.metadata?.sourceRecordId || "");
+    const pathId = getPackageIdFromPathOrManifest(record.packagePath, record.manifest);
+    return (
+      record.packageId === safeId ||
+      record.manifestId === id ||
+      record.manifest?.id === id ||
+      sourceRecordId === id ||
+      pathId === safeId
+    );
+  });
+  const packageId = matching?.packageId || safeId;
+  await db.query(
+    "DELETE FROM user_extension_packages WHERE user_id = ? AND kind = ? AND package_id = ?",
+    [ownerId, kind, packageId],
+  );
+  return { success: true, packageId, packagePath: matching?.packagePath };
+}
+
+async function replaceCloudExtensionPackages(kind: ExtensionPackageKind, ownerId: any, packages: any[]) {
+  await db.query("DELETE FROM user_extension_packages WHERE user_id = ? AND kind = ?", [ownerId, kind]);
+  const saved: any[] = [];
+  for (const pkg of packages || []) {
+    const cloudRecord = await saveExtensionWriteResultToCloud(kind, ownerId, pkg);
+    if (cloudRecord) saved.push(cloudRecord);
+  }
+  return saved;
+}
+
+async function listCloudUserAgents(ownerId: any) {
+  const packages = await listExtensionPackagesCloudFirst("agent", ownerId);
+  return packages
+    .map((record: any) => {
+      const agent = agentFromPackageManifest(record.manifest);
+      return agent
+        ? {
+            ...agent,
+            metadata: {
+              ...(agent.metadata || {}),
+              packagePath: record.packagePath,
+              storageBackend: record.storageBackend,
+              storageUri: record.storageUri,
+            },
+          }
+        : null;
+    })
+    .filter(Boolean) as any[];
+}
+
+async function syncExistingExtensionPackagesFromDatabase() {
+  const summary = {
+    skills: 0,
+    models: 0,
+    sharedWorkflows: 0,
+    pipelineWorkflows: 0,
+  };
+
+  const ownerNames = new Map<string, string>();
+  try {
+    const [users]: any = await db.query("SELECT id, username FROM users");
+    for (const user of users || []) {
+      ownerNames.set(String(user.id), user.username || `user-${user.id}`);
+    }
+  } catch (error) {
+    console.warn("Could not load users for extension package sync:", error);
+  }
+
+  try {
+    const [skills]: any = await db.query(
+      "SELECT id, name, `desc`, icon, instruction, creator_id, creator_name, is_public, is_system, tier, custom_options, category, enable_upload, upload_type FROM ai_skills WHERE creator_id IS NOT NULL AND COALESCE(is_system, 0) = 0"
+    );
+    for (const skill of skills || []) {
+      try {
+        const packageInfo = buildSkillPackage(skill, {
+          id: skill.creator_id,
+          username: skill.creator_name || ownerNames.get(String(skill.creator_id)),
+        });
+        await saveExtensionWriteResultToCloud("skill", skill.creator_id, packageInfo);
+        summary.skills += 1;
+      } catch (packageErr: any) {
+        console.error(`Failed to sync skill package ${skill.id}:`, packageErr);
+      }
+    }
+  } catch (error) {
+    console.warn("Could not sync existing skill packages:", error);
+  }
+
+  try {
+    const userIds = new Set<string>();
+    const prefStore = readPreferenceFile();
+    for (const [userId, prefs] of Object.entries(prefStore)) {
+      if (prefs?.api_config) userIds.add(userId);
+    }
+
+    try {
+      const [prefRows]: any = await db.query(
+        "SELECT DISTINCT user_id FROM user_preferences WHERE pref_key = ?",
+        ["api_config"]
+      );
+      for (const row of prefRows || []) {
+        if (row.user_id !== null && row.user_id !== undefined) {
+          userIds.add(String(row.user_id));
+        }
+      }
+    } catch (dbPrefErr) {
+      console.warn("Could not read api_config preferences from database:", dbPrefErr);
+    }
+
+    for (const userId of userIds) {
+      try {
+        const packagesBefore = (await listExtensionPackagesFromCloud("model", userId)).length;
+        await normalizeAndPersistUserApiConfig(Number(userId), ownerNames.get(userId));
+        const packagesAfter = (await listExtensionPackagesFromCloud("model", userId)).length;
+        summary.models += Math.max(packagesAfter, packagesBefore);
+      } catch (packageErr: any) {
+        console.error(`Failed to sync model packages for user ${userId}:`, packageErr);
+      }
+    }
+  } catch (error) {
+    console.warn("Could not sync existing model packages:", error);
+  }
+
+  try {
+    const [canvases]: any = await db.query(
+      "SELECT id, name, creator_id, creator_name, history FROM shared_canvases WHERE creator_id IS NOT NULL"
+    );
+    for (const canvas of canvases || []) {
+      try {
+        const history = safeParseJson(canvas.history, []);
+        const packageInfo = buildWorkflowPackage(
+          {
+            id: canvas.id,
+            name: canvas.name,
+            history,
+            nodes: history,
+            source: "shared_canvas",
+          },
+          {
+            id: canvas.creator_id,
+            username: canvas.creator_name || ownerNames.get(String(canvas.creator_id)),
+          }
+        );
+        await saveExtensionWriteResultToCloud("workflow", canvas.creator_id, packageInfo);
+        summary.sharedWorkflows += 1;
+      } catch (packageErr: any) {
+        console.error(`Failed to sync shared canvas package ${canvas.id}:`, packageErr);
+      }
+    }
+  } catch (error) {
+    console.warn("Could not sync existing shared canvas packages:", error);
+  }
+
+  try {
+    const [pipelines]: any = await db.query("SELECT * FROM pipelines WHERE user_id IS NOT NULL");
+    for (const pipeline of pipelines || []) {
+      try {
+        const assets = safeParseJson(pipeline.assets, []);
+        const tasks = safeParseJson(pipeline.tasks, []);
+        const segments = safeParseJson(pipeline.segments, []);
+        const packageInfo = buildWorkflowPackage(
+          {
+            id: pipeline.id,
+            name: pipeline.name,
+            timestamp: pipeline.timestamp,
+            originalScript: pipeline.original_script,
+            directorStyle: pipeline.director_style,
+            aspectRatio: pipeline.aspect_ratio,
+            visualStyle: pipeline.visual_style,
+            imageQuality: pipeline.image_quality,
+            narrativeMode: pipeline.narrative_mode,
+            targetSegments: pipeline.target_segments,
+            assets,
+            tasks,
+            segments,
+            globalRule: pipeline.global_rule,
+            history: tasks.length > 0 ? tasks : segments,
+            nodes: tasks,
+            source: "user_pipeline",
+          },
+          {
+            id: pipeline.user_id,
+            username: ownerNames.get(String(pipeline.user_id)),
+          }
+        );
+        await saveExtensionWriteResultToCloud("workflow", pipeline.user_id, packageInfo);
+        summary.pipelineWorkflows += 1;
+      } catch (packageErr: any) {
+        console.error(`Failed to sync pipeline package ${pipeline.id}:`, packageErr);
+      }
+    }
+  } catch (error) {
+    console.warn("Could not sync existing pipeline packages:", error);
+  }
+
+  console.log(">>> [Extensions] Existing package sync completed:", summary);
+  return summary;
+}
+
+function parseJsonArray(value: any): string[] {
+  if (Array.isArray(value)) return value.map(String);
+  if (typeof value !== "string") return [];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed.map(String) : [];
+  } catch {
+    return [];
+  }
+}
+
+async function readSettingsJson(key: string, defaultValue: any = null) {
+  try {
+    const [rows]: any = await db.query("SELECT value FROM settings WHERE `key` = ?", [key]);
+    if (!rows?.length) return defaultValue;
+    return safeParseJson(rows[0].value, defaultValue);
+  } catch (error) {
+    console.warn(`Failed to read settings ${key}:`, error);
+    return defaultValue;
+  }
+}
+
+async function writeSettingsJson(key: string, value: any) {
+  const payload = JSON.stringify(value);
+  const [exists]: any = await db.query("SELECT `key` FROM settings WHERE `key` = ?", [key]);
+  if (exists.length > 0) {
+    await db.query("UPDATE settings SET value = ? WHERE `key` = ?", [payload, key]);
+  } else {
+    await db.query("INSERT INTO settings (`key`, value) VALUES (?, ?)", [key, payload]);
+  }
+}
+
+function getOwnerIdFromSkillPackage(pkg: { packagePath: string; manifest: any }) {
+  const metadataOwnerId = pkg.manifest?.metadata?.ownerId;
+  if (metadataOwnerId !== undefined && metadataOwnerId !== null && String(metadataOwnerId).trim()) {
+    return String(metadataOwnerId).trim();
+  }
+  const parts = pkg.packagePath.replace(/\\/g, "/").split("/");
+  return parts[3] || null;
+}
+
+function normalizeSkillCategory(value: any) {
+  const category = String(value || "text").toLowerCase();
+  return ["text", "image", "video", "all"].includes(category) ? category : "text";
+}
+
+function extractSkillFromPackage(pkg: { packagePath: string; manifest: any }) {
+  const manifest = pkg.manifest || {};
+  const contributedSkills = Array.isArray(manifest.contributes?.skills)
+    ? manifest.contributes.skills
+    : [];
+  const rawSkill = contributedSkills[0] || {};
+  const id = String(rawSkill.id || manifest.metadata?.sourceRecordId || manifest.id || "").trim();
+  const name = String(rawSkill.name || manifest.name || "").trim();
+  const instruction = String(rawSkill.instruction || rawSkill.systemInstruction || "").trim();
+  const desc = String(rawSkill.desc || rawSkill.description || manifest.description || "").trim();
+
+  if (!id || !name || !instruction || BUILT_IN_PLUGIN_IDS.has(id)) {
+    return null;
+  }
+
+  const ownerId = getOwnerIdFromSkillPackage(pkg);
+  const normalizedOwnerId = ownerId && /^\d+$/.test(ownerId) ? Number(ownerId) : ownerId;
+
+  return {
+    id,
+    name,
+    desc,
+    icon: rawSkill.icon || manifest.icon || "⚙️",
+    instruction,
+    creator_id: normalizedOwnerId,
+    creator_name: rawSkill.creatorName || rawSkill.creator_name || manifest.author || "XiaoLuo User",
+    is_public: rawSkill.isPublic === false || rawSkill.is_public === false ? 0 : 1,
+    is_system: 0,
+    tier: rawSkill.tier || manifest.tier || "light",
+    custom_options: rawSkill.customOptions || rawSkill.custom_options || null,
+    category: normalizeSkillCategory(rawSkill.category || manifest.category),
+    enable_upload: rawSkill.enableUpload || rawSkill.enable_upload ? 1 : 0,
+    upload_type: rawSkill.uploadType || rawSkill.upload_type || "all",
+    package_path: pkg.packagePath,
+    manifest_id: manifest.id || id,
+  };
+}
+
+async function syncSkillPackagesFromDisk() {
+  const summary = {
+    scanned: 0,
+    registered: 0,
+    updated: 0,
+    removed: 0,
+    conflicts: [] as string[],
+  };
+
+  const packages = listUserExtensionPackages("skill");
+  const previousIndex = await readSettingsJson(USER_SKILL_PACKAGE_INDEX_KEY, {});
+  const nextIndex: Record<string, any> = {};
+  const seenIds = new Set<string>();
+  const seenNames = new Set<string>();
+
+  for (const pkg of packages) {
+    summary.scanned += 1;
+    const skill = extractSkillFromPackage(pkg);
+    if (!skill) {
+      summary.conflicts.push(`${pkg.packagePath}: manifest 缺少有效 id/name/instruction`);
+      continue;
+    }
+
+    const lowerName = skill.name.toLowerCase();
+    if (seenIds.has(skill.id) || seenNames.has(lowerName)) {
+      summary.conflicts.push(`${pkg.packagePath}: 包内冲突 id/name=${skill.id}/${skill.name}`);
+      continue;
+    }
+    seenIds.add(skill.id);
+    seenNames.add(lowerName);
+
+    const [existingById]: any = await db.query("SELECT * FROM ai_skills WHERE id = ?", [skill.id]);
+    if (existingById.length > 0 && existingById[0].is_system) {
+      summary.conflicts.push(`${pkg.packagePath}: id 与系统 SKILL 冲突 (${skill.id})`);
+      continue;
+    }
+
+    const [duplicateName]: any = await db.query(
+      "SELECT id FROM ai_skills WHERE id <> ? AND LOWER(TRIM(name)) = LOWER(TRIM(?)) LIMIT 1",
+      [skill.id, skill.name]
+    );
+    if (duplicateName.length > 0) {
+      summary.conflicts.push(`${pkg.packagePath}: 名称与现有 SKILL 冲突 (${skill.name})`);
+      continue;
+    }
+
+    const customOptionsStr = skill.custom_options ? JSON.stringify(skill.custom_options) : null;
+    if (existingById.length > 0) {
+      await db.query(
+        "UPDATE ai_skills SET name = ?, `desc` = ?, icon = ?, instruction = ?, creator_id = ?, creator_name = ?, is_public = ?, is_system = 0, tier = ?, custom_options = ?, category = ?, enable_upload = ?, upload_type = ? WHERE id = ?",
+        [skill.name, skill.desc, skill.icon, skill.instruction, skill.creator_id || null, skill.creator_name, skill.is_public, skill.tier, customOptionsStr, skill.category, skill.enable_upload, skill.upload_type, skill.id]
+      );
+      summary.updated += 1;
+    } else {
+      await db.query(
+        "INSERT INTO ai_skills (id, name, `desc`, icon, instruction, creator_id, creator_name, is_public, is_system, tier, custom_options, category, enable_upload, upload_type) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        [skill.id, skill.name, skill.desc, skill.icon, skill.instruction, skill.creator_id || null, skill.creator_name, skill.is_public, 0, skill.tier, customOptionsStr, skill.category, skill.enable_upload, skill.upload_type]
+      );
+      summary.registered += 1;
+    }
+
+    if (skill.creator_id) {
+      try {
+        if (db.getMode() === "sqlite") {
+          await db.query("INSERT OR IGNORE INTO user_skills (user_id, skill_id) VALUES (?, ?)", [skill.creator_id, skill.id]);
+        } else {
+          await db.query(
+            "INSERT INTO user_skills (user_id, skill_id) VALUES (?, ?) ON DUPLICATE KEY UPDATE skill_id = skill_id",
+            [skill.creator_id, skill.id]
+          );
+        }
+      } catch (installErr) {
+        console.warn(`Failed to auto-install physical skill ${skill.id}:`, installErr);
+      }
+
+      try {
+        await saveExtensionPackageToCloud({
+          kind: "skill",
+          ownerId: skill.creator_id,
+          packageId: getPackageIdFromPathOrManifest(pkg.packagePath, pkg.manifest, skill.id),
+          packagePath: pkg.packagePath,
+          manifest: pkg.manifest,
+          files: (pkg as any).files || [],
+        });
+      } catch (cloudPackageErr) {
+        console.warn(`Failed to sync physical skill ${skill.id} to cloud package registry:`, cloudPackageErr);
+      }
+    }
+
+    nextIndex[skill.id] = {
+      packagePath: skill.package_path,
+      manifestId: skill.manifest_id,
+      ownerId: skill.creator_id ? String(skill.creator_id) : null,
+      name: skill.name,
+      updatedAt: Date.now(),
+    };
+  }
+
+  for (const [skillId, oldRecord] of Object.entries(previousIndex || {})) {
+    if (nextIndex[skillId]) continue;
+    const [rows]: any = await db.query("SELECT id, is_system, creator_id FROM ai_skills WHERE id = ?", [skillId]);
+    if (rows.length === 0 || rows[0].is_system) continue;
+    const oldOwnerId = (oldRecord as any)?.ownerId;
+    if (oldOwnerId && rows[0].creator_id !== null && String(rows[0].creator_id) !== String(oldOwnerId)) {
+      continue;
+    }
+    await db.query("DELETE FROM ai_skills WHERE id = ?", [skillId]);
+    summary.removed += 1;
+  }
+
+  await writeSettingsJson(USER_SKILL_PACKAGE_INDEX_KEY, nextIndex);
+  if (summary.scanned > 0 || summary.removed > 0 || summary.conflicts.length > 0) {
+    console.log(`[SkillPackages] Disk sync complete: ${JSON.stringify(summary)}`);
+  }
+  return summary;
+}
 
 async function startServer() {
   console.log('--- Startup Diagnostic ---');
@@ -463,14 +1379,15 @@ async function startServer() {
           if (exists.length === 0) {
             await db.query(
               'INSERT INTO ai_skills (id, name, `desc`, icon, instruction, creator_id, creator_name, is_public, is_system, tier, custom_options, category, enable_upload, upload_type) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-              [s.id, s.name, s.desc || "", s.icon || "鈿欙笍", s.instruction, null, "瀹樻柟榛樿", 1, 1, s.tier || "light", customOptionsStr, s.category || "text", s.enableUpload ? 1 : 0, s.uploadType || "all"]
+              [s.id, s.name, s.desc || "", s.icon || "⚙️", s.instruction, null, "官方默认", 1, 1, s.tier || "light", customOptionsStr, s.category || "text", s.enableUpload ? 1 : 0, s.uploadType || "all"]
             );
             console.log(`Seeded default system skill: ${s.name}`);
           } else {
-            // Update existing system skill options and instructions to stay synchronized with definitions
+            // Keep existing system skills editable. Startup may mark them as system/default,
+            // but must not overwrite admin/user edits to name, prompt, category, or options.
             await db.query(
-              'UPDATE ai_skills SET name = ?, `desc` = ?, icon = ?, instruction = ?, tier = ?, custom_options = ?, category = ?, enable_upload = ?, upload_type = ? WHERE id = ?',
-              [s.name, s.desc || "", s.icon || "鈿欙笍", s.instruction, s.tier || "light", customOptionsStr, s.category || "text", s.enableUpload ? 1 : 0, s.uploadType || "all", s.id]
+              'UPDATE ai_skills SET is_system = 1, creator_name = COALESCE(creator_name, ?), is_public = 1 WHERE id = ?',
+              ["官方默认", s.id]
             );
           }
         }
@@ -535,6 +1452,13 @@ async function startServer() {
       } catch (error) {
         console.error('Failed to load configuration or migrate from database:', error);
       }
+
+      try {
+        await syncExistingExtensionPackagesFromDatabase();
+        await syncSkillPackagesFromDisk();
+      } catch (extensionSyncError) {
+        console.error("Failed to run extension package bootstrap sync:", extensionSyncError);
+      }
     } catch (err: any) {
       console.error(`Database initialization failed (Attempt ${retries + 1}):`, err.message);
       fs.appendFileSync(path.join(process.cwd(), 'startup_debug.log'), `initDb FAILED at ${new Date().toISOString()}: ${err.message}\n`);
@@ -570,7 +1494,7 @@ async function startServer() {
     crossOriginEmbedderPolicy: false
   }));
 
-  // Rate Limiting 鈥?Disabled at user request
+  // Rate limiting disabled at user request.
   // const limiter = rateLimit({
   //   windowMs: 15 * 60 * 1000, // 15 minutes
   //   max: 2000, // Increased from 100 to 2000 to support heavy tasks like script decomposition
@@ -583,7 +1507,7 @@ async function startServer() {
   // });
   // app.use("/api/", limiter);
 
-  // Auth Limiter for login/register 鈥?Disabled at user request
+  // Auth limiter for login/register disabled at user request.
   // const authLimiter = rateLimit({
   //   windowMs: 3 * 60 * 1000, // 3 minutes
   //   max: 5, // Limit each IP to 5 failed attempts per 3 minutes
@@ -591,7 +1515,7 @@ async function startServer() {
   //   handler: (req, res, next, options) => {
   //     res.status(options.statusCode).json(options.message);
   //   },
-  //   message: { error: "灏濊瘯娆℃暟杩囧锛岃鍦?鍒嗛挓鍚庨噸璇? }
+  //   message: { error: "尝试次数过多，请稍后重试" }
   // });
   // app.use("/api/auth/", authLimiter);
 
@@ -673,7 +1597,7 @@ async function startServer() {
     console.log(`[Auth] Token present: ${!!token}`);
 
     if (token === 'guest') {
-      req.user = { id: 999999, username: '娓稿', role: 'user', points: 0, status: 'active' };
+      req.user = { id: 999999, username: '游客', role: 'user', points: 0, status: 'active' };
       console.log(`[Auth] Authenticated Guest mode user for ${req.path}`);
       return next();
     }
@@ -687,7 +1611,7 @@ async function startServer() {
       if (err) {
         console.error(`[Auth] JWT verification failed for ${req.path}:`, err.message);
         // Change 403 to 401 to avoid Nginx interception of 403 and provide better feedback
-        return res.status(401).json({ error: "浠ょ墝鏃犳晥鎴栧凡杩囨湡锛岃閲嶆柊鐧诲綍" });
+        return res.status(401).json({ error: "令牌无效或已过期，请重新登录" });
       }
       
       // Fetch latest user info from database to handle role transfers and status changes
@@ -699,7 +1623,7 @@ async function startServer() {
           user.status = users[0].status;
           
           if (user.status === 'disabled') {
-            return res.status(401).json({ error: "璐﹀彿宸茶绂佺敤" });
+            return res.status(401).json({ error: "账号已被禁用" });
           }
         }
       } catch (dbErr) {
@@ -723,7 +1647,7 @@ async function startServer() {
 
   const isAdmin = (req: any, res: any, next: any) => {
     if (req.user.role !== 'admin') {
-      return res.status(401).json({ error: '闇€瑕佺鐞嗗憳鏉冮檺' });
+      return res.status(401).json({ error: '需要管理员权限' });
     }
     next();
   };
@@ -739,7 +1663,7 @@ async function startServer() {
 
   app.post("/api/panorama/heal-seam", authenticateToken, async (req: any, res) => {
     const { imageUrl } = req.body;
-    if (!imageUrl) return res.status(400).json({ error: "缂哄皯鍥剧墖URL" });
+    if (!imageUrl) return res.status(400).json({ error: "缺少图片URL" });
 
     try {
       console.log(`>>> [Seam-Fix] Processing image: ${imageUrl}`);
@@ -819,7 +1743,7 @@ async function startServer() {
 
     } catch (error: any) {
       console.error("[Seam-Fix] Error:", error);
-      res.status(500).json({ error: "鎺ョ紳淇澶辫触", details: error.message });
+      res.status(500).json({ error: "接缝修复失败", details: error.message });
     }
   });
 
@@ -858,7 +1782,7 @@ async function startServer() {
     const { username, password, phone, inviteCode } = req.body;
 
     if (!username || !password || !phone || !inviteCode) {
-      return res.status(400).json({ error: "缂哄皯蹇呭～瀛楁" });
+      return res.status(400).json({ error: "缺少必填字段" });
     }
 
     // Check if invite code is valid and has uses left
@@ -866,7 +1790,7 @@ async function startServer() {
     const codeRow = codes[0];
     
     if (!codeRow) {
-      return res.status(400).json({ error: "閭€璇风爜鏃犳晥鎴栧凡浣跨敤" });
+      return res.status(400).json({ error: "邀请码无效或已使用" });
     }
 
     try {
@@ -887,10 +1811,10 @@ async function startServer() {
       // Increment code usage
       await db.query("UPDATE invitation_codes SET current_uses = current_uses + 1 WHERE id = ?", [codeRow.id]);
 
-      res.json({ message: "娉ㄥ唽鎴愬姛" });
+      res.json({ message: "注册成功" });
     } catch (e: any) {
       if (e.message.includes('UNIQUE constraint failed') || e.code === 'ER_DUP_ENTRY') {
-        return res.status(400).json({ error: "鐢ㄦ埛鍚嶅凡瀛樺湪" });
+        return res.status(400).json({ error: "用户名已存在" });
       }
       res.status(500).json({ error: "Server error" });
     }
@@ -902,11 +1826,11 @@ async function startServer() {
     const [users]: any = await db.query("SELECT * FROM users WHERE username = ?", [username]);
     const user = users[0];
     
-    if (!user) return res.status(401).json({ error: "鐢ㄦ埛鍚嶆垨瀵嗙爜閿欒" });
-    if (user.status === 'disabled') return res.status(401).json({ error: "Account disabled" });
+    if (!user) return res.status(401).json({ error: "用户名或密码错误" });
+    if (user.status === 'disabled') return res.status(401).json({ error: "账号已被禁用" });
 
     const validPassword = await bcrypt.compare(password, user.password);
-    if (!validPassword) return res.status(401).json({ error: "鐢ㄦ埛鍚嶆垨瀵嗙爜閿欒" });
+    if (!validPassword) return res.status(401).json({ error: "用户名或密码错误" });
 
      const token = jwt.sign({ id: user.id, username: user.username, role: user.role }, getJwtSecret(), { expiresIn: '7d' });
     res.json({ token, user: { id: user.id, username: user.username, role: user.role, points: user.points } });
@@ -915,21 +1839,21 @@ async function startServer() {
   app.post("/api/auth/verify-forgot", async (req, res) => {
     const { username, phone } = req.body;
     if (!username || !phone) {
-      return res.status(400).json({ error: "璇疯緭鍏ョ敤鎴峰悕鍜屾墜鏈哄彿" });
+      return res.status(400).json({ error: "请输入用户名和手机号" });
     }
 
     try {
       const [users]: any = await db.query("SELECT id, username, phone, status FROM users WHERE username = ?", [username]);
       const user = users[0];
       if (!user) {
-        return res.status(400).json({ error: "鐢ㄦ埛鍚嶆垨鎵嬫満鍙蜂笉姝ｇ‘" });
+        return res.status(400).json({ error: "用户名或手机号不正确" });
       }
       if (user.status === 'disabled') {
         return res.status(400).json({ error: "Account disabled" });
       }
 
       if (user.phone !== phone) {
-        return res.status(400).json({ error: "鐢ㄦ埛鍚嶆垨鎵嬫満鍙蜂笉姝ｇ‘" });
+        return res.status(400).json({ error: "用户名或手机号不正确" });
       }
 
       res.json({ success: true, message: "Verified. Please enter a new password." });
@@ -971,7 +1895,7 @@ async function startServer() {
     if (req.user.id === 999999) {
       return res.json({
         id: 'guest',
-        username: '娓稿',
+        username: '游客',
         phone: '13800000000',
         points: 0,
         role: 'user',
@@ -1042,7 +1966,7 @@ async function startServer() {
       // Check if username is already taken
       const [existing]: any = await db.query("SELECT id FROM users WHERE username = ? AND id != ?", [username, req.user.id]);
       if (existing.length > 0) {
-        return res.status(400).json({ error: "璇ョ敤鎴峰悕宸茶鍗犵敤" });
+        return res.status(400).json({ error: "该用户名已被占用" });
       }
 
       const [result]: any = await db.query("UPDATE users SET username = ? WHERE id = ?", [username, req.user.id]);
@@ -1058,7 +1982,7 @@ async function startServer() {
     const { newPassword } = req.body;
     const hashedPassword = await bcrypt.hash(newPassword, 10);
     const [result]: any = await db.query("UPDATE users SET password = ? WHERE id = ?", [hashedPassword, req.user.id]);
-    if (result.affectedRows === 0) return res.status(500).json({ error: "鏇存柊澶辫触" });
+    if (result.affectedRows === 0) return res.status(500).json({ error: "更新失败" });
     res.json({ message: "Password updated" });
   });
 
@@ -1067,7 +1991,7 @@ async function startServer() {
     const deductAmount = Number(amount);
     
     if (isNaN(deductAmount) || deductAmount <= 0) {
-      return res.status(400).json({ error: "鏃犳晥閲戦" });
+      return res.status(400).json({ error: "无效金额" });
     }
 
     try {
@@ -1134,13 +2058,13 @@ async function startServer() {
         
         console.log(`[Points] Deduction failed. Target points: ${currentPoints}, Required: ${deductAmount}`);
 
-        let errorMsg = "绉垎涓嶈冻";
+        let errorMsg = "积分不足";
         if (usingTeamPoints) {
-          errorMsg = "鍥㈤槦绉垎涓嶈冻";
+          errorMsg = "团队积分不足";
         } else if (effectiveLeaderId) {
-          errorMsg = `鍥㈤槦绉垎涓嶈冻涓斾釜浜虹Н鍒嗕笉瓒?(褰撳墠涓汉绉垎: ${user.points})`;
+          errorMsg = `团队积分不足且个人积分不足 (当前个人积分: ${user.points})`;
         } else {
-          errorMsg = `绉垎涓嶈冻 (褰撳墠绉垎: ${user.points})`;
+          errorMsg = `积分不足 (当前积分: ${user.points})`;
         }
 
         return res.status(401).json({ 
@@ -1167,7 +2091,7 @@ async function startServer() {
       res.json({ success: true, remainingPoints, usingTeamPoints });
     } catch (error: any) {
       console.error('Points deduction failed:', error);
-      res.status(500).json({ error: "绉垎鎵ｉ櫎澶辫触锛岃绋嶅悗閲嶈瘯", details: error.message });
+      res.status(500).json({ error: "积分扣除失败，请稍后重试", details: error.message });
     }
   });
 
@@ -1176,7 +2100,7 @@ async function startServer() {
     const refundAmount = Number(amount);
     
     if (isNaN(refundAmount) || refundAmount <= 0) {
-      return res.status(400).json({ error: "鏃犳晥閲戦" });
+      return res.status(400).json({ error: "无效金额" });
     }
 
     try {
@@ -1219,6 +2143,8 @@ async function startServer() {
   app.get("/api/skills", authenticateToken, async (req: any, res) => {
     try {
       const userId = req.user.id;
+      await syncSkillPackagesFromDisk();
+      const removedSystemSkillIds = new Set(parseJsonArray(await readUserPreferenceValue(userId, REMOVED_SYSTEM_SKILLS_PREF_KEY)));
       
       // Fetch custom skills that are public or created by the current user
       const [customSkills]: any = await db.query(
@@ -1254,14 +2180,16 @@ async function startServer() {
             }))
           : customSkills);
 
-      const mappedCustomSkills = sourceSkills.map((skill: any) => ({
+      const mappedCustomSkills = sourceSkills
+      .filter((skill: any) => !BUILT_IN_PLUGIN_IDS.has(skill.id))
+      .map((skill: any) => ({
         id: skill.id,
         name: skill.name,
         desc: skill.desc || "",
-        icon: skill.icon || "鈿欙笍",
+        icon: skill.icon || "⚙️",
         instruction: skill.instruction || "",
         creatorId: skill.creator_id,
-        creatorName: skill.creator_name || "鏈煡鐢ㄦ埛",
+        creatorName: skill.creator_name || "未知用户",
         isPublic: Boolean(skill.is_public),
         isSystem: Boolean(skill.is_system),
         tier: skill.tier || "light",
@@ -1276,7 +2204,7 @@ async function startServer() {
             return null;
           }
         })(),
-        isInstalled: skill.is_system ? true : installedSet.has(skill.id)
+        isInstalled: skill.is_system ? !removedSystemSkillIds.has(skill.id) : installedSet.has(skill.id)
       }));
 
       res.json({ success: true, skills: mappedCustomSkills });
@@ -1302,7 +2230,10 @@ async function startServer() {
   app.get("/api/extensions/packages", authenticateToken, async (req: any, res) => {
     try {
       const kind = req.query.kind as ExtensionPackageKind | undefined;
-      const packages = listUserExtensionPackages(kind, req.user.id);
+      if (kind && !VALID_EXTENSION_PACKAGE_KINDS.includes(kind)) {
+        return res.status(400).json({ error: "Invalid extension package kind." });
+      }
+      const packages = await listExtensionPackagesCloudFirst(kind, req.user.id);
       res.json({ success: true, packages });
     } catch (error: any) {
       console.error("Failed to list extension packages:", error);
@@ -1319,7 +2250,8 @@ async function startServer() {
       const packageKind = (kind || inferPackageKindFromManifest(manifest)) as ExtensionPackageKind;
       const safeFiles = Array.isArray(files) ? files : [];
       const result = writeExtensionPackage(packageKind, req.user.id, manifest.id, manifest, safeFiles);
-      res.json({ success: true, package: result });
+      const cloudPackage = await saveExtensionWriteResultToCloud(packageKind, req.user.id, result);
+      res.json({ success: true, package: cloudPackage || result });
     } catch (error: any) {
       console.error("Failed to import extension package:", error);
       res.status(500).json({ error: "Failed to import extension package", details: error.message });
@@ -1329,15 +2261,25 @@ async function startServer() {
   app.delete("/api/extensions/packages/:kind/:id", authenticateToken, async (req: any, res) => {
     try {
       const kind = req.params.kind as ExtensionPackageKind;
-      const validKinds: ExtensionPackageKind[] = ["skill", "plugin", "agent", "model", "adapter", "workflow", "template", "bundle"];
-      if (!validKinds.includes(kind)) {
+      if (!VALID_EXTENSION_PACKAGE_KINDS.includes(kind)) {
         return res.status(400).json({ error: "Invalid extension package kind." });
       }
-      const result = deleteUserExtensionPackage(kind, req.user.id, req.params.id);
+      const cloudResult = await deleteExtensionPackageFromCloud(kind, req.user.id, req.params.id);
+      const result = deleteUserExtensionPackage(kind, req.user.id, cloudResult.packageId || req.params.id);
       res.json(result);
     } catch (error: any) {
       console.error("Failed to delete extension package:", error);
       res.status(500).json({ error: "Failed to delete extension package", details: error.message });
+    }
+  });
+
+  app.get("/api/agents", authenticateToken, async (req: any, res) => {
+    try {
+      const agents = await listCloudUserAgents(req.user.id);
+      res.json({ success: true, agents });
+    } catch (error: any) {
+      console.error("Failed to list user agents:", error);
+      res.status(500).json({ error: "Failed to list user agents", details: error.message });
     }
   });
 
@@ -1354,11 +2296,27 @@ async function startServer() {
         return res.status(400).json({ error: "Invalid agents payload." });
       }
 
-      const packages = body.replaceAll === false
-        ? agents.map((agent: any) => buildAgentPackage(agent, { id: req.user.id, username: req.user.username }))
-        : syncAgentPackagesFromList(agents, { id: req.user.id, username: req.user.username });
+      const validation = validateAgentPackageRecords(agents);
+      if (!validation.ok) {
+        return res.status(400).json({
+          error: "Agent package validation failed",
+          errors: validation.errors,
+        });
+      }
 
-      res.json({ success: true, packages });
+      const packages = body.replaceAll === false
+        ? validation.agents.map((agent: any) => buildAgentPackage(agent, { id: req.user.id, username: req.user.username }))
+        : syncAgentPackagesFromList(validation.agents, { id: req.user.id, username: req.user.username });
+
+      if (body.replaceAll === false) {
+        for (const pkg of packages) {
+          await saveExtensionWriteResultToCloud("agent", req.user.id, pkg);
+        }
+      } else {
+        await replaceCloudExtensionPackages("agent", req.user.id, packages);
+      }
+
+      res.json({ success: true, packages: await listExtensionPackagesFromCloud("agent", req.user.id), agents: await listCloudUserAgents(req.user.id) });
     } catch (error: any) {
       console.error("Failed to sync agent packages:", error);
       res.status(500).json({ error: "Failed to sync agent packages", details: error.message });
@@ -1367,7 +2325,8 @@ async function startServer() {
 
   app.delete("/api/agents/packages/:id", authenticateToken, async (req: any, res) => {
     try {
-      const result = deleteUserExtensionPackage("agent", req.user.id, req.params.id);
+      const cloudResult = await deleteExtensionPackageFromCloud("agent", req.user.id, req.params.id);
+      const result = deleteUserAgentPackage(req.user.id, cloudResult.packageId || req.params.id);
       res.json(result);
     } catch (error: any) {
       console.error("Failed to delete agent package:", error);
@@ -1383,6 +2342,33 @@ async function startServer() {
         "SELECT id, name, creator_id, creator_name, history, created_at FROM shared_canvases ORDER BY created_at DESC"
       );
 
+      const workflowPackages = await listExtensionPackagesCloudFirst("workflow");
+      const getWorkflowPreset = (manifest: any) => {
+        const presets = manifest?.contributes?.workflowPresets;
+        return Array.isArray(presets) && presets.length > 0 ? presets[0] : null;
+      };
+      const packageByOwnerAndRecord = new Map<string, any>();
+      const packageOnlyRecords: any[] = [];
+
+      for (const pkg of workflowPackages) {
+        const preset = getWorkflowPreset(pkg.manifest);
+        if (!preset?.id) continue;
+
+        const ownerId = String(pkg.manifest?.metadata?.ownerId || preset?.metadata?.ownerId || "");
+        const sourceRecordId = String(
+          preset?.metadata?.sourceRecordId ||
+          pkg.manifest?.metadata?.sourceRecordId ||
+          preset.id
+        );
+        const packageInfo = { pkg, preset, ownerId, sourceRecordId };
+        packageByOwnerAndRecord.set(`${ownerId}:${sourceRecordId}`, packageInfo);
+
+        if (ownerId === String(req.user.id)) {
+          packageOnlyRecords.push(packageInfo);
+        }
+      }
+
+      const dbCanvasIds = new Set<string>();
       const canvases = rows.map((row: any) => {
         let historyObj = [];
         if (row.history) {
@@ -1392,21 +2378,49 @@ async function startServer() {
             console.error("Failed to parse history JSON from shared_canvases:", e);
           }
         }
+        dbCanvasIds.add(String(row.id));
+        const packageInfo = packageByOwnerAndRecord.get(`${String(row.creator_id)}:${String(row.id)}`);
         return {
           id: row.id,
           name: row.name,
           creatorId: row.creator_id,
-          creatorName: row.creator_name || "鏈煡鐢ㄦ埛",
+          creatorName: row.creator_name || "未知用户",
           history: historyObj,
           createdAt: row.created_at ? new Date(row.created_at).getTime() : Date.now(),
-          isShared: true
+          isShared: true,
+          isWorkflowPackage: Boolean(packageInfo),
+          plugAndPlay: Boolean(packageInfo),
+          source: "shared_canvas",
+          packageId: packageInfo?.pkg?.manifest?.id,
+          packagePath: packageInfo?.pkg?.packagePath
         };
       });
+
+      for (const record of packageOnlyRecords) {
+        if (dbCanvasIds.has(record.sourceRecordId)) continue;
+
+        canvases.push({
+          id: record.sourceRecordId,
+          name: record.preset.name || record.pkg.manifest?.name || "未命名工作流",
+          creatorId: req.user.id,
+          creatorName: req.user.username || record.pkg.manifest?.author || "当前用户",
+          history: Array.isArray(record.preset.nodes) ? record.preset.nodes : [],
+          createdAt: Number(record.pkg.manifest?.metadata?.createdAt || record.pkg.manifest?.metadata?.updatedAt || Date.now()),
+          isShared: true,
+          isWorkflowPackage: true,
+          plugAndPlay: true,
+          source: record.preset?.metadata?.source || record.pkg.manifest?.metadata?.source || "workflow_package",
+          packageId: record.pkg.manifest?.id,
+          packagePath: record.pkg.packagePath
+        });
+      }
+
+      canvases.sort((a: any, b: any) => (b.createdAt || 0) - (a.createdAt || 0));
 
       res.json({ success: true, canvases });
     } catch (error: any) {
       console.error("Failed to query shared canvases:", error);
-      res.status(500).json({ error: "鑾峰彇鍏变韩鐢诲竷澶辫触", details: error.message });
+      res.status(500).json({ error: "获取共享画布失败", details: error.message });
     }
   });
 
@@ -1417,7 +2431,7 @@ async function startServer() {
     }
 
     const userId = req.user.id;
-    const username = req.user.username || "鏈煡鐢ㄦ埛";
+    const username = req.user.username || "未知用户";
     const historyStr = history ? JSON.stringify(history) : "[]";
 
     try {
@@ -1426,7 +2440,7 @@ async function startServer() {
       if (exists.length > 0) {
         // Check permissions
         if (exists[0].creator_id !== userId && req.user.role !== 'admin') {
-          return res.status(403).json({ error: "鎮ㄦ病鏈夋潈闄愭洿鏂版鍏变韩鐢诲竷" });
+          return res.status(403).json({ error: "您没有权限更新此共享画布" });
         }
         
         await db.query(
@@ -1446,6 +2460,7 @@ async function startServer() {
           { id, name, history, source: "shared_canvas" },
           { id: userId, username }
         );
+        packageInfo = await saveExtensionWriteResultToCloud("workflow", userId, packageInfo) || packageInfo;
       } catch (packageErr: any) {
         console.error("Failed to sync shared canvas workflow package:", packageErr);
       }
@@ -1466,7 +2481,7 @@ async function startServer() {
       });
     } catch (error: any) {
       console.error("Failed to save shared canvas:", error);
-      res.status(500).json({ error: "鍒嗕韩鐢诲竷澶辫触", details: error.message });
+      res.status(500).json({ error: "分享画布失败", details: error.message });
     }
   });
 
@@ -1475,42 +2490,73 @@ async function startServer() {
     try {
       const [rows]: any = await db.query("SELECT creator_id FROM shared_canvases WHERE id = ?", [id]);
       if (rows.length === 0) {
-        return res.status(404).json({ error: "Shared canvas not found" });
+        const workflowPackages = await listExtensionPackagesCloudFirst("workflow", req.user.id);
+        const matchingPackage = workflowPackages.find((pkg: any) => {
+          const preset = Array.isArray(pkg.manifest?.contributes?.workflowPresets)
+            ? pkg.manifest.contributes.workflowPresets[0]
+            : null;
+          const sourceRecordId = String(
+            preset?.metadata?.sourceRecordId ||
+            pkg.manifest?.metadata?.sourceRecordId ||
+            preset?.id ||
+            path.basename(pkg.packagePath)
+          );
+          return sourceRecordId === String(id) || preset?.id === id || pkg.manifest?.id === id || path.basename(pkg.packagePath) === id;
+        });
+
+        if (!matchingPackage) {
+          return res.status(404).json({ error: "Shared canvas not found" });
+        }
+
+        const packageId = getPackageIdFromPathOrManifest(matchingPackage.packagePath, matchingPackage.manifest, id);
+        const cloudResult = await deleteExtensionPackageFromCloud("workflow", req.user.id, packageId);
+        const result = deleteUserExtensionPackage("workflow", req.user.id, cloudResult.packageId || packageId);
+        return res.json({ success: true, message: "删除工作流包成功", package: result });
       }
 
       const userId = req.user.id;
       if (rows[0].creator_id !== userId && req.user.role !== 'admin') {
-        return res.status(403).json({ error: "鎮ㄦ病鏈夋潈闄愬垹闄ゆ鍏变韩鐢诲竷" });
+        return res.status(403).json({ error: "您没有权限删除此共享画布" });
       }
 
       await db.query("DELETE FROM shared_canvases WHERE id = ?", [id]);
       try {
-        deleteUserExtensionPackage("workflow", rows[0].creator_id, id);
+        const cloudResult = await deleteExtensionPackageFromCloud("workflow", rows[0].creator_id, id);
+        deleteUserExtensionPackage("workflow", rows[0].creator_id, cloudResult.packageId || id);
       } catch (packageErr: any) {
         console.error("Failed to delete shared canvas workflow package:", packageErr);
       }
-      res.json({ success: true, message: "鍒犻櫎鍏变韩鐢诲竷鎴愬姛" });
+      res.json({ success: true, message: "删除共享画布成功" });
     } catch (error: any) {
       console.error("Failed to delete shared canvas:", error);
-      res.status(500).json({ error: "鍒犻櫎鍏变韩鐢诲竷澶辫触", details: error.message });
+      res.status(500).json({ error: "删除共享画布失败", details: error.message });
     }
   });
 
   app.post("/api/skills", authenticateToken, async (req: any, res) => {
     const { name, desc, icon, instruction, isPublic, tier, customOptions, category, enableUpload, uploadType } = req.body;
     if (!name || !instruction) {
-      return res.status(400).json({ error: "鍚嶇О鍜岀郴缁熸彁绀鸿瘝灞炰簬蹇呭～瀛楁" });
+      return res.status(400).json({ error: "名称和系统提示词属于必填字段" });
     }
 
     const id = "skill_" + Date.now() + "_" + Math.random().toString(36).substring(2, 6);
     const userId = req.user.id;
-    const username = req.user.username || "鏈煡鐢ㄦ埛";
+    const username = req.user.username || "未知用户";
 
     try {
+      const normalizedName = String(name).trim();
+      const [duplicates]: any = await db.query(
+        "SELECT id FROM ai_skills WHERE LOWER(TRIM(name)) = LOWER(TRIM(?)) LIMIT 1",
+        [normalizedName]
+      );
+      if (duplicates.length > 0) {
+        return res.status(400).json({ error: "Skill 名称已存在，请使用唯一名称" });
+      }
+
       const customOptionsStr = customOptions ? JSON.stringify(customOptions) : null;
       await db.query(
         "INSERT INTO ai_skills (id, name, `desc`, icon, instruction, creator_id, creator_name, is_public, tier, custom_options, category, enable_upload, upload_type) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        [id, name, desc || "", icon || "鈿欙笍", instruction, userId, username, isPublic !== false ? 1 : 0, tier || "light", customOptionsStr, category || "text", enableUpload ? 1 : 0, uploadType || "all"]
+        [id, normalizedName, desc || "", icon || "⚙️", instruction, userId, username, isPublic !== false ? 1 : 0, tier || "light", customOptionsStr, category || "text", enableUpload ? 1 : 0, uploadType || "all"]
       );
 
       // Automatically install for creator
@@ -1524,7 +2570,7 @@ async function startServer() {
         packageInfo = buildSkillPackage(
           {
             id,
-            name,
+            name: normalizedName,
             desc: desc || "",
             icon: icon || "Zap",
             instruction,
@@ -1540,6 +2586,7 @@ async function startServer() {
           },
           { id: userId, username }
         );
+        packageInfo = await saveExtensionWriteResultToCloud("skill", userId, packageInfo) || packageInfo;
       } catch (packageErr: any) {
         console.error("Failed to sync user skill package:", packageErr);
       }
@@ -1548,9 +2595,9 @@ async function startServer() {
         success: true,
         skill: {
           id,
-          name,
+          name: normalizedName,
           desc: desc || "",
-          icon: icon || "鈿欙笍",
+          icon: icon || "⚙️",
           instruction,
           creatorId: userId,
           creatorName: username,
@@ -1650,7 +2697,7 @@ Requirements:
       res.json({ success: true, code: cleanCode });
     } catch (err: any) {
       console.error("[PluginGenerator] Failed to generate plugin code:", err);
-      res.status(500).json({ error: "鐢熸垚鎻掍欢浠ｇ爜澶辫触", details: err.message });
+      res.status(500).json({ error: "生成插件代码失败", details: err.message });
     }
   });
 
@@ -1671,7 +2718,8 @@ Requirements:
         },
         { id: req.user.id, username: req.user.username }
       );
-      res.json({ success: true, package: packageInfo });
+      const cloudPackage = await saveExtensionWriteResultToCloud("plugin", req.user.id, packageInfo);
+      res.json({ success: true, package: cloudPackage || packageInfo });
     } catch (err: any) {
       console.error("[PluginPackage] Failed to sync plugin package:", err);
       res.status(500).json({ error: "Failed to sync plugin package", details: err.message });
@@ -1680,7 +2728,8 @@ Requirements:
 
   app.delete("/api/plugins/packages/:id", authenticateToken, async (req: any, res) => {
     try {
-      const result = deleteUserExtensionPackage("plugin", req.user.id, req.params.id);
+      const cloudResult = await deleteExtensionPackageFromCloud("plugin", req.user.id, req.params.id);
+      const result = deleteUserExtensionPackage("plugin", req.user.id, cloudResult.packageId || req.params.id);
       res.json(result);
     } catch (err: any) {
       console.error("[PluginPackage] Failed to delete plugin package:", err);
@@ -1693,14 +2742,14 @@ Requirements:
     const { name, desc, icon, instruction, isPublic, tier, customOptions, category, enableUpload, uploadType } = req.body;
 
     if (!name || !instruction) {
-      return res.status(400).json({ error: "鍚嶇О鍜岀郴缁熸彁绀鸿瘝灞炰簬蹇呭～瀛楁" });
+      return res.status(400).json({ error: "名称和系统提示词属于必填字段" });
     }
 
     try {
       // Find skill
       const [skills]: any = await db.query("SELECT * FROM ai_skills WHERE id = ?", [id]);
       if (skills.length === 0) {
-        return res.status(404).json({ error: "鎶€鑳芥湭鎵惧埌" });
+        return res.status(404).json({ error: "Skill 未找到" });
       }
 
       // Restrict update to creator or admin
@@ -1710,19 +2759,28 @@ Requirements:
         return res.status(403).json({ error: "Only creator or admin can update this skill" });
       }
 
+      const normalizedName = String(name).trim();
+      const [duplicates]: any = await db.query(
+        "SELECT id FROM ai_skills WHERE id <> ? AND LOWER(TRIM(name)) = LOWER(TRIM(?)) LIMIT 1",
+        [id, normalizedName]
+      );
+      if (duplicates.length > 0) {
+        return res.status(400).json({ error: "Skill 名称已存在，请使用唯一名称" });
+      }
+
       const customOptionsStr = customOptions ? JSON.stringify(customOptions) : null;
       await db.query(
         "UPDATE ai_skills SET name = ?, `desc` = ?, icon = ?, instruction = ?, is_public = ?, tier = ?, custom_options = ?, category = ?, enable_upload = ?, upload_type = ? WHERE id = ?",
-        [name, desc || "", icon || "鈿欙笍", instruction, isPublic !== false ? 1 : 0, tier || "light", customOptionsStr, category || "text", enableUpload ? 1 : 0, uploadType || "all", id]
+        [normalizedName, desc || "", icon || "⚙️", instruction, isPublic !== false ? 1 : 0, tier || "light", customOptionsStr, category || "text", enableUpload ? 1 : 0, uploadType || "all", id]
       );
 
       try {
-        buildSkillPackage(
+        const packageInfo = buildSkillPackage(
           {
             id,
-            name,
+            name: normalizedName,
             desc: desc || "",
-            icon: icon || "鈿欙笍",
+            icon: icon || "⚙️",
             instruction,
             creator_id: skills[0].creator_id,
             creator_name: skills[0].creator_name,
@@ -1736,11 +2794,14 @@ Requirements:
           },
           { id: skills[0].creator_id, username: skills[0].creator_name || req.user.username }
         );
+        if (skills[0].creator_id !== null && skills[0].creator_id !== undefined) {
+          await saveExtensionWriteResultToCloud("skill", skills[0].creator_id, packageInfo);
+        }
       } catch (packageErr: any) {
         console.error("Failed to sync updated skill package:", packageErr);
       }
 
-      res.json({ success: true, message: "鎶€鑳藉凡鏇存柊" });
+      res.json({ success: true, message: "Skill 已更新" });
     } catch (error: any) {
       console.error("Failed to update skill:", error);
       res.status(500).json({ error: "Failed to update skill", details: error.message });
@@ -1756,7 +2817,7 @@ Requirements:
       // Find skill
       const [skills]: any = await db.query("SELECT * FROM ai_skills WHERE id = ?", [id]);
       if (skills.length === 0) {
-        return res.status(404).json({ error: "鎶€鑳芥湭鎵惧埌" });
+        return res.status(404).json({ error: "Skill 未找到" });
       }
 
       // Restrict delete to creator or admin to prevent random deletion
@@ -1790,11 +2851,14 @@ Requirements:
       // Delete from DB (user_skills references it with ON DELETE CASCADE)
       await db.query("DELETE FROM ai_skills WHERE id = ?", [id]);
       try {
-        deleteUserExtensionPackage("skill", skills[0].creator_id, id);
+        if (skills[0].creator_id !== null && skills[0].creator_id !== undefined) {
+          const cloudResult = await deleteExtensionPackageFromCloud("skill", skills[0].creator_id, id);
+          deleteUserExtensionPackage("skill", skills[0].creator_id, cloudResult.packageId || id);
+        }
       } catch (packageErr: any) {
         console.error("Failed to delete user skill package:", packageErr);
       }
-      res.json({ success: true, message: "鎶€鑳藉凡鎴愬姛鍒犻櫎" });
+      res.json({ success: true, message: "技能已成功删除" });
     } catch (error: any) {
       console.error("Failed to delete skill:", error);
       res.status(500).json({ error: "Failed to delete skill", details: error.message });
@@ -1808,7 +2872,7 @@ Requirements:
     try {
       const [skills]: any = await db.query("SELECT * FROM ai_skills WHERE id = ?", [id]);
       if (skills.length === 0) {
-        return res.status(404).json({ error: "鎶€鑳芥湭鎵惧埌" });
+        return res.status(404).json({ error: "Skill 未找到" });
       }
 
       // Add to user active list with duplicate safety
@@ -1834,7 +2898,7 @@ Requirements:
 
     try {
       await db.query("DELETE FROM user_skills WHERE user_id = ? AND skill_id = ?", [userId, id]);
-      res.json({ success: true, message: "鎶€鑳藉凡鍦ㄦ偍鐨勪笓灞炲垪琛ㄤ腑绉婚櫎" });
+      res.json({ success: true, message: "技能已在您的专属列表中移除" });
     } catch (error: any) {
       console.error("Failed to uninstall skill:", error);
       res.status(500).json({ error: "Failed to uninstall skill", details: error.message });
@@ -1843,7 +2907,7 @@ Requirements:
 
   app.post("/api/user/log-usage", authenticateToken, async (req: any, res) => {
     const { type, amount, details } = req.body;
-    if (!type) return res.status(400).json({ error: "缂哄皯绫诲瀷" });
+    if (!type) return res.status(400).json({ error: "缺少类型" });
 
     try {
       await db.query(
@@ -1852,7 +2916,7 @@ Requirements:
       );
       res.json({ success: true });
     } catch (e: any) {
-      res.status(500).json({ error: "璁板綍浣跨敤鎯呭喌澶辫触", details: e.message });
+      res.status(500).json({ error: "记录使用情况失败", details: e.message });
     }
   });
 
@@ -1898,20 +2962,20 @@ Requirements:
         const normalized = (reason || '').toLowerCase();
         const modelStr = (config?.model || '').toLowerCase();
         
-        if (normalized.includes('鍒涗綔鍓ф湰') || normalized.includes('缂栧墽') || normalized.includes('script_gen')) {
-          return '鍒涗綔鍓ф湰';
+        if (normalized.includes('创作剧本') || normalized.includes('编剧') || normalized.includes('script_gen')) {
+          return '创作剧本';
         }
-        if (normalized.includes('鍒嗘瀽鍓ф湰') || normalized.includes('鍓ф湰娣卞害鍒嗘瀽') || normalized.includes('鎷嗚В鍓ф湰')) {
-          return '鍒嗘瀽鍓ф湰';
+        if (normalized.includes('分析剧本') || normalized.includes('剧本深度分析') || normalized.includes('拆解剧本')) {
+          return '分析剧本';
         }
-        if (normalized.includes('褰遍煶鎷夌墖') || normalized.includes('鎷夌墖鍒嗘瀽') || normalized.includes('dissector') || normalized.includes('dissect')) {
-          return '褰遍煶鎷夌墖';
+        if (normalized.includes('影音拉片') || normalized.includes('拉片分析') || normalized.includes('dissector') || normalized.includes('dissect')) {
+          return '影音拉片';
         }
-        if (normalized.includes('鏀瑰啓鍓ф湰') || normalized.includes('鍓ф湰娣卞害鏀瑰啓')) {
-          return '鏀瑰啓鍓ф湰';
+        if (normalized.includes('改写剧本') || normalized.includes('剧本深度改写')) {
+          return '改写剧本';
         }
         
-        if (normalized.includes('video') || normalized.includes('瑙嗛') || type === 'video' || modelStr.includes('video') || modelStr.includes('seedance')) {
+        if (normalized.includes('video') || normalized.includes('视频') || type === 'video' || modelStr.includes('video') || modelStr.includes('seedance')) {
           if (normalized.includes('mini') || modelStr.includes('mini')) {
             return 'RH-SD2.0mini/video';
           }
@@ -1937,14 +3001,14 @@ Requirements:
         if (normalized.includes('prompt')) {
           return 'Prompt writing';
         }
-        if (normalized.includes('璐ㄦ')) {
-          return '璐ㄦ瀹¤';
+        if (normalized.includes('质检')) {
+          return '质检审计';
         }
-        if (normalized.includes('瀵兼紨') || normalized.includes('鍒剁墖')) {
-          return '瀵兼紨鍒剁墖鍜ㄨ';
+        if (normalized.includes('导演') || normalized.includes('制片')) {
+          return '导演制片咨询';
         }
         if (normalized.includes('creative-writing') || normalized.includes('script')) {
-          return '鍒涗綔鍓ф湰';
+          return '创作剧本';
         }
         
         return reason || 'Creative task';
@@ -2008,7 +3072,7 @@ Requirements:
             if (matchedHistoryIds.has(String(h.id))) continue;
 
             // Type match verification
-            const isVideoSpent = normalized.includes('video') || normalized.includes('瑙嗛') || normalized.includes('seedance');
+            const isVideoSpent = normalized.includes('video') || normalized.includes('视频') || normalized.includes('seedance');
             const isVideoHistory = h.type === 'video';
             if (isVideoSpent !== isVideoHistory) continue;
 
@@ -2047,7 +3111,7 @@ Requirements:
         } else if (matchingRefund) {
           isFailed = true;
           matchedRefundIds.add(matchingRefund.id);
-        } else if (reason.toLowerCase().includes('failed') || reason.toLowerCase().includes('澶辫触')) {
+        } else if (reason.toLowerCase().includes('failed') || reason.toLowerCase().includes('失败')) {
           isFailed = true;
         }
 
@@ -2147,7 +3211,7 @@ Requirements:
         // Human readable task name
         const taskName = mapReasonToTaskName(reason);
         
-        // If it's a refund due to failure, show as '澶辫触' status so points show as 0 and status shows as '澶辫触'
+        // If it's a refund due to failure, show as '失败' status so points show as 0 and status shows as '失败'
         const isFailureRefund = reason.toLowerCase().includes('fail') || reason.toLowerCase().includes('refund');
 
         let finalCreatedAt = ref.created_at;
@@ -2162,7 +3226,7 @@ Requirements:
           type: ref.type,
           amount: ref.amount,
           taskName: taskName,
-          status: isFailureRefund ? '澶辫触' : '鎴愬姛',
+          status: isFailureRefund ? '失败' : '成功',
           duration: '-'
         };
       });
@@ -2203,23 +3267,9 @@ Requirements:
       const [rows]: any = await db.query("SELECT * FROM history WHERE id = ? AND user_id = ?", [req.params.id, req.user.id]);
       if (rows.length === 0) return res.status(404).json({ error: "Record not found" });
       
-      const row = rows[0];
-      const item = {
-        ...row,
-        config: safeParseJson(row.config, {}),
-        position: safeParseJson(row.position, null),
-        isOptimized: Boolean(row.is_optimized),
-        hiddenFromCanvas: Boolean(row.hidden_from_canvas),
-        canvasId: row.canvas_id || 'default',
-        imageUrl: row.image_url,
-        videoUrl: row.video_url,
-        arkOriginalUrl: row.ark_original_url,
-        revisedPrompt: row.revised_prompt,
-        parentId: row.parent_id || undefined
-      };
-      res.json(item);
+      res.json(serializeHistoryRow(rows[0]));
     } catch (e: any) {
-      res.status(500).json({ error: "鑾峰彇璁板綍澶辫触", details: e.message });
+      res.status(500).json({ error: "获取记录失败", details: e.message });
     }
   });
 
@@ -2227,22 +3277,10 @@ Requirements:
     try {
       const [rows]: any = await db.query("SELECT * FROM history WHERE user_id = ? ORDER BY timestamp DESC", [req.user.id]);
       // Parse JSON fields
-      const history = rows.map((row: any) => ({
-        ...row,
-        config: safeParseJson(row.config, {}),
-        position: safeParseJson(row.position, null),
-        isOptimized: Boolean(row.is_optimized),
-        hiddenFromCanvas: Boolean(row.hidden_from_canvas),
-        canvasId: row.canvas_id || 'default',
-        imageUrl: row.image_url,
-        videoUrl: row.video_url,
-        arkOriginalUrl: row.ark_original_url,
-        revisedPrompt: row.revised_prompt,
-        parentId: row.parent_id || undefined
-      }));
+      const history = rows.map((row: any) => serializeHistoryRow(row));
       res.json(history);
     } catch (e: any) {
-      res.status(500).json({ error: "鑾峰彇鍘嗗彶璁板綍澶辫触", details: e.message });
+      res.status(500).json({ error: "获取历史记录失败", details: e.message });
     }
   });
 
@@ -2253,161 +3291,27 @@ Requirements:
       const url = await persistFromBase64(data, finalFilename);
       res.json({ success: true, url });
     } catch (e: any) {
-      res.status(500).json({ error: "濯掍綋涓婁紶澶辫触", details: e.message });
+      res.status(500).json({ error: "媒体上传失败", details: e.message });
     }
   });
 
   app.post("/api/user/history", authenticateToken, async (req: any, res) => {
     const item = req.body;
     try {
-      // Helper to check if a URL is NOT an OSS URL
-      const isNotOSS = (url: string) => {
-        if (!url || typeof url !== 'string') return false;
-        // If it's a data URL or blob URL, it's definitely not OSS
-        if (url.startsWith('data:') || url.startsWith('blob:')) return true;
-        // If it's an HTTP URL, check if it contains aliyuncs.com or other OSS patterns
-        if (url.startsWith('http://') || url.startsWith('https://')) {
-          return !url.includes('.aliyuncs.com') && !url.includes('oss-');
-        }
-        return false;
-      };
-
-      // Recursive function to find and upload non-OSS URLs in an object
-      const processObjectForOSS = async (obj: any, prefix: string): Promise<any> => {
-        if (!obj || typeof obj !== 'object') return obj;
-
-        if (Array.isArray(obj)) {
-          return Promise.all(obj.map((val, i) => processObjectForOSS(val, `${prefix}_${i}`)));
-        }
-
-        const newObj = { ...obj };
-        for (const [key, value] of Object.entries(newObj)) {
-          if (typeof value === 'string' && isNotOSS(value)) {
-            // It's a potential media URL that needs uploading
-            const filename = `luosheji/history/${req.user.id}/${item.id}_${prefix}_${key}.png`;
-            console.log(`>>> [DEBUG] Found non-OSS URL in ${prefix}.${key}, uploading to OSS: ${filename}`);
-            try {
-              if (value.startsWith('data:')) {
-                newObj[key] = await persistFromBase64(value, filename);
-              } else {
-                newObj[key] = await persistFromUrl(value, filename);
-              }
-              console.log(`>>> [DEBUG] Successfully uploaded ${prefix}.${key} to OSS: ${newObj[key]}`);
-            } catch (err: any) {
-              console.error(`>>> [DEBUG] Failed to upload ${prefix}.${key} to OSS (will fallback to original URL):`, err.message);
-              newObj[key] = value;
-            }
-          } else if (value && typeof value === 'object') {
-            newObj[key] = await processObjectForOSS(value, `${prefix}_${key}`);
-          }
-        }
-        return newObj;
-      };
-
-      console.log(`>>> [DEBUG] Processing media for history item ${item.id}`);
-      
-      // Process top-level URLs
-      let finalImageUrl = item.imageUrl;
-      let finalVideoUrl = item.videoUrl;
-
-      if (finalImageUrl && isNotOSS(finalImageUrl)) {
-        const filename = `luosheji/history/${req.user.id}/${item.id}_image.png`;
-        console.log(`>>> [DEBUG] Persisting image for history ${item.id} to OSS: ${filename}`);
-        try {
-          if (finalImageUrl.startsWith('data:')) {
-            finalImageUrl = await persistFromBase64(finalImageUrl, filename);
-          } else {
-            finalImageUrl = await persistFromUrl(finalImageUrl, filename);
-          }
-          console.log(`>>> [DEBUG] Image persisted to OSS: ${finalImageUrl}`);
-        } catch (err: any) {
-          console.error('Failed to persist top-level image to OSS (falling back to original URL):', err.message);
-          finalImageUrl = item.imageUrl;
-        }
-      }
-
-      if (finalVideoUrl && isNotOSS(finalVideoUrl)) {
-        let ext = 'mp4';
-        if (item.type === 'audio') {
-          ext = 'mp3';
-        } else if (finalVideoUrl.startsWith('data:')) {
-          const match = finalVideoUrl.match(/data:([a-zA-Z0-9]+\/[a-zA-Z0-9-.+]+);base64,/);
-          if (match && match[1]) {
-            const mime = match[1];
-            if (mime.startsWith('audio/')) {
-              ext = mime.split('/')[1] || 'mp3';
-            } else if (mime.startsWith('video/')) {
-              ext = mime.split('/')[1] || 'mp4';
-            }
-          }
-        }
-        const filename = `luosheji/history/${req.user.id}/${item.id}_video.${ext}`;
-        try {
-          if (finalVideoUrl.startsWith('data:')) {
-            finalVideoUrl = await persistFromBase64(finalVideoUrl, filename);
-          } else {
-            finalVideoUrl = await persistFromUrl(finalVideoUrl, filename);
-          }
-        } catch (err: any) {
-          console.error('Failed to persist top-level video/audio to OSS (falling back to original URL):', err.message);
-          finalVideoUrl = item.videoUrl;
-        }
-      }
-
-      // Process nested URLs in config
-      let finalConfig = item.config;
-      if (finalConfig) {
-        finalConfig = await processObjectForOSS(finalConfig, 'config');
-      }
-
-      const [result]: any = await db.query(
-        `INSERT INTO history (id, user_id, type, status, image_url, video_url, ark_original_url, revised_prompt, is_optimized, error, config, timestamp, position, hidden_from_canvas, parent_id, canvas_id) 
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) 
-         ON DUPLICATE KEY UPDATE 
-         status = VALUES(status), image_url = VALUES(image_url), video_url = VALUES(video_url), 
-         ark_original_url = VALUES(ark_original_url),
-         revised_prompt = VALUES(revised_prompt), is_optimized = VALUES(is_optimized), 
-         error = VALUES(error), config = VALUES(config), position = VALUES(position), 
-         hidden_from_canvas = VALUES(hidden_from_canvas),
-         parent_id = VALUES(parent_id),
-         canvas_id = VALUES(canvas_id)`,
-        [
-          item.id !== undefined ? item.id : null,
-          req.user.id !== undefined ? req.user.id : null,
-          item.type !== undefined ? item.type : null,
-          item.status !== undefined ? item.status : null,
-          finalImageUrl !== undefined ? finalImageUrl : null,
-          finalVideoUrl !== undefined ? finalVideoUrl : null,
-          item.arkOriginalUrl !== undefined ? item.arkOriginalUrl : null,
-          item.revisedPrompt !== undefined ? item.revisedPrompt : null,
-          item.isOptimized ? 1 : 0,
-          item.error !== undefined ? item.error : null,
-          finalConfig !== undefined && finalConfig !== null ? JSON.stringify(finalConfig) : null,
-          item.timestamp !== undefined ? item.timestamp : Date.now(),
-          item.position !== undefined && item.position !== null ? JSON.stringify(item.position) : null,
-          item.hiddenFromCanvas ? 1 : 0,
-          item.parentId !== undefined ? item.parentId : null,
-          item.canvasId !== undefined ? item.canvasId : 'default'
-        ]
-      );
-      
-      if (result.affectedRows === 0) {
-        console.warn('History save: No rows affected. item.id:', item.id);
-      }
-
-      const ossUrl = finalImageUrl || finalVideoUrl;
+      const savedItem = await saveHistoryItemForUser(req.user.id, item);
       res.json({ 
         success: true, 
-        imageUrl: finalImageUrl, 
-        videoUrl: finalVideoUrl, 
-        arkOriginalUrl: item.arkOriginalUrl,
-        ossUrl: ossUrl,
-        config: finalConfig,
-        canvasId: item.canvasId || 'default'
+        imageUrl: savedItem.imageUrl, 
+        videoUrl: savedItem.videoUrl, 
+        arkOriginalUrl: savedItem.arkOriginalUrl,
+        ossUrl: savedItem.ossUrl,
+        config: savedItem.config,
+        canvasId: savedItem.canvasId,
+        operationId: savedItem.operationId,
       });
     } catch (e: any) {
       console.error('Failed to save history:', e);
-      res.status(500).json({ error: "淇濆瓨鍘嗗彶璁板綍澶辫触", details: e.message });
+      res.status(500).json({ error: "保存历史记录失败", details: e.message });
     }
   });
 
@@ -2416,7 +3320,7 @@ Requirements:
       await db.query("DELETE FROM history WHERE id = ? AND user_id = ?", [req.params.id, req.user.id]);
       res.json({ success: true });
     } catch (e: any) {
-      res.status(500).json({ error: "鍒犻櫎鍘嗗彶璁板綍澶辫触", details: e.message });
+      res.status(500).json({ error: "删除历史记录失败", details: e.message });
     }
   });
 
@@ -2427,7 +3331,7 @@ Requirements:
       const rows = await listUserPreferences(req.user.id);
       res.json({ success: true, preferences: rows });
     } catch (e: any) {
-      res.status(500).json({ error: "鑾峰彇鐢ㄦ埛鍋忓ソ澶辫触", details: e.message });
+      res.status(500).json({ error: "获取用户偏好失败", details: e.message });
     }
   });
 
@@ -2435,12 +3339,12 @@ Requirements:
     try {
       const { pref_key, pref_value } = req.body;
       if (!pref_key) {
-        return res.status(400).json({ error: "缂哄皯 pref_key" });
+        return res.status(400).json({ error: "缺少 pref_key" });
       }
       await writeUserPreferenceValue(req.user.id, pref_key, pref_value);
       res.json({ success: true });
     } catch (e: any) {
-      res.status(500).json({ error: "淇濆瓨鐢ㄦ埛鍋忓ソ澶辫触", details: e.message });
+      res.status(500).json({ error: "保存用户偏好失败", details: e.message });
     }
   });
 
@@ -2457,7 +3361,7 @@ Requirements:
       const [rows]: any = await db.query(query, params);
       res.json({ success: true, learnings: rows });
     } catch (e: any) {
-      res.status(500).json({ error: "鑾峰彇绯荤粺瀛︿範缁忛獙澶辫触", details: e.message });
+      res.status(500).json({ error: "获取系统学习经验失败", details: e.message });
     }
   });
 
@@ -2465,12 +3369,12 @@ Requirements:
     try {
       const { skill_id, learning_key, learning_value } = req.body;
       if (!learning_value) {
-        return res.status(400).json({ error: "缂哄皯 learning_value" });
+        return res.status(400).json({ error: "缺少 learning_value" });
       }
       await db.query("INSERT INTO system_learnings (skill_id, learning_key, learning_value) VALUES (?, ?, ?)", [skill_id || null, learning_key || null, learning_value]);
       res.json({ success: true });
     } catch (e: any) {
-      res.status(500).json({ error: "淇濆瓨绯荤粺瀛︿範缁忛獙澶辫触", details: e.message });
+      res.status(500).json({ error: "保存系统学习经验失败", details: e.message });
     }
   });
 
@@ -2530,6 +3434,9 @@ Requirements:
                     asset.generatedMedia[field] = await persistFromUrl(url, filename);
                   }
                 } catch (storageErr) {
+                  if (requiresCloudStorage()) {
+                    throw storageErr;
+                  }
                   console.warn(`Failed to persist pipeline asset ${i} media ${field} to storage:`, storageErr);
                 }
               }
@@ -2555,6 +3462,9 @@ Requirements:
                       variant[field] = await persistFromUrl(url, filename);
                     }
                   } catch (storageErr) {
+                    if (requiresCloudStorage()) {
+                      throw storageErr;
+                    }
                     console.warn(`Failed to persist pipeline asset ${i} variant ${j} media ${field} to storage:`, storageErr);
                   }
                 }
@@ -2572,9 +3482,12 @@ Requirements:
                 const timestamp = Date.now();
                 const filename = `luosheji/pipelines/${req.user.id}/${p.id}/asset_${asset.id || i}_voice_${timestamp}.${ext}`;
                 asset.details.voiceUrl = await persistFromBase64(url, filename);
-              } catch (storageErr) {
-                console.warn(`Failed to persist pipeline asset ${i} voice to storage:`, storageErr);
+            } catch (storageErr) {
+              if (requiresCloudStorage()) {
+                throw storageErr;
               }
+              console.warn(`Failed to persist pipeline asset ${i} voice to storage:`, storageErr);
+            }
             }
           }
         }
@@ -2614,6 +3527,9 @@ Requirements:
                 }
               }
             } catch (storageErr) {
+              if (requiresCloudStorage()) {
+                throw storageErr;
+              }
               console.warn(`Failed to persist pipeline segment ${i} video to storage:`, storageErr);
             }
           }
@@ -2648,6 +3564,7 @@ Requirements:
           },
           { id: req.user.id, username: req.user.username }
         );
+        packageInfo = await saveExtensionWriteResultToCloud("workflow", req.user.id, packageInfo) || packageInfo;
       } catch (packageErr: any) {
         console.error("Failed to sync pipeline workflow package:", packageErr);
       }
@@ -2661,7 +3578,8 @@ Requirements:
     try {
       await db.query("DELETE FROM pipelines WHERE id = ? AND user_id = ?", [req.params.id, req.user.id]);
       try {
-        deleteUserExtensionPackage("workflow", req.user.id, req.params.id);
+        const cloudResult = await deleteExtensionPackageFromCloud("workflow", req.user.id, req.params.id);
+        deleteUserExtensionPackage("workflow", req.user.id, cloudResult.packageId || req.params.id);
       } catch (packageErr: any) {
         console.error("Failed to delete pipeline workflow package:", packageErr);
       }
@@ -2746,13 +3664,13 @@ Requirements:
       }
       res.json(teams);
     } catch (e: any) {
-      res.status(500).json({ error: "鑾峰彇鍥㈤槦鍒楄〃澶辫触", details: e.message });
+      res.status(500).json({ error: "获取团队列表失败", details: e.message });
     }
   });
 
   app.post("/api/leader/teams", authenticateToken, async (req: any, res) => {
     const { name } = req.body;
-    if (!name) return res.status(400).json({ error: "鍥㈤槦鍚嶇О涓嶈兘涓虹┖" });
+    if (!name) return res.status(400).json({ error: "团队名称不能为空" });
 
     try {
       const [result]: any = await db.query(
@@ -2761,14 +3679,14 @@ Requirements:
       );
       res.json({ id: result.insertId, name, leader_id: req.user.id });
     } catch (e: any) {
-      res.status(500).json({ error: "鍒涘缓鍥㈤槦澶辫触", details: e.message });
+      res.status(500).json({ error: "创建团队失败", details: e.message });
     }
   });
 
   app.patch("/api/leader/teams/:id", authenticateToken, async (req: any, res) => {
     const { id } = req.params;
     const { name } = req.body;
-    if (!name) return res.status(400).json({ error: "鍥㈤槦鍚嶇О涓嶈兘涓虹┖" });
+    if (!name) return res.status(400).json({ error: "团队名称不能为空" });
 
     try {
       // Ensure the team belongs to the current user
@@ -2778,7 +3696,7 @@ Requirements:
       await db.query("UPDATE teams SET name = ? WHERE id = ?", [name, id]);
       res.json({ success: true, name });
     } catch (e: any) {
-      res.status(500).json({ error: "淇敼鍥㈤槦鍚嶇О澶辫触", details: e.message });
+      res.status(500).json({ error: "修改团队名称失败", details: e.message });
     }
   });
 
@@ -2813,7 +3731,7 @@ Requirements:
 
       res.json({ success: true });
     } catch (e: any) {
-      res.status(500).json({ error: "鍒犻櫎鍥㈤槦澶辫触", details: e.message });
+      res.status(500).json({ error: "删除团队失败", details: e.message });
     }
   });
 
@@ -2853,7 +3771,7 @@ Requirements:
 
       res.json(formattedMembers);
     } catch (e: any) {
-      res.status(500).json({ error: "鑾峰彇鎴愬憳鍒楄〃澶辫触", details: e.message });
+      res.status(500).json({ error: "获取成员列表失败", details: e.message });
     }
   });
 
@@ -2866,7 +3784,7 @@ Requirements:
       const [teams]: any = await db.query("SELECT leader_id FROM teams WHERE id = ?", [teamId]);
       if (teams.length === 0) return res.status(404).json({ error: "Team not found" });
       if (teams[0].leader_id !== req.user.id && req.user.role !== 'admin') {
-        return res.status(401).json({ error: "鏃犳潈鍚戞鍥㈤槦娣诲姞鎴愬憳" });
+        return res.status(401).json({ error: "无权向此团队添加成员" });
       }
 
       const [users]: any = await db.query(
@@ -2881,7 +3799,7 @@ Requirements:
 
       // Check member limit
       const [count]: any = await db.query("SELECT COUNT(*) as total FROM team_members WHERE team_id = ?", [teamId]);
-      if (count[0].total >= 200) return res.status(400).json({ error: "鍥㈤槦鎴愬憳宸茶揪涓婇檺" });
+      if (count[0].total >= 200) return res.status(400).json({ error: "团队成员已达上限" });
 
       // Add to team_members
       await db.query(
@@ -2894,7 +3812,7 @@ Requirements:
 
       res.json({ success: true });
     } catch (e: any) {
-      res.status(500).json({ error: "娣诲姞鎴愬憳澶辫触", details: e.message });
+      res.status(500).json({ error: "添加成员失败", details: e.message });
     }
   });
 
@@ -2906,7 +3824,7 @@ Requirements:
       const [teams]: any = await db.query("SELECT leader_id FROM teams WHERE id = ?", [teamId]);
       if (teams.length === 0) return res.status(404).json({ error: "Team not found" });
       if (teams[0].leader_id !== req.user.id && req.user.role !== 'admin') {
-        return res.status(401).json({ error: "鏃犳潈浠庢鍥㈤槦绉婚櫎鎴愬憳" });
+        return res.status(401).json({ error: "无权从此团队移除成员" });
       }
 
       await db.query("DELETE FROM team_members WHERE team_id = ? AND user_id = ?", [teamId, userId]);
@@ -2926,7 +3844,7 @@ Requirements:
 
       res.json({ success: true });
     } catch (e: any) {
-      res.status(500).json({ error: "绉婚櫎鎴愬憳澶辫触", details: e.message });
+      res.status(500).json({ error: "移除成员失败", details: e.message });
     }
   });
 
@@ -2955,7 +3873,7 @@ Requirements:
       );
       res.json(members);
     } catch (e: any) {
-      res.status(500).json({ error: "鑾峰彇鎴愬憳澶辫触", details: e.message });
+      res.status(500).json({ error: "获取成员失败", details: e.message });
     }
   });
 
@@ -2972,13 +3890,13 @@ Requirements:
       const isAdmin = req.user.role === 'admin';
 
       if (!isLeader && !isAdmin) {
-        return res.status(401).json({ error: "鏃犳潈淇敼姝ゆ垚鍛樼殑绉垎闄愬埗" });
+        return res.status(401).json({ error: "无权修改此成员的积分限制" });
       }
 
       await db.query("UPDATE users SET point_limit = ? WHERE id = ?", [point_limit, userId]);
       res.json({ success: true });
     } catch (e: any) {
-      res.status(500).json({ error: "淇敼绉垎闄愬埗澶辫触", details: e.message });
+      res.status(500).json({ error: "修改积分限制失败", details: e.message });
     }
   });
 
@@ -2992,22 +3910,22 @@ Requirements:
       // Check member limit
       const [countResult]: any = await db.query("SELECT COUNT(*) as count FROM users WHERE leader_id = ?", [leaderId]);
       if (countResult[0].count >= 200) {
-        return res.status(400).json({ error: "鍥㈤槦鎴愬憳宸茶揪涓婇檺 (200浜?" });
+        return res.status(400).json({ error: "团队成员已达上限 (200人)" });
       }
 
       // Find user
       const [users]: any = await db.query("SELECT id, leader_id, role FROM users WHERE username = ? OR phone = ?", [identifier, identifier]);
       const user = users[0];
 
-      if (!user) return res.status(404).json({ error: "鏈壘鍒拌鐢ㄦ埛" });
-      if (user.leader_id) return res.status(400).json({ error: "璇ョ敤鎴峰凡鍦ㄥ叾浠栧洟闃熶腑" });
-      if (user.role === 'admin') return res.status(400).json({ error: "涓嶈兘娣诲姞绠＄悊鍛樹负鎴愬憳" });
-      if (user.id === leaderId) return res.status(400).json({ error: "涓嶈兘娣诲姞鑷繁" });
+      if (!user) return res.status(404).json({ error: "未找到该用户" });
+      if (user.leader_id) return res.status(400).json({ error: "该用户已在其他团队中" });
+      if (user.role === 'admin') return res.status(400).json({ error: "不能添加管理员为成员" });
+      if (user.id === leaderId) return res.status(400).json({ error: "不能添加自己" });
 
       await db.query("UPDATE users SET leader_id = ? WHERE id = ?", [leaderId, user.id]);
-      res.json({ success: true, message: "娣诲姞鎴愬姛" });
+      res.json({ success: true, message: "添加成功" });
     } catch (e: any) {
-      res.status(500).json({ error: "娣诲姞鎴愬憳澶辫触", details: e.message });
+      res.status(500).json({ error: "添加成员失败", details: e.message });
     }
   });
 
@@ -3027,7 +3945,7 @@ Requirements:
       await db.query("UPDATE users SET leader_id = NULL, point_limit = 0 WHERE id = ? AND leader_id = ?", [memberId, leaderId]);
       res.json({ success: true });
     } catch (e: any) {
-      res.status(500).json({ error: "绉婚櫎鎴愬憳澶辫触", details: e.message });
+      res.status(500).json({ error: "移除成员失败", details: e.message });
     }
   });
 
@@ -3060,7 +3978,7 @@ Requirements:
         }
 
         await connection.commit();
-        res.json({ success: true, message: "鏉冮檺杞Щ鎴愬姛" });
+        res.json({ success: true, message: "权限转移成功" });
       } catch (err) {
         await connection.rollback();
         throw err;
@@ -3068,7 +3986,7 @@ Requirements:
         connection.release();
       }
     } catch (e: any) {
-      res.status(500).json({ error: "杞Щ瑙掕壊澶辫触", details: e.message });
+      res.status(500).json({ error: "转移角色失败", details: e.message });
     }
   });
 
@@ -3132,7 +4050,7 @@ Requirements:
       if (result.affectedRows === 0) return res.status(404).json({ error: "User not found" });
       res.json({ message: "User updated" });
     } catch (e: any) {
-      res.status(500).json({ error: "鏇存柊澶辫触", details: e.message });
+      res.status(500).json({ error: "更新失败", details: e.message });
     }
   });
 
@@ -3141,22 +4059,22 @@ Requirements:
     try {
       await db.query("DELETE FROM team_members WHERE user_id = ?", [id]);
       await db.query("UPDATE users SET leader_id = NULL, point_limit = 0 WHERE id = ?", [id]);
-      res.json({ success: true, message: "宸插皢璇ョ敤鎴蜂粠鎵€鏈夊皬缁勪腑绉婚櫎" });
+      res.json({ success: true, message: "已将该用户从所有小组中移除" });
     } catch (e: any) {
-      res.status(500).json({ error: "鎿嶄綔澶辫触", details: e.message });
+      res.status(500).json({ error: "操作失败", details: e.message });
     }
   });
 
   app.delete("/api/admin/accounts/:id", authenticateToken, isAdmin, async (req, res) => {
     const { id } = req.params;
     const [result]: any = await db.query("DELETE FROM users WHERE id = ?", [id]);
-    if (result.affectedRows === 0) return res.status(500).json({ error: "鍒犻櫎澶辫触" });
+    if (result.affectedRows === 0) return res.status(500).json({ error: "删除失败" });
     res.json({ message: "User deleted" });
   });
 
   app.post("/api/admin/invitation-codes", authenticateToken, isLeader, async (req: any, res) => {
     const count = parseInt(req.body.count) || 10;
-    if (count > 100) return res.status(400).json({ error: "涓€娆＄敓鎴愮殑閭€璇风爜杩囧" });
+    if (count > 100) return res.status(400).json({ error: "一次生成的邀请码过多" });
     
     const codes = [];
     for (let i = 0; i < count; i++) {
@@ -3171,7 +4089,7 @@ Requirements:
 
   app.post("/api/group-chats", authenticateToken, async (req: any, res) => {
     const { name, memberIds, agentIds, objective } = req.body;
-    if (!name) return res.status(400).json({ error: "缇ょ粍鍚嶇О涓嶈兘涓虹┖" });
+    if (!name) return res.status(400).json({ error: "群组名称不能为空" });
 
     try {
       const connection = await db.getConnection();
@@ -3210,13 +4128,13 @@ Requirements:
         connection.release();
       }
     } catch (e: any) {
-      res.status(500).json({ error: "鍒涘缓缇よ亰澶辫触", details: e.message });
+      res.status(500).json({ error: "创建群聊失败", details: e.message });
     }
   });
 
   app.get("/api/group-chats", authenticateToken, async (req: any, res) => {
     try {
-      // Ensure default "椤圭洰1缁? exists if user is in a team
+      // Ensure default "项目1组" exists if user is in a team
       const effectiveLeaderId = req.user.role === 'leader' ? req.user.id : req.user.leader_id;
       
       if (effectiveLeaderId) {
@@ -3279,7 +4197,7 @@ Requirements:
 
       res.json(parsedGroups);
     } catch (e: any) {
-      res.status(500).json({ error: "鑾峰彇缇よ亰鍒楄〃澶辫触", details: e.message });
+      res.status(500).json({ error: "获取群聊列表失败", details: e.message });
     }
   });
 
@@ -3291,7 +4209,7 @@ Requirements:
       const [groups]: any = await db.query("SELECT leader_id FROM group_chats WHERE id = ?", [id]);
       if (!groups[0]) return res.status(404).json({ error: "Group not found" });
       if (groups[0].leader_id !== req.user.id) {
-        return res.status(401).json({ error: "鏃犳潈缂栬緫缇よ亰锛屼粎鍒涘缓鑰呭彲淇敼" });
+        return res.status(401).json({ error: "无权编辑群聊，仅创建者可修改" });
       }
 
       const connection = await db.getConnection();
@@ -3331,7 +4249,7 @@ Requirements:
         connection.release();
       }
     } catch (e: any) {
-      res.status(500).json({ error: "鏇存柊缇よ亰澶辫触", details: e.message });
+      res.status(500).json({ error: "更新群聊失败", details: e.message });
     }
   });
 
@@ -3345,7 +4263,7 @@ Requirements:
       await db.query("INSERT IGNORE INTO group_chat_members (group_id, user_id) VALUES (?, ?)", [id, userId]);
       res.json({ success: true });
     } catch (e: any) {
-      res.status(500).json({ error: "鍔犲叆缇よ亰澶辫触", details: e.message });
+      res.status(500).json({ error: "加入群聊失败", details: e.message });
     }
   });
 
@@ -3357,13 +4275,13 @@ Requirements:
       
       const isAdmin = req.user.role === 'admin';
       if (!isAdmin && groups[0].leader_id !== req.user.id) {
-        return res.status(401).json({ error: "鏃犳潈鍒犻櫎缇よ亰锛屼粎鍒涘缓鑰呮垨绠＄悊鍛樺彲鍒犻櫎" });
+        return res.status(401).json({ error: "无权删除群聊，仅创建者或管理员可删除" });
       }
 
       await db.query("DELETE FROM group_chats WHERE id = ?", [id]);
       res.json({ success: true });
     } catch (e: any) {
-      res.status(500).json({ error: "鍒犻櫎缇よ亰澶辫触", details: e.message });
+      res.status(500).json({ error: "删除群聊失败", details: e.message });
     }
   });
 
@@ -3401,7 +4319,7 @@ Requirements:
         if (enableAiCollaboration) {
           // Get group context/objective and involved agents
           const [groupData]: any = await db.query("SELECT objective, name, agent_ids FROM group_chats WHERE id = ?", [groupId]);
-          const objective = groupData[0]?.objective || "鍗忓悓瀹屾垚椤圭洰浠诲姟";
+          const objective = groupData[0]?.objective || "协同完成项目任务";
           const groupName = groupData[0]?.name || "Project group";
           
           const mentionMatch = content.match(/@([^\s]+)/);
@@ -3417,18 +4335,18 @@ Requirements:
           };
 
           let respondingAgentId: string | null = null;
-          let displayName = mentionedName || '灏忛€荤殑澶ц剳 (CEO)';
+          let displayName = mentionedName || '小逻的大脑 (CEO)';
           let customSystemInstruction = agentContext?.systemInstruction;
 
           const agentIdToNameMap: Record<string, string> = {
-            'ceo': '灏忛€荤殑澶ц剳 (CEO)'
+            'ceo': '小逻的大脑 (CEO)'
           };
 
           if (agentContext && agentContext.agentId) {
             respondingAgentId = agentContext.agentId;
             // Try to find display name if not explicitly mentioned
             if (!mentionedName) {
-               displayName = agentIdToNameMap[respondingAgentId] || 'AI涓撳';
+               displayName = agentIdToNameMap[respondingAgentId] || 'AI专家';
             }
           } else if (mentionedName) {
             for (const [keyword, agentId] of Object.entries(agentMap)) {
@@ -3451,7 +4369,7 @@ Requirements:
               for (const [keyword, agentId] of Object.entries(agentMap)) {
                 if (content.includes(keyword) && invitedAgentIds.includes(agentId)) {
                   respondingAgentId = agentId;
-                  displayName = agentIdToNameMap[agentId] || 'AI涓撳';
+                  displayName = agentIdToNameMap[agentId] || 'AI专家';
                   break;
                 }
               }
@@ -3462,17 +4380,17 @@ Requirements:
                 } else {
                   respondingAgentId = invitedAgentIds[0];
                 }
-                displayName = agentIdToNameMap[respondingAgentId] || 'AI涓撳';
+                displayName = agentIdToNameMap[respondingAgentId] || 'AI专家';
               }
             }
           }
 
           if (respondingAgentId) {
             console.log(`[GroupChat] Responding agent identified: ${respondingAgentId}`);
-            // 绔嬪嵆鎻掑叆涓€鏉♀€滅爺璁ㄤ腑鈥濈殑鍗犱綅娑堟伅
+            // 立即插入一条“研讨中”的占位消息
             const [placeholderResult]: any = await db.query(
               "INSERT INTO group_messages (group_id, sender_id, agent_name, content, type, timestamp) VALUES (?, ?, ?, ?, ?, ?)",
-              [groupId, null, displayName, '涓撳姝ｅ湪鐮旇涓?..', 'thinking', Date.now()]
+              [groupId, null, displayName, '专家正在研讨中...', 'thinking', Date.now()]
             );
             const placeholderId = placeholderResult.insertId;
 
@@ -3511,8 +4429,8 @@ Requirements:
                 'ceo': 'script',
                 'script_analyzer': 'script',
                 'script_rewriter': 'script',
-                'image': 'gptImage', // 鐢熷浘涓撳 (GPT)
-                'image_gemini': 'image', // 鐢熷浘涓撳 (Gemini)
+                'image': 'gptImage', // 生图专家 (GPT)
+                'image_gemini': 'image', // 生图专家 (Gemini)
                 'spirit_space': 'image',
                 'director_producer': 'script',
                 'prompts': 'script',
@@ -3564,7 +4482,7 @@ Requirements:
                 return await imageAgent.callApi(s, 'generateContent', body, globalConfig);
               };
 
-              // 鐗规畩澶勭悊鐢熷浘涓撳
+              // 特殊处理生图专家
               const isImageAgent = respondingAgentId === 'image_gemini' || respondingAgentId === 'image' || respondingAgentId === 'spirit_space';
               
               if (isImageAgent) {
@@ -3576,7 +4494,7 @@ Requirements:
                   
                   const refinedPrompt = (extractionResult.text || "").trim() || content;
                   
-                  // 璋冪敤鐢熷浘涓撳鐢熸垚鐪熷疄鍥剧墖
+                  // 调用生图专家生成真实图片
                   console.log(`[GroupChat] ImageAgent generating for prompt: ${refinedPrompt} using slot: ${usedSlot}`);
                   const imgResult = await imageAgent.generateSmartImage({
                     prompt: refinedPrompt,
@@ -3594,13 +4512,13 @@ Requirements:
 
                   await db.query(
                     "UPDATE group_messages SET content = ?, type = ?, url = ?, timestamp = ? WHERE id = ?",
-                    [`馃帹 鏍规嵁褰撳墠璁ㄨ鐢熸垚鐨勫浘鐗囷細\n${imgResult.revisedPrompt || refinedPrompt}`, 'image', finalUrl, Date.now(), placeholderId]
+                    [`🎨 根据当前讨论生成的图片：\n${imgResult.revisedPrompt || refinedPrompt}`, 'image', finalUrl, Date.now(), placeholderId]
                   );
                 } catch (extErr: any) {
                   console.error("Extraction/Generation error:", extErr);
                   await db.query(
                     "UPDATE group_messages SET content = ?, type = ?, timestamp = ? WHERE id = ?",
-                    [`馃帹 **寤鸿鎻愮ず璇?*\n${content}\n\n(鐢熷浘灏濊瘯澶辫触: ${extErr.message})`, 'text', Date.now(), placeholderId]
+                    [`🎨 **建议提示词**\n${content}\n\n(生图尝试失败: ${extErr.message})`, 'text', Date.now(), placeholderId]
                   );
                 }
               } else if (respondingAgentId === 'video') {
@@ -3623,7 +4541,7 @@ Requirements:
                     let finalVideoUrl = result.videoUrl;
                     
                     if (!finalVideoUrl && result.operationId) {
-                      // 绠€鍗曞皾璇曡疆璇?3 娆★紝濡傛灉杩樻病鍑猴紝灏辫繑鍥炵敓鎴愪腑
+                      // 简单尝试轮询 3 次，如果还没有结果，就返回生成中
                       let polled = false;
                       for (let i = 0; i < 3; i++) {
                         await new Promise(resolve => setTimeout(resolve, 8000));
@@ -3638,7 +4556,7 @@ Requirements:
                       if (!polled) {
                         await db.query(
                           "UPDATE group_messages SET content = ?, type = ?, timestamp = ? WHERE id = ?",
-                          [`馃帴 瑙嗛姝ｅ湪鍚庡彴鐢熸垚涓?(Operation ID: ${result.operationId})锛岃绋嶅悗鍦ㄥ巻鍙茶褰曚腑鏌ョ湅銆俓n\n鎻愮ず璇嶏細${refinedPrompt}`, 'text', Date.now(), placeholderId]
+                          [`🎥 视频正在后台生成中 (Operation ID: ${result.operationId})，请稍后在历史记录中查看。\n\n提示词：${refinedPrompt}`, 'text', Date.now(), placeholderId]
                         );
                         return;
                       }
@@ -3654,24 +4572,24 @@ Requirements:
 
                       await db.query(
                         "UPDATE group_messages SET content = ?, type = ?, url = ?, timestamp = ? WHERE id = ?",
-                        [`馃帴 鏍规嵁璁ㄨ鐢熸垚鐨勮棰戯細\n${refinedPrompt}`, 'video', finalVideoUrl, Date.now(), placeholderId]
+                        [`🎥 根据讨论生成的视频：\n${refinedPrompt}`, 'video', finalVideoUrl, Date.now(), placeholderId]
                       );
                     }
                   } else {
-                    throw new Error("鏈兘鍚姩瑙嗛鐢熸垚浠诲姟");
+                    throw new Error("未能启动视频生成任务");
                   }
                 } catch (vErr: any) {
                   console.error("VideoAgent Error:", vErr);
                   await db.query(
                     "UPDATE group_messages SET content = ?, type = ?, timestamp = ? WHERE id = ?",
-                    [`馃帴 **瑙嗛鐢熸垚寤鸿**\n${content}\n\n(鍚姩澶辫触: ${vErr.message})`, 'text', Date.now(), placeholderId]
+                    [`🎥 **视频生成建议**\n${content}\n\n(启动失败: ${vErr.message})`, 'text', Date.now(), placeholderId]
                   );
                 }
               } else {
                 try {
                   const aiResult = await executeAi(usedSlot, aiPrompt);
                   
-                  const aiResponseText = aiResult.text || ' (AI 鎬濊€冧腑锛屾殏鏃舵病鏈夎緭鍑哄唴瀹?';
+                  const aiResponseText = aiResult.text || 'AI 思考中，暂时没有输出内容';
 
                   await db.query(
                     "UPDATE group_messages SET content = ?, type = ?, timestamp = ? WHERE id = ?",
@@ -3681,7 +4599,7 @@ Requirements:
                   console.error("Generation error:", genErr);
                   await db.query(
                     "UPDATE group_messages SET content = ?, type = ?, timestamp = ? WHERE id = ?",
-                    [`鈿狅笍 AI 鏆傛椂鏃犳硶鍥炲: ${genErr.message}`, 'text', Date.now(), placeholderId]
+                    [`⚠️ AI 暂时无法回复: ${genErr.message}`, 'text', Date.now(), placeholderId]
                   );
                 }
               }
@@ -3689,7 +4607,7 @@ Requirements:
               console.error("AI Group Collaboration Error:", aiErr);
               await db.query(
                 "UPDATE group_messages SET content = ?, type = ?, timestamp = ? WHERE id = ?",
-                [`鈿狅笍 绯荤粺鍗忓悓寮傚父: ${aiErr.message}`, 'text', Date.now(), placeholderId]
+                [`⚠️ 系统协同异常: ${aiErr.message}`, 'text', Date.now(), placeholderId]
               );
             }
           }, 1500); 
@@ -3709,12 +4627,12 @@ Requirements:
     try {
       const [groups]: any = await db.query("SELECT leader_id FROM group_chats WHERE id = ?", [id]);
       if (!groups[0]) return res.status(404).json({ error: "Group not found" });
-      if (groups[0].leader_id !== req.user.id) return res.status(401).json({ error: "浠呭垱寤鸿€呭彲淇敼鐩爣" });
+      if (groups[0].leader_id !== req.user.id) return res.status(401).json({ error: "仅创建者可修改目标" });
       
       await db.query("UPDATE group_chats SET objective = ? WHERE id = ?", [objective, id]);
       res.json({ success: true });
     } catch (e: any) {
-      res.status(500).json({ error: "鏇存柊鐩爣澶辫触", details: e.message });
+      res.status(500).json({ error: "更新目标失败", details: e.message });
     }
   });
 
@@ -3746,7 +4664,7 @@ Requirements:
 
       res.json(comments);
     } catch (e: any) {
-      res.status(500).json({ error: "鑾峰彇鎵规敞澶辫触", details: e.message });
+      res.status(500).json({ error: "获取批注失败", details: e.message });
     }
   });
 
@@ -3789,12 +4707,12 @@ Requirements:
 
       await db.query(
         "INSERT INTO media_comments (id, media_id, username, content, timestamp, timecode, drawings) VALUES (?, ?, ?, ?, ?, ?, ?)",
-        [commentId, mediaId, username || '鍖垮悕', content || '', commentTimestamp, timecode || null, drawingsJson]
+        [commentId, mediaId, username || '匿名', content || '', commentTimestamp, timecode || null, drawingsJson]
       );
 
       res.json({ success: true, comment: { id: commentId, username, content, timestamp: commentTimestamp, timecode, drawings } });
     } catch (e: any) {
-      res.status(500).json({ error: "娣诲姞鎵规敞澶辫触", details: e.message });
+      res.status(500).json({ error: "添加批注失败", details: e.message });
     }
   });
 
@@ -3865,7 +4783,7 @@ Requirements:
 
       res.json(parsedResults);
     } catch (e: any) {
-      res.status(500).json({ error: "鑾峰彇娑堟伅澶辫触", details: e.message });
+      res.status(500).json({ error: "获取消息失败", details: e.message });
     }
   });
 
@@ -3899,7 +4817,7 @@ Requirements:
           isFromHistory = true;
           historyItem = historyRows[0];
         } else {
-          return res.status(404).json({ error: "鏈壘鍒板搴旂殑濯掍綋鏂囦欢" });
+          return res.status(404).json({ error: "未找到对应的媒体文件" });
         }
       }
 
@@ -3911,7 +4829,7 @@ Requirements:
           type: historyItem.type === 'image' ? 'image' : (historyItem.type === 'video' ? 'video' : 'file'),
           url: historyItem.video_url || historyItem.image_url,
           timestamp: historyItem.timestamp,
-          agentName: historyItem.senderName || 'AI涓撳',
+          agentName: historyItem.senderName || 'AI专家',
           senderId: historyItem.user_id
         };
         return res.json(msg);
@@ -3956,7 +4874,7 @@ Requirements:
 
       res.json(msg);
     } catch (e: any) {
-      res.status(500).json({ error: "鑾峰彇鍒嗕韩濯掍綋璇︽儏澶辫触", details: e.message });
+      res.status(500).json({ error: "获取分享媒体详情失败", details: e.message });
     }
   });
 
@@ -4007,7 +4925,7 @@ Requirements:
             const timeDiff = Math.abs(hTime - spentTime);
             if (timeDiff > 90000) return false;
             
-            const isVideoSpent = reason.includes('video') || reason.includes('瑙嗛') || reason.includes('seedance');
+            const isVideoSpent = reason.includes('video') || reason.includes('视频') || reason.includes('seedance');
             const isVideoHistory = h.type === 'video';
             if (isVideoSpent !== isVideoHistory) return false;
 
@@ -4023,7 +4941,7 @@ Requirements:
         
         if (
           reason.includes('image') || 
-          reason.includes('鍥剧墖') || 
+          reason.includes('图片') ||
           reason.includes('banana') || 
           reason.includes('banana') || 
           hType === 'image'
@@ -4033,7 +4951,7 @@ Requirements:
         
         if (
           reason.includes('video') || 
-          reason.includes('瑙嗛') || 
+          reason.includes('视频') || 
           reason.includes('seedance') || 
           reason.includes('omni') || 
           hType === 'video'
@@ -4042,15 +4960,15 @@ Requirements:
         }
         
         if (
-          reason.includes('鍒嗛暅鐢熸垚') || 
-          reason.includes('鍒嗛暅') ||
-          reason.includes('閲嶆柊鐢熸垚鍒嗘') || 
-          reason.includes('鍓ф湰璧勪骇鎵弿') || 
-          reason.includes('璧勪骇鎵弿') || 
-          reason.includes('鍦烘櫙甯冨眬') || 
-          reason.includes('鍦烘櫙鏂规') || 
+          reason.includes('分镜生成') || 
+          reason.includes('分镜') ||
+          reason.includes('重新生成分段') || 
+          reason.includes('剧本资产扫描') || 
+          reason.includes('资产扫描') || 
+          reason.includes('场景布局') || 
+          reason.includes('场景方案') || 
           reason.includes('asset-check') || 
-          reason.includes('鍒跺墽')
+          reason.includes('制剧')
         ) {
           return 'script_gen';
         }
@@ -4093,7 +5011,7 @@ Requirements:
         if (!userMap.has(userId)) {
           userMap.set(userId, {
             id: userId,
-            username: `鐢ㄦ埛_${userId}`,
+            username: `用户_${userId}`,
             points_spent: 0,
             text_ai_count: 0,
             script_gen_count: 0,
@@ -4213,7 +5131,7 @@ Requirements:
         userStats
       });
     } catch (e: any) {
-      res.status(500).json({ error: "鑾峰彇缁熻鏁版嵁澶辫触", details: e.message });
+      res.status(500).json({ error: "获取统计数据失败", details: e.message });
     }
   });
 
@@ -4257,7 +5175,7 @@ Requirements:
         dailyTrend
       });
     } catch (e: any) {
-      res.status(500).json({ error: "鑾峰彇鐢ㄦ埛缁熻鏁版嵁澶辫触", details: e.message });
+      res.status(500).json({ error: "获取用户统计数据失败", details: e.message });
     }
   });
 
@@ -4475,22 +5393,22 @@ Requirements:
   app.get("/api/user/settings/api-config", authenticateToken, async (req: any, res) => {
     try {
       const userId = req.user.id;
-      const val = await readUserPreferenceValue(userId, 'api_config');
-      if (val) {
-        return res.json(normalizeApiConfigShape(typeof val === 'string' ? JSON.parse(val) : val));
-      } else {
-        // Fallback to global settings template
-        try {
-          const [rows]: any = await db.query('SELECT value FROM settings WHERE `key` = ?', ['global_api_config']);
-          if (rows.length > 0) {
-            const globalVal = rows[0].value;
-            return res.json(normalizeApiConfigShape(typeof globalVal === 'string' ? JSON.parse(globalVal) : globalVal));
-          }
-        } catch (dbError) {
-          console.warn("Global API settings read failed, returning normalized defaults:", dbError);
-        }
-        return res.json(normalizeApiConfigShape({}));
+      const userConfig = await normalizeAndPersistUserApiConfig(userId, req.user.username);
+      if (userConfig) {
+        return res.json(userConfig);
       }
+
+      // Fallback to global settings template
+      try {
+        const [rows]: any = await db.query('SELECT value FROM settings WHERE `key` = ?', ['global_api_config']);
+        if (rows.length > 0) {
+          const globalVal = rows[0].value;
+          return res.json(normalizeApiConfigShape(typeof globalVal === 'string' ? JSON.parse(globalVal) : globalVal));
+        }
+      } catch (dbError) {
+        console.warn("Global API settings read failed, returning normalized defaults:", dbError);
+      }
+      return res.json(normalizeApiConfigShape({}));
     } catch (e: any) {
       res.status(500).json({ error: "获取用户接口配置失败", details: e.message });
     }
@@ -4506,6 +5424,7 @@ Requirements:
       let packages: any[] = [];
       try {
         packages = syncModelPackagesFromConfig(config, { id: userId, username: req.user.username });
+        packages = await replaceCloudExtensionPackages("model", userId, packages);
       } catch (packageErr: any) {
         console.error("Failed to sync user model packages:", packageErr);
       }
@@ -4617,11 +5536,12 @@ Requirements:
     const userId = req.user?.id;
     console.log(`[API] Received request for global-api-config from user: ${userId}`);
     try {
-      const userConfig = await getGlobalApiConfig(userId);
+      const userConfig = userId
+        ? await normalizeAndPersistUserApiConfig(userId, req.user?.username)
+        : await getGlobalApiConfig(userId);
       if (userConfig) {
-        const merged = normalizeApiConfigShape(userConfig);
         console.log(`[API] Fetched merged API config from user preferences for user ${userId}`);
-        return res.json(merged);
+        return res.json(userConfig);
       } else {
         console.log('[API] No user preferences found, returning DEFAULT_API_CONFIG');
         return res.json(normalizeApiConfigShape({}));
@@ -4911,10 +5831,8 @@ Requirements:
   async function getGlobalApiConfig(userId?: number): Promise<Config | null> {
     try {
       if (userId) {
-        const val = await readUserPreferenceValue(userId, 'api_config');
-        if (val) {
-          return typeof val === 'string' ? JSON.parse(val) : val;
-        }
+        const normalized = await normalizeAndPersistUserApiConfig(userId);
+        if (normalized) return normalized as Config;
       }
 
       try {
@@ -4931,6 +5849,359 @@ Requirements:
     }
     return null;
   }
+
+  async function getMergedApiConfig(userId?: number): Promise<Config> {
+    const baseConfig: any = JSON.parse(JSON.stringify(DEFAULT_API_CONFIG));
+    const userConfig: any = await getGlobalApiConfig(userId);
+    if (!userConfig) return baseConfig as Config;
+
+    const merged: any = { ...baseConfig };
+    Object.keys(userConfig).forEach((key) => {
+      if (userConfig[key] && typeof userConfig[key] === "object" && !Array.isArray(userConfig[key])) {
+        merged[key] = {
+          ...(baseConfig[key] || {}),
+          ...userConfig[key],
+        };
+      } else {
+        merged[key] = userConfig[key];
+      }
+    });
+    return merged as Config;
+  }
+
+  async function readGenerationJob(jobId: string, userId: any) {
+    const [rows]: any = await db.query(
+      "SELECT * FROM generation_jobs WHERE id = ? AND user_id = ?",
+      [jobId, userId],
+    );
+    return rows.length > 0 ? serializeGenerationJobRow(rows[0]) : null;
+  }
+
+  async function readHistoryItemForUser(userId: any, historyId: string) {
+    const [rows]: any = await db.query(
+      "SELECT * FROM history WHERE id = ? AND user_id = ?",
+      [historyId, userId],
+    );
+    return rows.length > 0 ? serializeHistoryRow(rows[0]) : null;
+  }
+
+  function extractTextFromModelResponse(responseData: any) {
+    return (
+      responseData?.text ||
+      responseData?.candidates?.[0]?.content?.parts?.[0]?.text ||
+      responseData?.choices?.[0]?.message?.content ||
+      responseData?.content ||
+      ""
+    );
+  }
+
+  async function pollVideoJobOnce(job: any, userId: any) {
+    if (!job || job.kind !== "video" || job.status !== "running" || !job.externalTaskId) return null;
+    const request = job.request || {};
+    const historyItem = request.historyItem || await readHistoryItemForUser(userId, job.historyId);
+    const model = request.videoOptions?.model || historyItem?.config?.model;
+    const globalConfig = await getMergedApiConfig(userId);
+    const status = await videoAgent.getOperationStatus(job.externalTaskId, globalConfig, model);
+
+    if (!status?.done && !status?.error) return null;
+
+    if (status.error) {
+      const errorMsg = typeof status.error === "object"
+        ? status.error.message || JSON.stringify(status.error)
+        : status.error;
+      const failedItem = await saveHistoryItemForUser(userId, {
+        ...(historyItem || {}),
+        id: job.historyId,
+        status: "error",
+        error: errorMsg,
+        operationId: job.externalTaskId,
+        timestamp: historyItem?.timestamp || Date.now(),
+      });
+      await upsertGenerationJob({
+        id: job.id,
+        userId,
+        historyId: job.historyId,
+        kind: "video",
+        status: "error",
+        externalTaskId: job.externalTaskId,
+        result: { historyItem: failedItem },
+        error: errorMsg,
+      });
+      return failedItem;
+    }
+
+    if (status.videoUrl) {
+      const successItem = await saveHistoryItemForUser(userId, {
+        ...(historyItem || {}),
+        id: job.historyId,
+        type: "video",
+        status: "success",
+        videoUrl: status.videoUrl,
+        arkOriginalUrl: status.videoUrl,
+        operationId: job.externalTaskId,
+        timestamp: historyItem?.timestamp || Date.now(),
+      });
+      await upsertGenerationJob({
+        id: job.id,
+        userId,
+        historyId: job.historyId,
+        kind: "video",
+        status: "success",
+        externalTaskId: job.externalTaskId,
+        result: { historyItem: successItem, videoUrl: successItem.videoUrl, arkOriginalUrl: status.videoUrl },
+        error: null,
+      });
+      return successItem;
+    }
+
+    const errorMsg = "Video task finished but no video URL was returned.";
+    const failedItem = await saveHistoryItemForUser(userId, {
+      ...(historyItem || {}),
+      id: job.historyId,
+      status: "error",
+      error: errorMsg,
+      operationId: job.externalTaskId,
+      timestamp: historyItem?.timestamp || Date.now(),
+    });
+    await upsertGenerationJob({
+      id: job.id,
+      userId,
+      historyId: job.historyId,
+      kind: "video",
+      status: "error",
+      externalTaskId: job.externalTaskId,
+      result: { historyItem: failedItem },
+      error: errorMsg,
+    });
+    return failedItem;
+  }
+
+  function startGenerationJobRunner(userId: any, username: string, input: {
+    id: string;
+    kind: GenerationJobKind;
+    historyItem: any;
+    request: any;
+  }) {
+    if (activeGenerationJobs.has(input.id)) return;
+
+    const promise = (async () => {
+      const globalConfig = await getMergedApiConfig(userId);
+      const historyItem = input.historyItem || {};
+      const request = input.request || {};
+
+      try {
+        if (input.kind === "image") {
+          const imageConfig = request.imageConfig || historyItem.config || {};
+          const result = await imageAgent.generateSmartImage(imageConfig, globalConfig);
+          const successItem = await saveHistoryItemForUser(userId, {
+            ...historyItem,
+            id: historyItem.id || input.id,
+            type: "image",
+            status: "success",
+            imageUrl: result.imageUrl,
+            revisedPrompt: result.revisedPrompt || imageConfig.prompt || historyItem.revisedPrompt,
+            timestamp: historyItem.timestamp || Date.now(),
+          });
+          await upsertGenerationJob({
+            id: input.id,
+            userId,
+            historyId: successItem.id,
+            kind: "image",
+            status: "success",
+            request,
+            result: { historyItem: successItem, imageUrl: successItem.imageUrl, revisedPrompt: successItem.revisedPrompt },
+            error: null,
+          });
+          return;
+        }
+
+        if (input.kind === "video") {
+          const prompt = request.prompt || historyItem.config?.prompt || "";
+          const videoOptions = request.videoOptions || historyItem.config || {};
+          const operation = await videoAgent.generateVideo(prompt, videoOptions, globalConfig);
+          const externalTaskId = operation?.operationId || operation?.name || operation?.id || operation?.task_id;
+          if (!externalTaskId) {
+            throw new Error("Video generation started without an operation id.");
+          }
+
+          const processingItem = await saveHistoryItemForUser(userId, {
+            ...historyItem,
+            id: historyItem.id || input.id,
+            type: "video",
+            status: "processing",
+            operationId: externalTaskId,
+            config: {
+              ...(historyItem.config || {}),
+              operationId: externalTaskId,
+            },
+            timestamp: historyItem.timestamp || Date.now(),
+          });
+          await upsertGenerationJob({
+            id: input.id,
+            userId,
+            historyId: processingItem.id,
+            kind: "video",
+            status: "running",
+            externalTaskId,
+            request: { ...request, historyItem: processingItem },
+            result: { historyItem: processingItem },
+            error: null,
+          });
+
+          const maxAttempts = Number(request.maxAttempts || 180);
+          const intervalMs = Math.max(3000, Number(request.pollIntervalMs || 10000));
+          for (let attempts = 0; attempts < maxAttempts; attempts++) {
+            await new Promise((resolve) => setTimeout(resolve, intervalMs));
+            const latestJob = await readGenerationJob(input.id, userId);
+            if (!latestJob || latestJob.status !== "running") return;
+            const completed = await pollVideoJobOnce(latestJob, userId);
+            if (completed) return;
+          }
+
+          throw new Error("Video generation timed out. You can refresh later to check the task again.");
+        }
+
+        if (input.kind === "text") {
+          const body = request.body;
+          if (!body) {
+            throw new Error("Missing text generation request body.");
+          }
+          const responseData = await directorAgent.callApi("script", request.method || "generateContent", body, globalConfig);
+          const text = extractTextFromModelResponse(responseData);
+          if (!text || !String(text).trim()) {
+            throw new Error("Text model returned empty content.");
+          }
+
+          const successItem = await saveHistoryItemForUser(userId, {
+            ...historyItem,
+            id: historyItem.id || input.id,
+            type: historyItem.type || "gen_script",
+            status: "success",
+            revisedPrompt: text,
+            timestamp: historyItem.timestamp || Date.now(),
+          });
+          await upsertGenerationJob({
+            id: input.id,
+            userId,
+            historyId: successItem.id,
+            kind: "text",
+            status: "success",
+            request,
+            result: { historyItem: successItem, text, raw: responseData },
+            error: null,
+          });
+        }
+      } catch (err: any) {
+        const errorMsg = err?.message || String(err) || "Generation failed.";
+        console.error(`[GenerationJob] ${input.kind} job ${input.id} failed:`, err);
+        const failedItem = await saveHistoryItemForUser(userId, {
+          ...historyItem,
+          id: historyItem.id || input.id,
+          status: "error",
+          error: errorMsg,
+          timestamp: historyItem.timestamp || Date.now(),
+        });
+        await upsertGenerationJob({
+          id: input.id,
+          userId,
+          historyId: failedItem.id,
+          kind: input.kind,
+          status: "error",
+          request,
+          result: { historyItem: failedItem },
+          error: errorMsg,
+        });
+      }
+    })().finally(() => {
+      activeGenerationJobs.delete(input.id);
+    });
+
+    activeGenerationJobs.set(input.id, promise);
+  }
+
+  app.post("/api/generation-jobs/start", authenticateToken, async (req: any, res) => {
+    try {
+      const { jobId, kind, historyItem, request } = req.body || {};
+      const normalizedKind: GenerationJobKind = kind === "video" ? "video" : kind === "text" ? "text" : "image";
+      const resolvedHistoryItem = {
+        ...(historyItem || {}),
+        id: historyItem?.id || jobId,
+        type: historyItem?.type || (normalizedKind === "text" ? "gen_script" : normalizedKind),
+        status: historyItem?.status || "loading",
+        timestamp: historyItem?.timestamp || Date.now(),
+      };
+      const resolvedJobId = jobId || resolvedHistoryItem.id;
+      if (!resolvedJobId || !resolvedHistoryItem.id) {
+        return res.status(400).json({ error: "Missing generation job id." });
+      }
+
+      const savedItem = await saveHistoryItemForUser(req.user.id, resolvedHistoryItem);
+      await upsertGenerationJob({
+        id: resolvedJobId,
+        userId: req.user.id,
+        historyId: savedItem.id,
+        kind: normalizedKind,
+        status: "running",
+        request: {
+          ...(request || {}),
+          historyItem: savedItem,
+        },
+        result: { historyItem: savedItem },
+        error: null,
+      });
+
+      startGenerationJobRunner(req.user.id, req.user.username, {
+        id: resolvedJobId,
+        kind: normalizedKind,
+        historyItem: savedItem,
+        request: request || {},
+      });
+
+      const job = await readGenerationJob(resolvedJobId, req.user.id);
+      res.json({ success: true, job, historyItem: savedItem });
+    } catch (err: any) {
+      console.error("[GenerationJob] Failed to start job:", err);
+      res.status(500).json({ error: "Failed to start generation job", details: err.message });
+    }
+  });
+
+  app.get("/api/generation-jobs/:id", authenticateToken, async (req: any, res) => {
+    try {
+      let job = await readGenerationJob(req.params.id, req.user.id);
+      if (!job) {
+        return res.status(404).json({ error: "Generation job not found" });
+      }
+
+      if (job.status === "running" && job.kind === "video" && job.externalTaskId) {
+        await pollVideoJobOnce(job, req.user.id);
+        job = await readGenerationJob(req.params.id, req.user.id);
+      }
+
+      const historyItem = job ? await readHistoryItemForUser(req.user.id, job.historyId) : null;
+      res.json({ success: true, job, historyItem });
+    } catch (err: any) {
+      console.error("[GenerationJob] Failed to read job:", err);
+      res.status(500).json({ error: "Failed to read generation job", details: err.message });
+    }
+  });
+
+  app.get("/api/generation-jobs", authenticateToken, async (req: any, res) => {
+    try {
+      const status = req.query.status ? String(req.query.status) : "running";
+      const kind = req.query.kind ? String(req.query.kind) : null;
+      const params: any[] = [req.user.id, status];
+      let sql = "SELECT * FROM generation_jobs WHERE user_id = ? AND status = ?";
+      if (kind) {
+        sql += " AND kind = ?";
+        params.push(kind);
+      }
+      sql += " ORDER BY updated_at_ms DESC LIMIT 100";
+      const [rows]: any = await db.query(sql, params);
+      res.json({ success: true, jobs: (rows || []).map((row: any) => serializeGenerationJobRow(row)) });
+    } catch (err: any) {
+      res.status(500).json({ error: "Failed to list generation jobs", details: err.message });
+    }
+  });
 
   app.post('/api/video/test-connection', authenticateToken, async (req: any, res) => {
     try {
@@ -4968,25 +6239,25 @@ Requirements:
           // If 405, it means "Method Not Allowed" but the gateway accepted our Auth!
           // If 401/403, it means Auth failed.
           if (probeRes.status === 405 || probeRes.ok) {
-            return res.json({ success: true, message: 'API Key 楠岃瘉閫氳繃' });
+            return res.json({ success: true, message: 'API Key 验证通过' });
           } else {
             console.warn(`[Test] Ark API Key probe returned ${probeRes.status}:`, probeText);
             // If it's a specific Ark error about invalid key, we should report it
             if (probeText.includes('invalid') && (probeText.includes('key') || probeText.includes('token'))) {
-              throw new Error(`API Key 鏃犳晥: ${probeRes.status} ${probeText}`);
+              throw new Error(`API Key 无效: ${probeRes.status} ${probeText}`);
             }
           }
         } catch (e: any) {
           console.error('[Test] Ark API Key test failed:', e);
           // If AK/SK is also present, we continue to test that
           if (!config.ak || !config.sk) {
-            return res.status(401).json({ error: `API Key 楠岃瘉澶辫触: ${e.message}` });
+            return res.status(401).json({ error: `API Key 验证失败: ${e.message}` });
           }
         }
       }
 
       if (!config.ak || !config.sk) {
-        throw new Error('缂哄皯 AccessKey 鎴?SecretKey锛屼笖 API Key 楠岃瘉鏈€氳繃');
+        throw new Error('缺少 AccessKey 或 SecretKey，且 API Key 验证未通过');
       }
       
       // 2. Test AK/SK Signature
@@ -5011,12 +6282,12 @@ Requirements:
       
       const data = await response.json();
       if (!response.ok) {
-        const errMsg = data.error?.message || data.message || 'SigV4 閴存潈澶辫触';
+        const errMsg = data.error?.message || data.message || 'SigV4 鉴权失败';
         console.error(`[Test] SigV4 failed (${response.status}):`, data);
         throw new Error(`${errMsg} (${response.status})`);
       }
       
-      res.json({ success: true, message: 'AK/SK 鍙婇」鐩潈闄愰獙璇侀€氳繃' });
+      res.json({ success: true, message: 'AK/SK 及项目权限验证通过' });
     } catch (e: any) {
       res.status(500).json({ error: e.message });
     }
@@ -5246,7 +6517,7 @@ async function trimVideo(src: string, startTime: number, duration: number): Prom
     }
 
     if (!apiKey) {
-      return res.status(500).json({ error: isMini ? "鏈厤缃?RHSD2.0Mini API KEY" : "鏈厤缃?SEEDANCE API KEY" });
+      return res.status(500).json({ error: isMini ? "未配置 RHSD2.0Mini API KEY" : "未配置 SEEDANCE API KEY" });
     }
 
     // Helper to format as asset if applicable
@@ -5312,6 +6583,9 @@ async function trimVideo(src: string, startTime: number, duration: number): Prom
           console.log(`>>> [OSS] Pre-uploading base64 reference to OSS: ${filename}`);
           return await persistFromBase64(rawUrl, filename);
         } catch (err: any) {
+          if (requiresCloudStorage()) {
+            throw err;
+          }
           console.error('>>> [OSS] Failed to upload base64 to OSS:', err);
           return rawUrl;
         }
@@ -5350,11 +6624,19 @@ async function trimVideo(src: string, startTime: number, duration: number): Prom
               console.log(`>>> [OSS] Pre-uploading local file ${fullPath} to OSS: ${filename}`);
               return await uploadToOSS(buffer, filename, mimeType);
             } catch (err: any) {
+              if (requiresCloudStorage()) {
+                throw err;
+              }
               console.error(`>>> [OSS] Failed to upload local file to OSS:`, err);
             }
           } else {
+            if (requiresCloudStorage()) {
+              throw new Error("OSS client is required to upload local reference media.");
+            }
             console.warn(`>>> [OSS] Cannot upload local file to OSS: OSS client not configured.`);
           }
+        } else if (requiresCloudStorage()) {
+          throw new Error(`Local upload reference not found: ${relativePath}`);
         }
       }
 
@@ -5367,7 +6649,7 @@ async function trimVideo(src: string, startTime: number, duration: number): Prom
     const audioUrlList: string[] = [];
     
     // 1. Process referenceAssets (Tray + Explicit Mentions from frontend)
-    // These should come first to maintain @鍥?, @鍥? alignment
+    // These should come first to maintain @图1, @图2 alignment.
     const rawAssets: { url: string; originalType: 'image' | 'video' | 'audio'; asset: any }[] = [];
     if (referenceAssets && referenceAssets.length > 0) {
       for (const asset of referenceAssets) {
@@ -5389,7 +6671,7 @@ async function trimVideo(src: string, startTime: number, duration: number): Prom
     }
 
     // 2. Add image (Start Frame) and lastFrame if not already present
-    // Add them to the END to not disturb the @鍥綳 indices
+    // Add them to the end so existing @图N indices stay stable.
     let firstFrameIdx = -1;
     let lastFrameIdx = -1;
 
@@ -5426,11 +6708,11 @@ async function trimVideo(src: string, startTime: number, duration: number): Prom
 
     let finalPrompt = prompt || '';
     if (finalPrompt) {
-      // 1. Replace explicit @鍥綨 labels with lowercase @image, @video, @audio tags without spaces (supporting optional separators like underscore, space, or hyphen)
+      // 1. Replace explicit @图 labels with lowercase @image, @video, @audio tags without spaces (supporting optional separators like underscore, space, or hyphen)
       finalPrompt = finalPrompt
-        .replace(/@(?:鍥緗Image|image)[\s_-]*(\d+)/gi, '@image$1')
-        .replace(/@(?:瑙嗛|Video|video)[\s_-]*(\d+)/gi, '@video$1')
-        .replace(/@(?:闊抽|Audio|audio)[\s_-]*(\d+)/gi, '@audio$1');
+        .replace(/@(?:图|图片|Image|image)[\s_-]*(\d+)/gi, '@image$1')
+        .replace(/@(?:视频|Video|video)[\s_-]*(\d+)/gi, '@video$1')
+        .replace(/@(?:音频|Audio|audio)[\s_-]*(\d+)/gi, '@audio$1');
     }
 
     // Smart-classify reference assets based on prompt usage or RunningHub limits
@@ -5495,18 +6777,18 @@ async function trimVideo(src: string, startTime: number, duration: number): Prom
     if (finalPrompt) {
       // 2. Map history mentions if they were sent as referenceAssets
       // The frontend should have included these in referenceAssets, so they are already in the lists.
-      // If the prompt has @鍘嗗彶鍥綢D, we need to map that ID to its index in imageUrlList
-      // However, the current regex .replace(/@(?:鍘嗗彶鍥?\s*(\d+)/, '@Image $1') is risky if $1 is a large ID.
+      // If the prompt has @历史图ID, we need to map that ID to its index in imageUrlList
+      // However, the current regex .replace(/@(?:历史图?\s*(\d+)/, '@Image $1') is risky if $1 is a large ID.
       // Better strategy: the frontend should replace these names with indices before sending OR 
       // the server needs to know which ID maps to which index.
-      // For now, let's assume simple labels like @鍥? are the main user intent.
+      // For now, assume simple labels like @图1 are the main user intent.
       
-      // 3. Replace @棣栧抚 / @灏惧抚 with actual indices in lowercase
+      // 3. Replace @首帧 / @尾帧 with actual indices in lowercase.
       if (firstFrameIdx !== -1) {
-        finalPrompt = finalPrompt.replace(/@(?:棣栧抚|FirstFrame|start_frame)/g, `@image${firstFrameIdx}`);
+        finalPrompt = finalPrompt.replace(/@(?:首帧|FirstFrame|start_frame)/g, `@image${firstFrameIdx}`);
       }
       if (lastFrameIdx !== -1) {
-        finalPrompt = finalPrompt.replace(/@(?:灏惧抚|LastFrame|end_frame)/g, `@image${lastFrameIdx}`);
+        finalPrompt = finalPrompt.replace(/@(?:尾帧|LastFrame|end_frame)/g, `@image${lastFrameIdx}`);
       }
 
       // Cleanup multi-spaces
@@ -5625,7 +6907,7 @@ async function trimVideo(src: string, startTime: number, duration: number): Prom
       try {
         data = JSON.parse(text);
       } catch (e) {
-        return res.status(500).json({ error: "RunningHub 杩斿洖浜嗘棤鏁堢殑 JSON 鍝嶅簲", details: text });
+        return res.status(500).json({ error: "RunningHub 返回了无效的 JSON 响应", details: text });
       }
 
       if (!rhResponse.ok || (data && data.errorCode && data.errorCode !== '0' && data.errorCode !== '')) {
@@ -5640,7 +6922,7 @@ async function trimVideo(src: string, startTime: number, duration: number): Prom
       }
 
       if (!data || !data.taskId) {
-        return res.status(500).json({ error: "RunningHub 鍝嶅簲涓己澶?taskId", details: data });
+        return res.status(500).json({ error: "RunningHub 响应中缺少 taskId", details: data });
       }
 
       return res.json({ taskId: data.taskId });
@@ -5667,7 +6949,7 @@ async function trimVideo(src: string, startTime: number, duration: number): Prom
     }
 
     if (!apiKey) {
-      return res.status(500).json({ error: "鏈厤缃?SEEDANCE API KEY锛岃鍦ㄧ鐞嗗悗鍙颁腑璁剧疆" });
+      return res.status(500).json({ error: "未配置 SEEDANCE API KEY，请在管理后台中设置" });
     }
 
     try {
@@ -5686,18 +6968,18 @@ async function trimVideo(src: string, startTime: number, duration: number): Prom
       try {
         data = JSON.parse(text);
       } catch (e) {
-        return res.status(500).json({ error: "鏌ヨ鍝嶅簲鏍煎紡鏃犳晥", details: text });
+        return res.status(500).json({ error: "查询响应格式无效", details: text });
       }
 
       if (!rhResponse.ok || (data && data.errorCode && data.errorCode !== '0' && data.errorCode !== '')) {
          return res.status(rhResponse.status === 200 ? 500 : rhResponse.status).json({ 
-           error: data?.errorMessage || data?.message || "鏌ヨ浠诲姟澶辫触", 
+           error: data?.errorMessage || data?.message || "查询任务失败", 
            errorCode: data?.errorCode 
          });
       }
 
       if (!data) {
-        return res.status(500).json({ error: "RunningHub 杩斿洖涓虹┖" });
+        return res.status(500).json({ error: "RunningHub 返回为空" });
       }
 
       // Normalize RunningHub format
@@ -5829,7 +7111,8 @@ async function trimVideo(src: string, startTime: number, duration: number): Prom
   console.log(`>>> [SERVER] Routes and endpoints initialized.`);
   fs.appendFileSync(path.join(process.cwd(), 'startup_debug.log'), `[SERVER] Handlers registered at ${new Date().toISOString()}\n`);
 
-  // Vite 涓疆浠跺鐞?  console.log('>>> [DEBUG] Setting up Vite/Static middleware...');
+  // Vite 中间件处理
+  console.log('>>> [DEBUG] Setting up Vite/Static middleware...');
   if (process.env.NODE_ENV !== "production") {
     console.log('>>> [DEBUG] Starting Vite in development mode...');
     const vite = await createViteServer({

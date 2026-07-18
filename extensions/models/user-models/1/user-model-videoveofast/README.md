@@ -1,0 +1,5 @@
+# veo-3.1-fast-generate-preview
+
+User model interface package.
+
+API keys are intentionally not written into this package. Secrets stay in user preferences and are referenced by `user:1:api_config:videoVeoFast`.

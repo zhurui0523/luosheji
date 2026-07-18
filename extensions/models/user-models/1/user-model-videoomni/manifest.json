@@ -1,0 +1,116 @@
+{
+  "id": "user-model-videoomni",
+  "name": "omni-flash",
+  "version": "1.0.0",
+  "description": "omni-flash user model interface package.",
+  "type": "model",
+  "author": "zhurui",
+  "category": "video",
+  "icon": "MODEL",
+  "permissions": [
+    "call_model",
+    "use_network"
+  ],
+  "sandbox": "server",
+  "runtime": {
+    "kind": "http",
+    "entry": "model.ts",
+    "baseUrl": "https://api.vectorengine.ai"
+  },
+  "contributes": {
+    "models": [
+      {
+        "id": "videoOmni",
+        "name": "omni-flash",
+        "provider": "Third Party",
+        "protocol": "openai",
+        "capabilityKinds": [
+          "video"
+        ],
+        "modelType": "video",
+        "endpoint": "https://api.vectorengine.ai",
+        "model": "omni-flash",
+        "apiKeyRef": "user:1:api_config:videoOmni",
+        "defaultGenerationSettings": {
+          "video": {
+            "videoMode": "all-around",
+            "duration": "5",
+            "aspectRatio": "16:9",
+            "resolution": "720p"
+          }
+        },
+        "config": {
+          "path": "",
+          "defaultGenerationSettings": {
+            "video": {
+              "videoMode": "all-around",
+              "duration": "5",
+              "aspectRatio": "16:9",
+              "resolution": "720p"
+            }
+          }
+        },
+        "metadata": {
+          "userConnection": {
+            "id": "videoOmni",
+            "name": "omni-flash",
+            "displayName": "omni-flash",
+            "provider": "Third Party",
+            "protocol": "openai",
+            "endpoint": "https://api.vectorengine.ai",
+            "path": "",
+            "model": "omni-flash",
+            "apiKeyRef": "user:1:api_config:videoOmni",
+            "capabilityKinds": [
+              "video"
+            ],
+            "modelType": "video",
+            "enabled": true,
+            "isCustom": false,
+            "defaultGenerationSettings": {
+              "video": {
+                "videoMode": "all-around",
+                "duration": "5",
+                "aspectRatio": "16:9",
+                "resolution": "720p"
+              }
+            },
+            "metadata": {
+              "secretStoredIn": "user_preferences.api_config",
+              "sourceConfigKey": "videoOmni",
+              "defaultGenerationSettings": {
+                "video": {
+                  "videoMode": "all-around",
+                  "duration": "5",
+                  "aspectRatio": "16:9",
+                  "resolution": "720p"
+                }
+              }
+            }
+          },
+          "source": "user_model_connection",
+          "sourceConfigKey": "videoOmni",
+          "secretStoredIn": "user_preferences.api_config",
+          "defaultGenerationSettings": {
+            "video": {
+              "videoMode": "all-around",
+              "duration": "5",
+              "aspectRatio": "16:9",
+              "resolution": "720p"
+            }
+          }
+        }
+      }
+    ]
+  },
+  "metadata": {
+    "source": "user_model_connection",
+    "sourceConfigKey": "videoOmni",
+    "apiKeyStoredSeparately": true,
+    "ownerId": "1",
+    "packageKind": "model",
+    "packagePath": "extensions/models/user-models/1/user-model-videoomni",
+    "physicalPackage": true,
+    "updatedAt": 1784352437403
+  }
+}

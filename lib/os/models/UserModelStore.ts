@@ -17,7 +17,22 @@ function modelConnectionFromManifest(manifest: any): any | null {
   const modelDef = manifest?.contributes?.models?.[0];
   const connection = modelDef?.metadata?.userConnection;
   if (connection?.id) {
-    return connection;
+    const defaultGenerationSettings =
+      connection.defaultGenerationSettings ||
+      connection.config?.defaultGenerationSettings ||
+      modelDef.defaultGenerationSettings ||
+      modelDef.config?.defaultGenerationSettings ||
+      modelDef.metadata?.defaultGenerationSettings;
+    return {
+      ...connection,
+      modelType: connection.modelType || modelDef.modelType || manifest.category || 'text',
+      capabilityKinds: connection.capabilityKinds || modelDef.capabilityKinds || [manifest.category || 'text'],
+      defaultGenerationSettings,
+      metadata: {
+        ...(connection.metadata || {}),
+        ...(defaultGenerationSettings ? { defaultGenerationSettings } : {}),
+      },
+    };
   }
   if (!modelDef?.id) {
     return null;

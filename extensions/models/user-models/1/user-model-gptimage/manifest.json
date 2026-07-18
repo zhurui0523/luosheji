@@ -1,0 +1,106 @@
+{
+  "id": "user-model-gptimage",
+  "name": "gpt-image-2",
+  "version": "1.0.0",
+  "description": "gpt-image-2 user model interface package.",
+  "type": "model",
+  "author": "zhurui",
+  "category": "image",
+  "icon": "MODEL",
+  "permissions": [
+    "call_model",
+    "use_network"
+  ],
+  "sandbox": "server",
+  "runtime": {
+    "kind": "http",
+    "entry": "model.ts",
+    "baseUrl": "https://torchai.ai/v1/images/generations/"
+  },
+  "contributes": {
+    "models": [
+      {
+        "id": "gptImage",
+        "name": "gpt-image-2",
+        "provider": "Third Party",
+        "protocol": "openai",
+        "capabilityKinds": [
+          "image"
+        ],
+        "modelType": "image",
+        "endpoint": "https://torchai.ai/v1/images/generations/",
+        "model": "gpt-image-2",
+        "apiKeyRef": "user:1:api_config:gptImage",
+        "defaultGenerationSettings": {
+          "image": {
+            "aspectRatio": "1:1",
+            "imageSize": "1K"
+          }
+        },
+        "config": {
+          "path": "",
+          "defaultGenerationSettings": {
+            "image": {
+              "aspectRatio": "1:1",
+              "imageSize": "1K"
+            }
+          }
+        },
+        "metadata": {
+          "userConnection": {
+            "id": "gptImage",
+            "name": "gpt-image-2",
+            "displayName": "gpt-image-2",
+            "provider": "Third Party",
+            "protocol": "openai",
+            "endpoint": "https://torchai.ai/v1/images/generations/",
+            "path": "",
+            "model": "gpt-image-2",
+            "apiKeyRef": "user:1:api_config:gptImage",
+            "capabilityKinds": [
+              "image"
+            ],
+            "modelType": "image",
+            "enabled": true,
+            "isCustom": false,
+            "defaultGenerationSettings": {
+              "image": {
+                "aspectRatio": "1:1",
+                "imageSize": "1K"
+              }
+            },
+            "metadata": {
+              "secretStoredIn": "user_preferences.api_config",
+              "sourceConfigKey": "gptImage",
+              "defaultGenerationSettings": {
+                "image": {
+                  "aspectRatio": "1:1",
+                  "imageSize": "1K"
+                }
+              }
+            }
+          },
+          "source": "user_model_connection",
+          "sourceConfigKey": "gptImage",
+          "secretStoredIn": "user_preferences.api_config",
+          "defaultGenerationSettings": {
+            "image": {
+              "aspectRatio": "1:1",
+              "imageSize": "1K"
+            }
+          }
+        }
+      }
+    ]
+  },
+  "metadata": {
+    "source": "user_model_connection",
+    "sourceConfigKey": "gptImage",
+    "apiKeyStoredSeparately": true,
+    "ownerId": "1",
+    "packageKind": "model",
+    "packagePath": "extensions/models/user-models/1/user-model-gptimage",
+    "physicalPackage": true,
+    "updatedAt": 1784352437398
+  }
+}

@@ -1,4 +1,4 @@
-
+﻿
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Sparkles, X } from 'lucide-react';
@@ -15,6 +15,129 @@ import { DatabaseSetupGuide } from './components/DatabaseSetupGuide';
 import { DEFAULT_CONFIG } from './constants';
 import { Config, HistoryItem, SmartImageConfig, SmartVideoConfig, CameraParams, PipelineData } from './types';
 import { safeJson } from './lib/fetch';
+import {
+  applyImageGenerationDefaults,
+  applyVideoGenerationDefaults,
+  getGenerationDefaultsSignature,
+} from './lib/modelOptions';
+
+const FALLBACK_IMAGE_MODEL = 'gemini-3.1-flash-image-preview';
+const FALLBACK_VIDEO_MODEL = 'seedance2.0';
+const SMART_HISTORY_CACHE_KEY = 'smartHistory';
+const LOCAL_PENDING_HISTORY_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+
+const isObsoletePlaceholderHistoryItem = (item: any) => {
+  const config = item?.config || {};
+  const type = String(item?.type || '').toLowerCase();
+  const title = String(config.title || '').trim().toLowerCase();
+  const text = String(item?.revisedPrompt || item?.prompt || config.prompt || '').trim();
+  const hasMedia = Boolean(item?.imageUrl || item?.videoUrl || item?.url || item?.ossUrl);
+  const hasMeaningfulRole = Boolean(
+    config.isIntegratedModelNode ||
+    config.isSkillNode ||
+    config.isPipelineNode ||
+    config.isPlaceholder ||
+    config.isUpload ||
+    config.isManualPlaceholder ||
+    config.isManualNode
+  );
+
+  return (
+    type === 'gen_script' &&
+    !hasMeaningfulRole &&
+    !hasMedia &&
+    (!text || ['new node', 'script gen', 'untitled node'].includes(title))
+  );
+};
+
+const getCachedSmartHistory = (): HistoryItem[] => {
+  try {
+    const saved = localStorage.getItem(SMART_HISTORY_CACHE_KEY);
+    if (!saved) return [];
+    const parsed = JSON.parse(saved);
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter(Boolean)
+      .filter((item: any) => {
+        const url = item.imageUrl || item.videoUrl || '';
+        return !String(url).startsWith('data:') && !isObsoletePlaceholderHistoryItem(item);
+      });
+  } catch (e) {
+    console.error('Failed to load smartHistory from localStorage:', e);
+    return [];
+  }
+};
+
+const isPendingLocalHistoryItem = (item: HistoryItem) => {
+  const status = String(item?.status || '').toLowerCase();
+  const ts = Number(item?.timestamp || 0);
+  const isRecent = ts > 0 && Date.now() - ts < LOCAL_PENDING_HISTORY_MAX_AGE_MS;
+  const mediaUrl = String((item as any)?.imageUrl || (item as any)?.videoUrl || (item as any)?.url || '');
+
+  return (
+    (['loading', 'processing', 'running', 'pending'].includes(status) && isRecent) ||
+    mediaUrl.startsWith('blob:') ||
+    mediaUrl.startsWith('data:') ||
+    ((item as any)?.pendingCloudSync === true && isRecent)
+  );
+};
+
+const pruneForLocalHistoryCache = (obj: any, depth: number = 0): any => {
+  if (depth > 5) return null;
+  if (!obj || typeof obj !== 'object') return obj;
+  if (Array.isArray(obj)) return obj.map((entry) => pruneForLocalHistoryCache(entry, depth + 1));
+
+  const next = { ...obj };
+  for (const [key, value] of Object.entries(next)) {
+    if (typeof value === 'string' && value.startsWith('data:')) {
+      next[key] = '';
+    } else if (value && typeof value === 'object') {
+      next[key] = pruneForLocalHistoryCache(value, depth + 1);
+    }
+  }
+  return next;
+};
+
+const resolveActiveImageDefaultsModel = (config: Config, currentModel?: string) => {
+  if (!currentModel || currentModel === FALLBACK_IMAGE_MODEL) {
+    return config?.image?.model || FALLBACK_IMAGE_MODEL;
+  }
+  return currentModel;
+};
+
+const resolveActiveVideoDefaultsModel = (config: Config, currentModel?: string) => {
+  return currentModel || config?.videoSeedance?.model || config?.video?.model || FALLBACK_VIDEO_MODEL;
+};
+
+const createInitialSmartImageConfig = (config: Config = DEFAULT_CONFIG): SmartImageConfig =>
+  applyImageGenerationDefaults(
+    {
+      prompt: '',
+      aspectRatio: '1:1',
+      imageSize: '1K',
+      gptSize: '1024x1536',
+      gptQuality: 'auto',
+      gptFormat: 'jpeg',
+      referenceImages: [],
+      model: config?.image?.model || FALLBACK_IMAGE_MODEL,
+    },
+    config,
+    config?.image?.model || FALLBACK_IMAGE_MODEL,
+  ) as SmartImageConfig;
+
+const createInitialSmartVideoConfig = (config: Config = DEFAULT_CONFIG): SmartVideoConfig =>
+  applyVideoGenerationDefaults(
+    {
+      prompt: '',
+      resolution: '720p',
+      aspectRatio: '16:9',
+      duration: '5',
+      model: config?.videoSeedance?.model || FALLBACK_VIDEO_MODEL,
+      videoMode: 'all-around',
+    },
+    config,
+    config?.videoSeedance?.model || FALLBACK_VIDEO_MODEL,
+  ) as SmartVideoConfig;
 
 const App: React.FC = () => {
   const [token, setToken] = useState<string | null>(() => {
@@ -43,70 +166,30 @@ const App: React.FC = () => {
     if (params.has('share_media_id')) return 'mycompany';
     return 'space';
   });
-  const [smartHistory, setSmartHistory] = useState<HistoryItem[]>(() => {
-    try {
-      const saved = localStorage.getItem('smartHistory');
-      if (!saved) return [];
-      const parsed = JSON.parse(saved);
-      // Safety: Filter out any items that might have huge Base64 data if they somehow got in
-      const filtered = Array.isArray(parsed) ? parsed.filter(item => {
-        const url = item.imageUrl || item.videoUrl || '';
-        return !url.startsWith('data:');
-      }) : [];
-      // Filter out unwanted placeholder cards
-      return filtered.filter(item => {
-        const prompt = item.revisedPrompt || "";
-        if (prompt === "在此处保存您的想法、提示词、分镜剧本或大纲。双击或选择下方下方工具栏中的「查看与修改」进行内容编辑。" || 
-            prompt === "在此处保存您的想法、提示词、分镜剧本或大纲。双击或选择下方工具栏中的「查看与修改」进行内容编辑。") {
-          return false;
-        }
-        if (prompt.includes("连接输入节点") && prompt.includes("进行内容转换")) {
-          return false;
-        }
-        return true;
-      });
-    } catch (e) {
-      console.error('Failed to load smartHistory from localStorage:', e);
-      return [];
-    }
-  });
+  const [smartHistory, setSmartHistory] = useState<HistoryItem[]>(() => getCachedSmartHistory());
 
   // Persist smartHistory to localStorage (with safety, pruning and debouncing)
   useEffect(() => {
     const timer = setTimeout(() => {
       try {
-        // Recursive function to prune base64 data
-        const pruneBase64 = (obj: any, depth: number = 0): any => {
-          if (depth > 5) return null;
-          if (!obj || typeof obj !== 'object') return obj;
-          if (Array.isArray(obj)) return obj.map(o => pruneBase64(o, depth + 1));
-          
-          const newObj = { ...obj };
-          for (const [key, value] of Object.entries(newObj)) {
-            if (typeof value === 'string' && value.startsWith('data:')) {
-              newObj[key] = ''; // Always prune base64 from localStorage
-            } else if (value && typeof value === 'object') {
-              newObj[key] = pruneBase64(value, depth + 1);
-            }
-          }
-          return newObj;
-        };
-
-        // Keep only last 30 items in localStorage to save space
-        const prunedHistory = smartHistory.slice(0, 30).map(item => pruneBase64(item));
-        localStorage.setItem('smartHistory', JSON.stringify(prunedHistory));
+        // Local history is only a cache/unsynced fallback. The database remains authoritative.
+        const prunedHistory = smartHistory
+          .filter((item) => !isObsoletePlaceholderHistoryItem(item))
+          .slice(0, 30)
+          .map((item) => pruneForLocalHistoryCache(item));
+        localStorage.setItem(SMART_HISTORY_CACHE_KEY, JSON.stringify(prunedHistory));
       } catch (e) {
         console.error('Failed to save smartHistory to localStorage:', e);
         try {
           // Emergency fallback: only keep last 5 items
-          localStorage.setItem('smartHistory', JSON.stringify(smartHistory.slice(0, 5).map(item => ({
+          localStorage.setItem(SMART_HISTORY_CACHE_KEY, JSON.stringify(smartHistory.slice(0, 5).map(item => ({
             ...item,
             imageUrl: item.imageUrl?.startsWith('data:') ? '' : item.imageUrl,
             videoUrl: item.videoUrl?.startsWith('data:') ? '' : item.videoUrl
           }))));
         } catch (innerE) {
           console.warn('Clearing smartHistory from localStorage due to persistent quota issues');
-          localStorage.removeItem('smartHistory');
+          localStorage.removeItem(SMART_HISTORY_CACHE_KEY);
         }
       }
     }, 2000);
@@ -298,72 +381,19 @@ const App: React.FC = () => {
         const history = await safeJson(historyRes);
         if (Array.isArray(history)) {
           setSmartHistory(prev => {
-            // 1. Get current local state from localStorage as a baseline if prev is empty (on refresh)
-            const activeCanvasId = localStorage.getItem("aistudio_active_canvas_id") || "default";
-            const localBaselineUnfiltered = prev.length > 0 ? prev : (() => {
-              const saved = localStorage.getItem('smartHistory');
-              return saved ? JSON.parse(saved) : [];
-            })();
-            const localBaseline = localBaselineUnfiltered.filter((item: any) => {
-              const itemCanvasId = item.canvasId || 'default';
-              return itemCanvasId === activeCanvasId;
-            });
+            // Database history is authoritative for logged-in users. Local cache only keeps
+            // very recent unfinished work that has not reached the server yet.
+            const localBaselineUnfiltered = prev.length > 0 ? prev : getCachedSmartHistory();
+            const localBaseline = Array.isArray(localBaselineUnfiltered)
+              ? localBaselineUnfiltered.filter(Boolean)
+              : [];
 
-            // 2. Start with server data (filter by active canvas ID to prevent cross-canvas leakage)
-            const filteredServerHistory = history.filter((h: any) => {
-              const itemCanvasId = h.canvasId || 'default';
-              return itemCanvasId === activeCanvasId;
-            });
-            const merged = [...filteredServerHistory];
-
-            // 3. Merge local state: prioritize local coordinates & successes over server properties
-            localBaseline.forEach((localItem: HistoryItem) => {
-              const index = merged.findIndex(h => h.id === localItem.id);
-              if (index !== -1) {
-                // ALWAYS prioritize local position over server (since drag state is updated locally and might not have synced yet)
-                if (localItem.position) {
-                  merged[index].position = localItem.position;
-                }
-
-                // Keep parentId if available locally to prevent connection lines disappearing
-                if (localItem.parentId !== undefined) {
-                  merged[index].parentId = localItem.parentId;
-                }
-
-                // Keep local config, especially for drafts, to avoid overwriting typed prompts and configurations during polling
-                if (localItem.config) {
-                  merged[index].config = {
-                    ...(merged[index].config || {}),
-                    ...localItem.config
-                  };
-                }
-                
-                // Keep naturalAspectRatio if available
-                if (localItem.naturalAspectRatio) {
-                  merged[index].naturalAspectRatio = localItem.naturalAspectRatio;
-                }
-                
-                // If item exists on server, prioritize local success/error over server loading
-                if (localItem.status === 'success' || localItem.status === 'error') {
-                  if (merged[index].status === 'loading' || merged[index].status === 'processing') {
-                    // Only override if local item actually has the media URL
-                    if (localItem.imageUrl || localItem.videoUrl) {
-                      merged[index] = {
-                        ...merged[index],
-                        status: localItem.status,
-                        imageUrl: localItem.imageUrl || merged[index].imageUrl,
-                        videoUrl: localItem.videoUrl || merged[index].videoUrl,
-                        revisedPrompt: localItem.revisedPrompt || merged[index].revisedPrompt,
-                        error: localItem.error || merged[index].error
-                      };
-                    }
-                  }
-                }
-              } else {
-                // If item doesn't exist on server yet, keep it locally
-                merged.push(localItem);
-              }
-            });
+            const serverHistory = history.filter(Boolean);
+            const serverIds = new Set(serverHistory.map((item: HistoryItem) => item.id));
+            const localPending = localBaseline.filter((localItem: HistoryItem) =>
+              !serverIds.has(localItem.id) && isPendingLocalHistoryItem(localItem)
+            );
+            const merged = [...serverHistory, ...localPending];
 
             // 4. Fallback grid layout: Make sure every item has a valid coordinate to avoid stacking at (0,0)
             const columns = 4;
@@ -424,17 +454,7 @@ const App: React.FC = () => {
                 };
               }
               return item;
-            }).filter(item => {
-              const prompt = item.revisedPrompt || "";
-              if (prompt === "在此处保存您的想法、提示词、分镜剧本或大纲。双击或选择下方下方工具栏中的「查看与修改」进行内容编辑。" || 
-                  prompt === "在此处保存您的想法、提示词、分镜剧本或大纲。双击或选择下方工具栏中的「查看与修改」进行内容编辑。") {
-                return false;
-              }
-              if (prompt.includes("连接输入节点") && prompt.includes("进行内容转换")) {
-                return false;
-              }
-              return true;
-            });
+            }).filter((item) => !isObsoletePlaceholderHistoryItem(item));
 
             // Sort by timestamp descending
             return finalMerged.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
@@ -472,27 +492,42 @@ const App: React.FC = () => {
     return () => clearInterval(intervalId);
   }, [token]);
 
-  const [smartImageConfig, setSmartImageConfig] = useState<SmartImageConfig>({
-    prompt: '',
-    aspectRatio: '9:16',
-    imageSize: '2K',
-    gptSize: '1024x1536',
-    gptQuality: 'auto',
-    gptFormat: 'jpeg',
-    referenceImages: [],
-    model: 'gemini-3.1-flash-image-preview',
-  });
-  const [smartVideoConfig, setSmartVideoConfig] = useState<SmartVideoConfig>({
-    prompt: '',
-    resolution: '720p',
-    aspectRatio: '16:9',
-    duration: '4',
-    model: 'seedance2.0',
-    videoMode: 'all-around'
-  });
+  const [smartImageConfig, setSmartImageConfig] = useState<SmartImageConfig>(() => createInitialSmartImageConfig());
+  const [smartVideoConfig, setSmartVideoConfig] = useState<SmartVideoConfig>(() => createInitialSmartVideoConfig());
   const [smartCameraParams, setSmartCameraParams] = useState<CameraParams | undefined>();
   const [hasPlatformKey, setHasPlatformKey] = useState(false);
   const [config, setConfig] = useState<Config>(DEFAULT_CONFIG);
+  const appliedGenerationDefaultsRef = React.useRef<{ image?: string; video?: string }>({});
+
+  useEffect(() => {
+    const activeModel = resolveActiveImageDefaultsModel(config, smartImageConfig.model);
+    const signature = getGenerationDefaultsSignature(config, activeModel, 'image');
+    if (appliedGenerationDefaultsRef.current.image === signature) return;
+
+    appliedGenerationDefaultsRef.current.image = signature;
+    setSmartImageConfig((prev) =>
+      applyImageGenerationDefaults(
+        prev,
+        config,
+        resolveActiveImageDefaultsModel(config, prev.model),
+      ) as SmartImageConfig,
+    );
+  }, [config, smartImageConfig.model]);
+
+  useEffect(() => {
+    const activeModel = resolveActiveVideoDefaultsModel(config, smartVideoConfig.model);
+    const signature = getGenerationDefaultsSignature(config, activeModel, 'video');
+    if (appliedGenerationDefaultsRef.current.video === signature) return;
+
+    appliedGenerationDefaultsRef.current.video = signature;
+    setSmartVideoConfig((prev) =>
+      applyVideoGenerationDefaults(
+        prev,
+        config,
+        resolveActiveVideoDefaultsModel(config, prev.model),
+      ) as SmartVideoConfig,
+    );
+  }, [config, smartVideoConfig.model]);
 
   useEffect(() => {
     const checkPlatformKey = async () => {
@@ -603,7 +638,7 @@ const App: React.FC = () => {
   const handleLogin = (newToken: string, newUser: any) => {
     localStorage.removeItem('isGuest');
     // Clear any residual data from a previous session
-    localStorage.removeItem('smartHistory');
+    localStorage.removeItem(SMART_HISTORY_CACHE_KEY);
     setSmartHistory([]);
     setLatestPipeline(null);
     setSelectedTaskData(null);
@@ -615,30 +650,15 @@ const App: React.FC = () => {
   const handleLogout = () => {
     localStorage.removeItem('token');
     localStorage.removeItem('user');
-    localStorage.removeItem('smartHistory');
+    localStorage.removeItem(SMART_HISTORY_CACHE_KEY);
     setToken(null);
     setUser(null);
     setSmartHistory([]);
     setLatestPipeline(null);
     setSelectedTaskData(null);
-    setSmartImageConfig({
-      prompt: '',
-      aspectRatio: '9:16',
-      imageSize: '4K',
-      gptSize: '1024x1536',
-      gptQuality: 'auto',
-      gptFormat: 'jpeg',
-      referenceImages: [],
-      model: 'gemini-3.1-flash-image-preview',
-    });
-    setSmartVideoConfig({
-      prompt: '',
-      resolution: '720p',
-      aspectRatio: '16:9',
-      duration: '4',
-      model: 'seedance2.0',
-      videoMode: 'all-around'
-    });
+    appliedGenerationDefaultsRef.current = {};
+    setSmartImageConfig(createInitialSmartImageConfig(DEFAULT_CONFIG));
+    setSmartVideoConfig(createInitialSmartVideoConfig(DEFAULT_CONFIG));
     setSmartCameraParams(undefined);
     setMainTab('space');
   };
@@ -822,3 +842,4 @@ const App: React.FC = () => {
 };
 
 export default App;
+

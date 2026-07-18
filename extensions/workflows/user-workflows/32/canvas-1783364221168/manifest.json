@@ -1,0 +1,724 @@
+{
+  "id": "user-workflow-canvas-1783364221168",
+  "name": "《药学，岂止于精微》\n\n配音文",
+  "version": "1.0.0",
+  "description": "User saved workflow preset.",
+  "type": "workflow",
+  "author": "leonhou",
+  "category": "workflow",
+  "icon": "🧰",
+  "permissions": [
+    "read_canvas",
+    "write_canvas"
+  ],
+  "sandbox": "none",
+  "runtime": {
+    "kind": "prompt",
+    "entry": "workflow.ts"
+  },
+  "contributes": {
+    "workflowPresets": [
+      {
+        "id": "canvas_1783364221168",
+        "name": "《药学，岂止于精微》\n\n配音文",
+        "description": "User saved workflow preset.",
+        "category": "workflow",
+        "nodes": [
+          {
+            "id": "upl_1783365887944_jlg",
+            "type": "image",
+            "status": "success",
+            "imageUrl": "https://zhurui.oss-cn-hangzhou.aliyuncs.com/luosheji/history/32/upl_1783365887944_jlg_image.png",
+            "config": {
+              "title": "图片_13",
+              "isUpload": true,
+              "originalName": "7febb324743a91c5a1ee14d2f2809549.jpg"
+            },
+            "timestamp": 1783365888002,
+            "position": {
+              "x": 470,
+              "y": 2072,
+              "customX": 470,
+              "customY": 2072,
+              "bento": {
+                "x": 470,
+                "y": 2072
+              }
+            },
+            "canvasId": "canvas_1783364221168",
+            "naturalAspectRatio": 0.6975124378109453
+          },
+          {
+            "id": "draft-new-1783365824837",
+            "type": "image",
+            "status": "draft_new",
+            "parentId": "",
+            "timestamp": 1783365824837,
+            "canvasId": "canvas_1783364221168",
+            "position": {
+              "x": 100,
+              "y": 2072,
+              "customX": 100,
+              "customY": 2072,
+              "mindmap": {
+                "x": -408,
+                "y": 1410
+              },
+              "bento": {
+                "x": 100,
+                "y": 2072
+              },
+              "semi_auto": {
+                "x": 1730,
+                "y": 2820
+              }
+            },
+            "config": {
+              "prompt": "",
+              "aspectRatio": "1:1",
+              "imageSize": "1K",
+              "gridMode": "none"
+            }
+          },
+          {
+            "id": "draft-new-1783364580353",
+            "type": "image",
+            "status": "draft_new",
+            "parentId": "",
+            "timestamp": 1783364580353,
+            "canvasId": "canvas_1783364221168",
+            "position": {
+              "x": 1330,
+              "y": 100,
+              "customX": 1330,
+              "customY": 100,
+              "mindmap": {
+                "x": 1284,
+                "y": 338
+              },
+              "bento": {
+                "x": 1330,
+                "y": 100
+              },
+              "semi_auto": {
+                "x": 1730,
+                "y": 1240
+              }
+            },
+            "config": {
+              "prompt": "",
+              "aspectRatio": "1:1",
+              "imageSize": "1K",
+              "gridMode": "none"
+            }
+          },
+          {
+            "id": "text-1783364402217",
+            "type": "gen_script",
+            "status": "success",
+            "parentId": "",
+            "revisedPrompt": "",
+            "timestamp": 1783364402217,
+            "canvasId": "canvas_1783364221168",
+            "position": {
+              "x": 100,
+              "y": 100,
+              "customX": 100,
+              "customY": 100,
+              "mindmap": {
+                "x": 1341,
+                "y": -324
+              },
+              "bento": {
+                "x": 100,
+                "y": 100
+              },
+              "semi_auto": {
+                "x": 150,
+                "y": 150
+              }
+            },
+            "config": {
+              "title": "文本_02217",
+              "isUpload": false
+            }
+          },
+          {
+            "id": "mr9lw01prnyt0vu",
+            "type": "image",
+            "status": "success",
+            "config": {
+              "prompt": "参考图（图1）是核心角色形象依据。生成该角色的专业转面设定图（Turnaround Character Sheet），必须 100% 还原参考图中的面部特征（五官形状、比例、眼神）、发型、发色及肤色。生成图需包含：该角色的肖像写真、全身的正/侧/背转面三视图、核心服装细节。写实摄影，影棚纯净白背景。 @图1",
+              "aspectRatio": "1:1",
+              "imageSize": "1K",
+              "gptSize": "1024x1536",
+              "gptQuality": "auto",
+              "gptFormat": "jpeg",
+              "referenceImages": [],
+              "model": "gemini-3.1-flash-image-preview",
+              "gridMode": "none"
+            },
+            "isOptimized": false,
+            "timestamp": 1783365693787,
+            "position": {
+              "x": 1090,
+              "y": 1620,
+              "customX": 1090,
+              "customY": 1620,
+              "bento": {
+                "x": 1090,
+                "y": 1620
+              },
+              "mindmap": {
+                "x": 1690,
+                "y": 1620
+              },
+              "semi_auto": {
+                "x": 190,
+                "y": 2163
+              }
+            },
+            "parentId": "upl_1783365650374_9ib",
+            "imageUrl": "https://zhurui.oss-cn-hangzhou.aliyuncs.com/luosheji/history/32/mr9lw01prnyt0vu_image.png",
+            "revisedPrompt": "",
+            "ossUrl": "https://zhurui.oss-cn-hangzhou.aliyuncs.com/luosheji/history/32/mr9lw01prnyt0vu_image.png",
+            "canvasId": "canvas_1783364221168",
+            "naturalAspectRatio": 1
+          },
+          {
+            "id": "upl_1783364472666_f8w",
+            "type": "gen_script",
+            "status": "success",
+            "revisedPrompt": "\n\n《药学，岂止于精微》\n\n配音文案\n\n\n\n【开篇】\n\n（以唐可京为主要角色开片，开端，带引）\n\n没有喧嚣，却在处方落定的那一刻，久久回响。\n\n没有刻度，却在每一次审方操作中，守住底线。\n\n我们手中握着一条无形的生命准线\n\n一端锚定药学领域的严苛标准，一端承载千万份沉甸甸的生命之托。\n\n这条线，半分松动，不被允许，丝毫偏移，绝不妥协\n\n这里，是中山大学附属第一医院药学部。\n\n也是每一位药师与生命对话的起点。\n\n【第一幕 传承·从课堂到药房】\n\n标题字幕（不配音）：线的起点，是沉淀而非起步\n\n讲台上，一代代药学前辈躬身传道，将准则刻入学子心中。\n\n讲台下，一辈辈青年学子以汗水打磨，以时光淬炼专业。\n\n从药物机制的深耕，到临床循证的梳理。\n\n从用药决策的审慎，到分毫不差的恪守。 \n\n这条生命线始于传承，沉淀至今。\n\n【第二幕 践行·从审方到发药】\n\n 纯药学部门\n\n\n\n标题字幕（不配音）：线的守护，是严谨而非懈怠\n\n审方、核对、调配、发药——每一个环节，都是对用药风险的前置管控。\n\n设备持续迭代，流程不断优化，自动化与信息化的赋能，让药师工作持续提效。\n\n但始终不变的，是我们对细节的严谨求证。\n\n将生命之线系于毫厘之间，从不心存侥幸。\n\n【第三幕 求索·从实验到临床】\n\n（肺癌会诊，唐主任，多画面内容时长不用太长，半药学部门）\n\n标题字幕（不配音）：线的延伸，是求真而非从众\n\n面对复杂方案，我们反复验证安全边界。面对未知难题，我们持续校准答案精度。在每一次多学科会诊，在每一例个体化用药，\n\n我们以专业的判断，锚定最准确的答案。\n\n为临床诊疗提供可靠的循证依据，为患者筑牢安全用药的坚实防线。\n\n这里，中山大学附属第一医院药学部，正以国际视野，定义药学领域的新坐标\n\n\n\n【第四幕 创新·从研发到应用】\n\n标题字幕（不配音）：线的抵达，是致远而非止步\n\n专业的高度，不止于实验室的突破，更在于国际视野下的持续对话。\n\n肺癌智能用药APP，打破空间壁垒，让精准用药直达患者身旁。\n\n与国际前沿深度接轨，让药学标准始终对标全球。\n\n推动制剂创新，加速成果转化\n\n从实验室到临床，从国内到国际\n\n每一步探索，都在触达药学领域的边界\n\n让专业走出实验室，让创新走向临床\n\n在国际舞台上留下药学人的回响。\n\n\n\n【尾声】\n\n从课堂到病房，从科研到实践。\n\n一代代药学人，在毫厘之间坚守信念，在守护路上砥砺前行。\n\n这条生命准线\n\n没有刻度，却丈量着每一位药师的责任与担当。\n\n没有声音，却回应着每一位患者的信任与托付。\n\n责任，是连接生命的脉络。\n\n精微，是矢志不移的底线。\n\n守住这条准线，是守住每一位药师对生命的敬畏，也是守住每一位药师的信念\n\n“药学，岂止于精微”\n\n\n\n",
+            "config": {
+              "title": "20260705《药学，岂止于精微》(唐可京主任润色)(2).docx",
+              "isUpload": true,
+              "originalName": "20260705《药学，岂止于精微》(唐可京主任润色)(2).docx"
+            },
+            "timestamp": 1783364472779,
+            "position": {
+              "x": 510,
+              "y": 100,
+              "customX": 510,
+              "customY": 100,
+              "bento": {
+                "x": 510,
+                "y": 100
+              },
+              "mindmap": {
+                "x": 2130,
+                "y": 100
+              },
+              "semi_auto": {
+                "x": 560,
+                "y": 150
+              }
+            },
+            "canvasId": "canvas_1783364221168"
+          },
+          {
+            "id": "draft-video-1783364675960-0",
+            "type": "video",
+            "status": "draft_new",
+            "parentId": "upl_1783364482382_fan",
+            "timestamp": 1783364675960,
+            "canvasId": "canvas_1783364221168",
+            "position": {
+              "x": 100,
+              "y": 650,
+              "customX": 100,
+              "customY": 650,
+              "mindmap": {
+                "x": 2543,
+                "y": 936
+              },
+              "bento": {
+                "x": 100,
+                "y": 650
+              },
+              "semi_auto": {
+                "x": 150,
+                "y": 3460
+              }
+            },
+            "config": {
+              "prompt": "《药学，岂止于精微》\n\n配音文案\n\n\n\n【开篇】\n\n（以唐可京为主要角色开片，开端，带引）\n\n没有喧嚣，却在处方落定的那一刻，久久回响。\n\n没有刻度，却在每一次审方操作中，守住底线。\n\n我们手中握着一条无形的生命准线\n\n一端锚定药学领域的严苛标准，一端承载千万份沉甸甸的生命之托。\n\n这条线，半分松动，不被允许，丝毫偏移，绝不妥协\n\n这里，是中山大学附属第一医院药学部。\n\n也是每一位药师与生命对话的起点。\n\n【第一幕 传承·从课堂到药房】\n\n标题字幕（不配音）：线的起点，是沉淀而非起步\n\n讲台上，一代代药学前辈躬身传道，将准则刻入学子心中。\n\n讲台下，一辈辈青年学子以汗水打磨，以时光淬炼专业。\n\n从药物机制的深耕，到临床循证的梳理。\n\n从用药决策的审慎，到分毫不差的恪守。 \n\n这条生命线始于传承，沉淀至今。\n\n【第二幕 践行·从审方到发药】\n\n 纯药学部门\n\n\n\n标题字幕（不配音）：线的守护，是严谨而非懈怠\n\n审方、核对、调配、发药——每一个环节，都是对用药风险的前置管控。\n\n设备持续迭代，流程不断优化，自动化与信息化的赋能，让药师工作持续提效。\n\n但始终不变的，是我们对细节的严谨求证。\n\n将生命之线系于毫厘之间，从不心存侥幸。\n\n【第三幕 求索·从实验到临床】\n\n（肺癌会诊，唐主任，多画面内容时长不用太长，半药学部门）\n\n标题字幕（不配音）：线的延伸，是求真而非从众\n\n面对复杂方案，我们反复验证安全边界。面对未知难题，我们持续校准答案精度。在每一次多学科会诊，在每一例个体化用药，\n\n我们以专业的判断，锚定最准确的答案。\n\n为临床诊疗提供可靠的循证依据，为患者筑牢安全用药的坚实防线。\n\n这里，中山大学附属第一医院药学部，正以国际视野，定义药学领域的新坐标\n\n\n\n【第四幕 创新·从研发到应用】\n\n标题字幕（不配音）：线的抵达，是致远而非止步\n\n专业的高度，不止于实验室的突破，更在于国际视野下的持续对话。\n\n肺癌智能用药APP，打破空间壁垒，让精准用药直达患者身旁。\n\n与国际前沿深度接轨，让药学标准始终对标全球。\n\n推动制剂创新，加速成果转化\n\n从实验室到临床，从国内到国际\n\n每一步探索，都在触达药学领域的边界\n\n让专业走出实验室，让创新走向临床\n\n在国际舞台上留下药学人的回响。\n\n\n\n【尾声】\n\n从课堂到病房，从科研到实践。\n\n一代代药学人，在毫厘之间坚守信念，在守护路上砥砺前行。\n\n这条生命准线\n\n没有刻度，却丈量着每一位药师的责任与担当。\n\n没有声音，却回应着每一位患者的信任与托付。\n\n责任，是连接生命的脉络。\n\n精微，是矢志不移的底线。\n\n守住这条准线，是守住每一位药师对生命的敬畏，也是守住每一位药师的信念\n\n“药学，岂止于精微”",
+              "resolution": "1080p",
+              "aspectRatio": "16:9",
+              "duration": "5",
+              "model": "seedance2.0",
+              "title": "分镜 1"
+            }
+          },
+          {
+            "id": "upl_1783364482382_fan",
+            "type": "gen_script",
+            "status": "success",
+            "revisedPrompt": "\n\n《药学，岂止于精微》\n\n配音文案\n\n\n\n【开篇】\n\n（以唐可京为主要角色开片，开端，带引）\n\n没有喧嚣，却在处方落定的那一刻，久久回响。\n\n没有刻度，却在每一次审方操作中，守住底线。\n\n我们手中握着一条无形的生命准线\n\n一端锚定药学领域的严苛标准，一端承载千万份沉甸甸的生命之托。\n\n这条线，半分松动，不被允许，丝毫偏移，绝不妥协\n\n这里，是中山大学附属第一医院药学部。\n\n也是每一位药师与生命对话的起点。\n\n【第一幕 传承·从课堂到药房】\n\n标题字幕（不配音）：线的起点，是沉淀而非起步\n\n讲台上，一代代药学前辈躬身传道，将准则刻入学子心中。\n\n讲台下，一辈辈青年学子以汗水打磨，以时光淬炼专业。\n\n从药物机制的深耕，到临床循证的梳理。\n\n从用药决策的审慎，到分毫不差的恪守。 \n\n这条生命线始于传承，沉淀至今。\n\n【第二幕 践行·从审方到发药】\n\n纯药学部门\n\n\n\n标题字幕（不配音）：线的守护，是严谨而非懈怠\n\n审方、核对、调配、发药——每一个环节，都是对用药风险的前置管控。\n\n设备持续迭代，流程不断优化，自动化与信息化的赋能，让药师工作持续提效。\n\n但始终不变的，是我们对细节的严谨求证。\n\n将生命之线系于毫厘之间，从不心存侥幸。\n\n【第三幕 求索·从实验到临床】\n\n（肺癌会诊，唐主任，多画面内容时长不用太长，半药学部门）\n\n标题字幕（不配音）：线的延伸，是求真而非从众\n\n面对复杂方案，我们反复验证安全边界。面对未知难题，我们持续校准答案精度。在每一次多学科会诊，在每一例个体化用药，\n\n我们以专业的判断，锚定最准确的答案。\n\n为临床诊疗提供可靠的循证依据，为患者筑牢安全用药的坚实防线。\n\n这里，中山大学附属第一医院药学部，正以国际视野，定义药学领域的新坐标\n\n\n\n【第四幕 创新·从研发到应用】\n\n标题字幕（不配音）：线的抵达，是致远而非止步\n\n专业的高度，不止于实验室的突破，更在于国际视野下的持续对话。\n\n肺癌智能用药APP，打破空间壁垒，让精准用药直达患者身旁。\n\n与国际前沿深度接轨，让药学标准始终对标全球。\n\n推动制剂创新，加速成果转化\n\n从实验室到临床，从国内到国际\n\n每一步探索，都在触达药学领域的边界\n\n让专业走出实验室，让创新走向临床\n\n在国际舞台上留下药学人的回响。\n\n\n\n【尾声】\n\n从课堂到病房，从科研到实践。\n\n一代代药学人，在毫厘之间坚守信念，在守护路上砥砺前行。\n\n这条生命准线\n\n没有刻度，却丈量着每一位药师的责任与担当。\n\n没有声音，却回应着每一位患者的信任与托付。\n\n责任，是连接生命的脉络。\n\n精微，是矢志不移的底线。\n\n守住这条准线，是守住每一位药师对生命的敬畏，也是守住每一位药师的信念\n\n“药学，岂止于精微”\n\n\n\n\n",
+            "config": {
+              "title": "20260705《药学，岂止于精微》(唐可京主任润色)(2).docx",
+              "isUpload": true,
+              "originalName": "20260705《药学，岂止于精微》(唐可京主任润色)(2).docx",
+              "classification": "script"
+            },
+            "timestamp": 1783364482430,
+            "position": {
+              "x": 920,
+              "y": 100,
+              "customX": 920,
+              "customY": 100,
+              "bento": {
+                "x": 920,
+                "y": 100
+              },
+              "mindmap": {
+                "x": 2568,
+                "y": 48
+              },
+              "semi_auto": {
+                "x": 970,
+                "y": 150
+              }
+            },
+            "canvasId": "canvas_1783364221168",
+            "classification": "script"
+          },
+          {
+            "id": "mr9llovncy8t3kj",
+            "type": "image",
+            "status": "success",
+            "config": {
+              "prompt": "核心身份：四十五岁东亚女性，中山大学附属第一医院药学部主任，眼神深邃且坚定，面部轮廓柔和但下颌线清晰，皮肤质感真实细腻，展现出资深专家的严谨与温和。\n服装细节：身穿修身剪裁的纯白色医生白大褂，内搭深蓝色真丝立领衬衫，面料挺阔，走线精致，展现医疗专家的专业度。\n妆容细节：端庄大气的职场淡妆，眉形自然舒展，大地色眼影，豆沙色哑光口红，底妆干净清透，呈现自然健康的皮肤光泽。\n发型发色：黑色中分齐肩短发，发丝打理得一丝不苟，根根分明，微微向内扣，显得干练而有气质。\n配饰细节：左胸前佩戴着精致的金属材质医院胸牌，无其他夸张首饰，整体风格极简专业。\n要求：专业时尚摄影质感,全身照,纯白背景,单人,单一视角,85mm焦段,f/1.8大光圈,极致皮肤细节(超写实毛孔),高端影棚3点式布光,严禁拼图,手中不拿任何道具",
+              "aspectRatio": "1:1",
+              "imageSize": "1K",
+              "gptSize": "1024x1536",
+              "gptQuality": "auto",
+              "gptFormat": "jpeg",
+              "referenceImages": [],
+              "model": "gemini-3.1-flash-image-preview",
+              "gridMode": "none"
+            },
+            "isOptimized": false,
+            "timestamp": 1783365212753,
+            "position": {
+              "x": 1210,
+              "y": 650,
+              "customX": 1210,
+              "customY": 650,
+              "bento": {
+                "x": 1210,
+                "y": 650
+              },
+              "mindmap": {
+                "x": 2928,
+                "y": 2358
+              },
+              "semi_auto": {
+                "x": 1230,
+                "y": 1890
+              }
+            },
+            "parentId": "assets-1783364963241",
+            "imageUrl": "https://zhurui.oss-cn-hangzhou.aliyuncs.com/luosheji/history/32/mr9llovncy8t3kj_image.png",
+            "revisedPrompt": "",
+            "ossUrl": "https://zhurui.oss-cn-hangzhou.aliyuncs.com/luosheji/history/32/mr9llovncy8t3kj_image.png",
+            "canvasId": "canvas_1783364221168",
+            "naturalAspectRatio": 1
+          },
+          {
+            "id": "assets-1783364963241",
+            "type": "gen_script",
+            "status": "success",
+            "revisedPrompt": "### 核心资产提示词库\n\n#### 【角色资产】\n1. 唐可京 (@唐可京)\n   主提示词：\n   核心身份：四十五岁东亚女性，中山大学附属第一医院药学部主任，眼神深邃且坚定，面部轮廓柔和但下颌线清晰，皮肤质感真实细腻，展现出资深专家的严谨与温和。\n服装细节：身穿修身剪裁的纯白色医生白大褂，内搭深蓝色真丝立领衬衫，面料挺阔，走线精致，展现医疗专家的专业度。\n妆容细节：端庄大气的职场淡妆，眉形自然舒展，大地色眼影，豆沙色哑光口红，底妆干净清透，呈现自然健康的皮肤光泽。\n发型发色：黑色中分齐肩短发，发丝打理得一丝不苟，根根分明，微微向内扣，显得干练而有气质。\n配饰细节：左胸前佩戴着精致的金属材质医院胸牌，无其他夸张首饰，整体风格极简专业。\n要求：专业时尚摄影质感,全身照,纯白背景,单人,单一视角,85mm焦段,f/1.8大光圈,极致皮肤细节(超写实毛孔),高端影棚3点式布光,严禁拼图,手中不拿任何道具\n\n2. 青年药师 (@青年药师)\n   主提示词：\n   核心身份：二十八岁东亚男性，青年临床药师，眼神清澈专注，高鼻梁，面部线条干净利落，皮肤质感真实，充满朝气与严谨。\n服装细节：身穿合体的白色药师工作服，内搭浅灰色纯棉衬衫，领口扣子整齐扣好，展现严谨的工作态度。\n妆容细节：无明显妆感，眉宇间透着英气，面部保持清爽干净，底妆极简自然。\n发型发色：黑色清爽短发，修剪整齐，发丝蓬松有光泽，显得精神干练。\n配饰细节：胸前佩戴蓝色工作证，佩戴一副极细黑色圆框眼镜，增添儒雅与知性气质。\n要求：专业时尚摄影质感,全身照,纯白背景,单人,单一视角,85mm焦段,f/1.8大光圈,极致皮肤细节(超写实毛孔),高端影棚3点式布光,严禁拼图,手中不拿任何道具\n\n#### 【场景资产】\n1. 现代医院药学部大厅 (@场景1)\n   主提示词：\n   核心身份：现代医院药学部大厅\n环境细节：宽敞明亮的医院药学部大厅，地面为浅灰色高光抛光大理石，墙面采用白色与淡蓝色科技感抗倍特板拼接，整体一尘不染，散发着现代医疗机构的洁净与严谨。\n建筑风格：现代极简主义医疗建筑风格，线条流畅，多用玻璃与金属材质，具有强烈的空间通透感。\n空间布局：前台为半开放式药学咨询窗口，背景墙上有醒目的医院药学部标识，右侧为患者等候区，左侧通道延伸至内部工作区，透视感极强。\n核心物件：半透明磨砂玻璃咨询台、LED电子显示屏、整齐排列的蓝色等候椅。\n光影与画风：柔和的顶部嵌入式无极调光平板灯提供均匀的冷白基础照明，咨询台下方嵌入淡蓝色LED线性呼吸灯带，冷暖色调微妙对比，漫反射光线在抛光地面上形成柔和的倒影，营造出专业、温暖且富有科技感的氛围。\n要求：广角镜头,全景/远景构图,严禁拼图\n\n2. 自动化智慧药房 (@场景2)\n   主提示词：\n   核心身份：自动化智慧药房\n环境细节：充满未来科技感的自动化药房内部，成排的巨型智能药柜整齐排列，金属材质表面在灯光下闪烁着冷冽的光泽，地面为防静电深灰色环氧地坪。\n建筑风格：高科技工业与医疗融合风格，强调功能性与精密感，管道与线路隐藏在金属吊顶内。\n空间布局：纵深感极强的双侧药柜通道，中央设有自动轨道，机械臂在轨道上快速而精准地滑动，背景可见半透明的玻璃隔断。\n核心物件：高速运转的智能发药机械臂、LED状态指示灯、滚动的药品传送带、触控操作终端。\n光影与画风：以冷色调为主，天花板采用嵌入式线性冷白光灯带，机械臂和药柜边缘点缀着幽蓝色的指示灯光，高光与阴影对比强烈，金属拉丝材质的漫反射细节丰富，展现出极致的精密与高效。\n要求：广角镜头,全景/远景构图,严禁拼图\n\n3. 多学科会诊会议室 (@场景3)\n   主提示词：\n   核心身份：多学科会诊会议室\n环境细节：专业而严谨的医院多学科会诊室，墙面为吸音深灰色软包材质，地面铺设深蓝色静音地毯，整体氛围安静而专注。\n建筑风格：现代商务与医疗学术融合风格，线条干练，注重声学与光学设计。\n空间布局：中央为一张大型椭圆形实木会议桌，四周环绕着人体工学办公椅，正前方墙面嵌入多块巨型高清显示屏，呈现多维度透视。\n核心物件：高清多屏联动显示系统、会议桌上的麦克风、平板电脑、纸质病历夹。\n光影与画风：会议桌上方采用大面积软膜天花吊灯，提供无阴影的柔和白光，屏幕亮光在实木桌面形成微微的冷色反光，冷暖光影交织，凸显学术讨论的严谨与深度。\n要求：广角镜头,全景/远景构图,严禁拼图\n\n#### 【道具资产】\n1. 智能用药平板电脑 (@道具1)\n   主提示词：\n   核心身份：智能用药平板电脑\n材质细节：机身为深灰色阳极氧化铝合金材质，边缘带有精致的钻石切边，屏幕为高分辨率镜面玻璃，表面一尘不染，反射着微弱的室内光芒。屏幕上清晰显示着智能用药软件的图形界面，包含药效曲线图、患者数据和蓝色科技感图表。\n光影表现：影棚级三点布光，侧光完美勾勒出平板电脑纤薄的金属边框，屏幕背光微微亮起，在纯白背景上投射出柔和的边缘蓝色晕光，高光与阴影对比鲜明，极具质感。\n画风设定：超写实工业设计感，渲染质感，强调金属拉丝纹理与玻璃镜面的细腻反光，展现高端医疗科技设备的精致。\n要求：影棚拍摄,严禁出现人物,严禁出现手部,仅展示道具主体,纯白背景,单一视角,微距摄影质感,极致细节,严禁拼图\n\n",
+            "parentId": "upl_1783364482382_fan",
+            "config": {
+              "visualStyle": {
+                "id": "hollywood_blockbuster",
+                "name": "好莱坞商业大片风",
+                "description": "极致写实，大片质感，宏大场面",
+                "category": "写实电影风格"
+              },
+              "genreId": "net_drama",
+              "directorName": "罗导(短剧专家)",
+              "aspectRatio": "9:16",
+              "quality": "4K",
+              "narrativeMode": "compact",
+              "segments": {
+                "id": "4",
+                "label": "4段"
+              },
+              "segmentDuration": {
+                "id": "15s",
+                "label": "15s"
+              },
+              "generationMode": "prompt",
+              "duration": {
+                "id": "1.5",
+                "label": "1.5min"
+              },
+              "globalRule": "",
+              "spatialMode": "strong",
+              "userPrompt": "剧本资产提示词库"
+            },
+            "timestamp": 1783364963241,
+            "position": {
+              "x": 470,
+              "y": 650,
+              "customX": 470,
+              "customY": 650,
+              "bento": {
+                "x": 470,
+                "y": 650
+              },
+              "semi_auto": {
+                "x": 1380,
+                "y": 150
+              },
+              "mindmap": {
+                "x": 3048,
+                "y": 48
+              }
+            },
+            "canvasId": "canvas_1783364221168"
+          },
+          {
+            "id": "mr9li63c0u9b8k1",
+            "type": "image",
+            "status": "success",
+            "config": {
+              "prompt": "核心身份：四十五岁东亚女性，中山大学附属第一医院药学部主任，眼神深邃且坚定，面部轮廓柔和但下颌线清晰，皮肤质感真实细腻，展现出资深专家的严谨与温和。\n服装细节：身穿修身剪裁的纯白色医生白大褂，内搭深蓝色真丝立领衬衫，面料挺阔，走线精致，展现医疗专家的专业度。\n妆容细节：端庄大气的职场淡妆，眉形自然舒展，大地色眼影，豆沙色哑光口红，底妆干净清透，呈现自然健康的皮肤光泽。\n发型发色：黑色中分齐肩短发，发丝打理得一丝不苟，根根分明，微微向内扣，显得干练而有气质。\n配饰细节：左胸前佩戴着精致的金属材质医院胸牌，无其他夸张首饰，整体风格极简专业。\n要求：专业时尚摄影质感,全身照,纯白背景,单人,单一视角,85mm焦段,f/1.8大光圈,极致皮肤细节(超写实毛孔),高端影棚3点式布光,严禁拼图,手中不拿任何道具",
+              "aspectRatio": "1:1",
+              "imageSize": "1K",
+              "gptSize": "1024x1536",
+              "gptQuality": "auto",
+              "gptFormat": "jpeg",
+              "referenceImages": [],
+              "model": "gpt-image-2",
+              "gridMode": "none"
+            },
+            "isOptimized": false,
+            "timestamp": 1783365097314,
+            "position": {
+              "x": 880,
+              "y": 650,
+              "customX": 880,
+              "customY": 650,
+              "bento": {
+                "x": 880,
+                "y": 650
+              },
+              "mindmap": {
+                "x": 3783,
+                "y": 1261
+              },
+              "semi_auto": {
+                "x": 1230,
+                "y": 1240
+              }
+            },
+            "parentId": "draft-new-1783364271472,draft-video-1783364675960-0,draft-new-1783364271472,draft-video-1783364675960-0",
+            "imageUrl": "https://zhurui.oss-cn-hangzhou.aliyuncs.com/luosheji/history/32/mr9li63c0u9b8k1_image.png",
+            "revisedPrompt": "",
+            "ossUrl": "https://zhurui.oss-cn-hangzhou.aliyuncs.com/luosheji/history/32/mr9li63c0u9b8k1_image.png",
+            "canvasId": "canvas_1783364221168",
+            "naturalAspectRatio": 0.4744645799011532
+          },
+          {
+            "id": "mr9llthg78d5b4i",
+            "type": "image",
+            "status": "success",
+            "config": {
+              "prompt": "核心身份：现代医院药学部大厅\n环境细节：宽敞明亮的医院药学部大厅，地面为浅灰色高光抛光大理石，墙面采用白色与淡蓝色科技感抗倍特板拼接，整体一尘不染，散发着现代医疗机构的洁净与严谨。\n建筑风格：现代极简主义医疗建筑风格，线条流畅，多用玻璃与金属材质，具有强烈的空间通透感。\n空间布局：前台为半开放式药学咨询窗口，背景墙上有醒目的医院药学部标识，右侧为患者等候区，左侧通道延伸至内部工作区，透视感极强。\n核心物件：半透明磨砂玻璃咨询台、LED电子显示屏、整齐排列的蓝色等候椅。\n光影与画风：柔和的顶部嵌入式无极调光平板灯提供均匀的冷白基础照明，咨询台下方嵌入淡蓝色LED线性呼吸灯带，冷暖色调微妙对比，漫反射光线在抛光地面上形成柔和的倒影，营造出专业、温暖且富有科技感的氛围。\n要求：广角镜头,全景/远景构图,严禁拼图",
+              "aspectRatio": "1:1",
+              "imageSize": "1K",
+              "gptSize": "1024x1536",
+              "gptQuality": "auto",
+              "gptFormat": "jpeg",
+              "referenceImages": [],
+              "model": "gemini-3.1-flash-image-preview",
+              "gridMode": "none"
+            },
+            "isOptimized": false,
+            "timestamp": 1783365218719,
+            "position": {
+              "x": 430,
+              "y": 1290,
+              "customX": 430,
+              "customY": 1290,
+              "bento": {
+                "x": 430,
+                "y": 1290
+              },
+              "mindmap": {
+                "x": 4568,
+                "y": 1768
+              },
+              "semi_auto": {
+                "x": 1750,
+                "y": 1800
+              }
+            },
+            "parentId": "assets-1783364963241",
+            "imageUrl": "https://zhurui.oss-cn-hangzhou.aliyuncs.com/luosheji/history/32/mr9llthg78d5b4i_image.png",
+            "revisedPrompt": "",
+            "ossUrl": "https://zhurui.oss-cn-hangzhou.aliyuncs.com/luosheji/history/32/mr9llthg78d5b4i_image.png",
+            "canvasId": "canvas_1783364221168",
+            "naturalAspectRatio": 1
+          },
+          {
+            "id": "mr9llril8y1vve4",
+            "type": "image",
+            "status": "success",
+            "config": {
+              "prompt": "核心身份：二十八岁东亚男性，青年临床药师，眼神清澈专注，高鼻梁，面部线条干净利落，皮肤质感真实，充满朝气与严谨。\n服装细节：身穿合体的白色药师工作服，内搭浅灰色纯棉衬衫，领口扣子整齐扣好，展现严谨的工作态度。\n妆容细节：无明显妆感，眉宇间透着英气，面部保持清爽干净，底妆极简自然。\n发型发色：黑色清爽短发，修剪整齐，发丝蓬松有光泽，显得精神干练。\n配饰细节：胸前佩戴蓝色工作证，佩戴一副极细黑色圆框眼镜，增添儒雅与知性气质。\n要求：专业时尚摄影质感,全身照,纯白背景,单人,单一视角,85mm焦段,f/1.8大光圈,极致皮肤细节(超写实毛孔),高端影棚3点式布光,严禁拼图,手中不拿任何道具",
+              "aspectRatio": "1:1",
+              "imageSize": "1K",
+              "gptSize": "1024x1536",
+              "gptQuality": "auto",
+              "gptFormat": "jpeg",
+              "referenceImages": [],
+              "model": "gemini-3.1-flash-image-preview",
+              "gridMode": "none"
+            },
+            "isOptimized": false,
+            "timestamp": 1783365216167,
+            "position": {
+              "x": 100,
+              "y": 1290,
+              "customX": 100,
+              "customY": 1290,
+              "bento": {
+                "x": 100,
+                "y": 1290
+              },
+              "mindmap": {
+                "x": 4588,
+                "y": 1178
+              },
+              "semi_auto": {
+                "x": 1230,
+                "y": 2230
+              }
+            },
+            "parentId": "assets-1783364963241",
+            "imageUrl": "https://zhurui.oss-cn-hangzhou.aliyuncs.com/luosheji/history/32/mr9llril8y1vve4_image.png",
+            "revisedPrompt": "",
+            "ossUrl": "https://zhurui.oss-cn-hangzhou.aliyuncs.com/luosheji/history/32/mr9llril8y1vve4_image.png",
+            "canvasId": "canvas_1783364221168",
+            "naturalAspectRatio": 1
+          },
+          {
+            "id": "upl_1783365650374_9ib",
+            "type": "image",
+            "status": "success",
+            "imageUrl": "https://zhurui.oss-cn-hangzhou.aliyuncs.com/luosheji/history/32/upl_1783365650374_9ib_image.png",
+            "config": {
+              "title": "图片_10",
+              "isUpload": true,
+              "originalName": "7febb324743a91c5a1ee14d2f2809549.jpg",
+              "classification": "character"
+            },
+            "timestamp": 1783365650472,
+            "position": {
+              "x": 430,
+              "y": 1620,
+              "customX": 430,
+              "customY": 1620,
+              "bento": {
+                "x": 430,
+                "y": 1620
+              },
+              "mindmap": {
+                "x": 4988,
+                "y": 1768
+              },
+              "semi_auto": {
+                "x": 190,
+                "y": 1240
+              }
+            },
+            "canvasId": "canvas_1783364221168",
+            "naturalAspectRatio": 0.6975124378109453,
+            "classification": "character"
+          },
+          {
+            "id": "mr9llyvul263mu4",
+            "type": "image",
+            "status": "success",
+            "config": {
+              "prompt": "核心身份：多学科会诊会议室\n环境细节：专业而严谨的医院多学科会诊室，墙面为吸音深灰色软包材质，地面铺设深蓝色静音地毯，整体氛围安静而专注。\n建筑风格：现代商务与医疗学术融合风格，线条干练，注重声学与光学设计。\n空间布局：中央为一张大型椭圆形实木会议桌，四周环绕着人体工学办公椅，正前方墙面嵌入多块巨型高清显示屏，呈现多维度透视。\n核心物件：高清多屏联动显示系统、会议桌上的麦克风、平板电脑、纸质病历夹。\n光影与画风：会议桌上方采用大面积软膜天花吊灯，提供无阴影的柔和白光，屏幕亮光在实木桌面形成微微的冷色反光，冷暖光影交织，凸显学术讨论的严谨与深度。\n要求：广角镜头,全景/远景构图,严禁拼图",
+              "aspectRatio": "1:1",
+              "imageSize": "1K",
+              "gptSize": "1024x1536",
+              "gptQuality": "auto",
+              "gptFormat": "jpeg",
+              "referenceImages": [],
+              "model": "gemini-3.1-flash-image-preview",
+              "gridMode": "none"
+            },
+            "isOptimized": false,
+            "timestamp": 1783365225721,
+            "position": {
+              "x": 1090,
+              "y": 1290,
+              "customX": 1090,
+              "customY": 1290,
+              "bento": {
+                "x": 1090,
+                "y": 1290
+              },
+              "mindmap": {
+                "x": 5368,
+                "y": 1178
+              },
+              "semi_auto": {
+                "x": 1750,
+                "y": 2480
+              }
+            },
+            "parentId": "assets-1783364963241",
+            "imageUrl": "https://zhurui.oss-cn-hangzhou.aliyuncs.com/luosheji/history/32/mr9llyvul263mu4_image.png",
+            "revisedPrompt": "",
+            "ossUrl": "https://zhurui.oss-cn-hangzhou.aliyuncs.com/luosheji/history/32/mr9llyvul263mu4_image.png",
+            "canvasId": "canvas_1783364221168",
+            "naturalAspectRatio": 1
+          },
+          {
+            "id": "mr9llwo8w5lnfzs",
+            "type": "image",
+            "status": "success",
+            "config": {
+              "prompt": "核心身份：自动化智慧药房\n环境细节：充满未来科技感的自动化药房内部，成排的巨型智能药柜整齐排列，金属材质表面在灯光下闪烁着冷冽的光泽，地面为防静电深灰色环氧地坪。\n建筑风格：高科技工业与医疗融合风格，强调功能性与精密感，管道与线路隐藏在金属吊顶内。\n空间布局：纵深感极强的双侧药柜通道，中央设有自动轨道，机械臂在轨道上快速而精准地滑动，背景可见半透明的玻璃隔断。\n核心物件：高速运转的智能发药机械臂、LED状态指示灯、滚动的药品传送带、触控操作终端。\n光影与画风：以冷色调为主，天花板采用嵌入式线性冷白光灯带，机械臂和药柜边缘点缀着幽蓝色的指示灯光，高光与阴影对比强烈，金属拉丝材质的漫反射细节丰富，展现出极致的精密与高效。\n要求：广角镜头,全景/远景构图,严禁拼图",
+              "aspectRatio": "1:1",
+              "imageSize": "1K",
+              "gptSize": "1024x1536",
+              "gptQuality": "auto",
+              "gptFormat": "jpeg",
+              "referenceImages": [],
+              "model": "gemini-3.1-flash-image-preview",
+              "gridMode": "none"
+            },
+            "isOptimized": false,
+            "timestamp": 1783365222846,
+            "position": {
+              "x": 760,
+              "y": 1290,
+              "customX": 760,
+              "customY": 1290,
+              "bento": {
+                "x": 760,
+                "y": 1290
+              },
+              "mindmap": {
+                "x": 5388,
+                "y": 588
+              },
+              "semi_auto": {
+                "x": 1750,
+                "y": 2140
+              }
+            },
+            "parentId": "assets-1783364963241",
+            "imageUrl": "https://zhurui.oss-cn-hangzhou.aliyuncs.com/luosheji/history/32/mr9llwo8w5lnfzs_image.png",
+            "revisedPrompt": "",
+            "ossUrl": "https://zhurui.oss-cn-hangzhou.aliyuncs.com/luosheji/history/32/mr9llwo8w5lnfzs_image.png",
+            "canvasId": "canvas_1783364221168",
+            "naturalAspectRatio": 1
+          },
+          {
+            "id": "upl_1783365650379_ohb",
+            "type": "image",
+            "status": "success",
+            "imageUrl": "https://zhurui.oss-cn-hangzhou.aliyuncs.com/luosheji/history/32/upl_1783365650379_ohb_image.png",
+            "config": {
+              "title": "图片_10",
+              "isUpload": true,
+              "originalName": "7febb324743a91c5a1ee14d2f2809549.jpg"
+            },
+            "timestamp": 1783365650474,
+            "position": {
+              "x": 760,
+              "y": 1620,
+              "customX": 760,
+              "customY": 1620,
+              "bento": {
+                "x": 760,
+                "y": 1620
+              },
+              "mindmap": {
+                "x": 5408,
+                "y": 1768
+              },
+              "semi_auto": {
+                "x": 190,
+                "y": 1701
+              }
+            },
+            "canvasId": "canvas_1783364221168",
+            "naturalAspectRatio": 0.6975124378109453
+          },
+          {
+            "id": "mr9lm0cnpg3fzul",
+            "type": "image",
+            "status": "success",
+            "config": {
+              "prompt": "核心身份：智能用药平板电脑\n材质细节：机身为深灰色阳极氧化铝合金材质，边缘带有精致的钻石切边，屏幕为高分辨率镜面玻璃，表面一尘不染，反射着微弱的室内光芒。屏幕上清晰显示着智能用药软件的图形界面，包含药效曲线图、患者数据和蓝色科技感图表。\n光影表现：影棚级三点布光，侧光完美勾勒出平板电脑纤薄的金属边框，屏幕背光微微亮起，在纯白背景上投射出柔和的边缘蓝色晕光，高光与阴影对比鲜明，极具质感。\n画风设定：超写实工业设计感，渲染质感，强调金属拉丝纹理与玻璃镜面的细腻反光，展现高端医疗科技设备的精致。\n要求：影棚拍摄,严禁出现人物,严禁出现手部,仅展示道具主体,纯白背景,单一视角,微距摄影质感,极致细节,严禁拼图",
+              "aspectRatio": "1:1",
+              "imageSize": "1K",
+              "gptSize": "1024x1536",
+              "gptQuality": "auto",
+              "gptFormat": "jpeg",
+              "referenceImages": [],
+              "model": "gemini-3.1-flash-image-preview",
+              "gridMode": "none"
+            },
+            "isOptimized": false,
+            "timestamp": 1783365227608,
+            "position": {
+              "x": 100,
+              "y": 1620,
+              "customX": 100,
+              "customY": 1620,
+              "bento": {
+                "x": 100,
+                "y": 1620
+              },
+              "mindmap": {
+                "x": 6188,
+                "y": 588
+              },
+              "semi_auto": {
+                "x": 1230,
+                "y": 2570
+              }
+            },
+            "parentId": "assets-1783364963241",
+            "imageUrl": "https://zhurui.oss-cn-hangzhou.aliyuncs.com/luosheji/history/32/mr9lm0cnpg3fzul_image.png",
+            "revisedPrompt": "",
+            "ossUrl": "https://zhurui.oss-cn-hangzhou.aliyuncs.com/luosheji/history/32/mr9lm0cnpg3fzul_image.png",
+            "canvasId": "canvas_1783364221168",
+            "naturalAspectRatio": 1
+          }
+        ],
+        "edges": [],
+        "path": "workflow.json",
+        "metadata": {
+          "source": "shared_canvas",
+          "ownerId": "32",
+          "sourceRecordId": "canvas_1783364221168",
+          "createdAt": 1784305791876
+        }
+      }
+    ]
+  },
+  "metadata": {
+    "source": "shared_canvas",
+    "sourceRecordId": "canvas_1783364221168",
+    "createdAt": 1784305791876,
+    "ownerId": "32",
+    "packageKind": "workflow",
+    "packagePath": "extensions/workflows/user-workflows/32/canvas-1783364221168",
+    "physicalPackage": true,
+    "updatedAt": 1784305791877
+  }
+}

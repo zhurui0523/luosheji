@@ -17,7 +17,7 @@ export const perspectiveSimPluginManifest: ExtensionManifest = {
     entry: './skill.ts'
   },
   contributes: {
-    skills: [perspectiveSimSkill]
+    skills: [{ ...perspectiveSimSkill, description: perspectiveSimSkill.desc, category: perspectiveSimSkill.category || 'image' }]
   },
   metadata: {
     builtin: true,

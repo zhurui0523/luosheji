@@ -1,4 +1,4 @@
-import { ModelProviderDefinition, UserModelConnection, CapabilityKind } from '../types';
+﻿import { ModelProviderDefinition, UserModelConnection, CapabilityKind } from '../types';
 import { directorAgent } from '../../../components/agents/directorAgent';
 import { imageAgent } from '../../../components/agents/imageAgent';
 import { videoAgent } from '../../../components/agents/videoAgent';
@@ -88,6 +88,34 @@ class ModelRegistryService {
     }
   }
 
+  private modelSectionsFromConfig(config: any): Array<[string, any]> {
+    const sections: Array<[string, any]> = [];
+    const customInterfaces = config?.customInterfaces || {};
+
+    for (const [key, section] of Object.entries(customInterfaces)) {
+      if (section && typeof section === 'object') {
+        sections.push([key, section]);
+      }
+    }
+
+    for (const [key, section] of Object.entries(config || {})) {
+      if (key === 'customInterfaces' || !section || typeof section !== 'object' || Array.isArray(section)) {
+        continue;
+      }
+      const candidate = section as any;
+      if (candidate.model || candidate.endpoint || candidate.apiKey || candidate.provider) {
+        sections.push([key, candidate]);
+      }
+    }
+
+    const seen = new Set<string>();
+    return sections.filter(([key]) => {
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }
+
   public loadUserConnections(config?: any) {
     // 1. Clear previous custom connections
     for (const id of this.userConnections.keys()) {
@@ -95,19 +123,19 @@ class ModelRegistryService {
     }
     this.userConnections.clear();
 
-    // 2. Load from config if available
-    let customInterfaces: any = null;
+    // 2. Load all model sections from config if available.
+    // This includes built-in slots such as script/image/video and user-created customInterfaces.
+    let sourceConfig: any = null;
     if (config && config.customInterfaces) {
-      customInterfaces = config.customInterfaces;
-    } else if (config && config.global_api_config && config.global_api_config.customInterfaces) {
-      customInterfaces = config.global_api_config.customInterfaces;
+      sourceConfig = config;
+    } else if (config && config.global_api_config) {
+      sourceConfig = config.global_api_config;
     } else {
-      const globalConfig = UserModelStore.readConfigSync();
-      customInterfaces = globalConfig?.customInterfaces;
+      sourceConfig = UserModelStore.readConfigSync();
     }
 
-    if (customInterfaces) {
-      for (const [key, rawConn] of Object.entries(customInterfaces)) {
+    if (sourceConfig) {
+      for (const [key, rawConn] of this.modelSectionsFromConfig(sourceConfig)) {
         try {
           const connectionInput = {
             id: key,
@@ -115,10 +143,11 @@ class ModelRegistryService {
           };
           this.registerUserConnection(connectionInput);
         } catch (err) {
-          console.warn(`Failed to register custom user model connection [${key}]:`, err);
+          console.warn(`Failed to register user model connection [${key}]:`, err);
         }
       }
     }
+    this.loaded = true;
   }
 
   public registerUserConnection(connection: UserModelConnection): ModelProviderDefinition {
@@ -209,44 +238,49 @@ class ModelRegistryService {
     return this.list().filter(p => p.capabilityKinds?.includes(kind));
   }
 
+  private getByIdOrModelValue(value: string, kind?: CapabilityKind): ModelProviderDefinition | undefined {
+    const direct = this.providers.get(value);
+    if (direct && (!kind || direct.capabilityKinds?.includes(kind))) {
+      return direct;
+    }
+
+    return Array.from(this.providers.values()).find(provider => {
+      const hasKind = !kind || provider.capabilityKinds?.includes(kind);
+      if (!hasKind) return false;
+      const configModel = provider.config?.model || provider.metadata?.userConnection?.model;
+      return provider.model === value || configModel === value || provider.name === value;
+    });
+  }
+
+  private ensureExplicitModelAvailable(selectedId: string, kind: CapabilityKind): ModelProviderDefinition | undefined {
+    const selected = this.getByIdOrModelValue(selectedId, kind);
+    const selectedConnectionId = selected?.id || selectedId;
+    const connection = this.userConnections.get(selectedConnectionId);
+    if (!selected || connection?.enabled === false) {
+      throw new Error(`模型接口 "${selectedId}" 不可用或未启用，已停止执行，未自动切换到其他模型。`);
+    }
+    return selected;
+  }
+
   public selectBest(kind: CapabilityKind, context?: any): ModelProviderDefinition | undefined {
     this.ensureUserConnectionsLoaded();
 
     // 0. Prioritize task.modelId or specific modelId passed in context
     const taskModelId = context?.task?.modelId || context?.modelId || (context?.task && context.task.modelId);
     if (taskModelId) {
-      const selected = this.get(taskModelId);
-      const isConnEnabled = this.userConnections.has(taskModelId) 
-        ? this.userConnections.get(taskModelId)?.enabled !== false
-        : true;
-      if (selected && isConnEnabled) {
-        return selected;
-      }
+      return this.ensureExplicitModelAvailable(String(taskModelId), kind);
     }
 
     // 1. Prioritize context.selectedModelIds[kind]
     if (context && context.selectedModelIds && context.selectedModelIds[kind]) {
-      const selectedId = context.selectedModelIds[kind];
-      const selected = this.get(selectedId);
-      const isConnEnabled = this.userConnections.has(selectedId) 
-        ? this.userConnections.get(selectedId)?.enabled !== false
-        : true;
-      if (selected && isConnEnabled) {
-        return selected;
-      }
+      return this.ensureExplicitModelAvailable(String(context.selectedModelIds[kind]), kind);
     }
 
     // 2. Prioritize context.config / context.variables model configurations
     if (context && context.config) {
       const modelId = context.config[`model_${kind}`] || context.config.modelId || context.config.model;
       if (modelId) {
-        const selected = this.get(modelId);
-        const isConnEnabled = this.userConnections.has(modelId) 
-          ? this.userConnections.get(modelId)?.enabled !== false
-          : true;
-        if (selected && isConnEnabled) {
-          return selected;
-        }
+        return this.ensureExplicitModelAvailable(String(modelId), kind);
       }
     }
 

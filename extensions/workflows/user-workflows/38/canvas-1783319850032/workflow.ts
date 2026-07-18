@@ -1,0 +1,153 @@
+export const workflowPreset = {
+  "id": "canvas_1783319850032",
+  "name": "帮我生成一张白底的衣服平铺图",
+  "description": "User saved workflow preset.",
+  "category": "workflow",
+  "nodes": [
+    {
+      "id": "mr8uui1rw7yicwl",
+      "type": "image",
+      "status": "error",
+      "config": {
+        "prompt": "帮我生成一张白底的衣服平铺图",
+        "aspectRatio": "3:4",
+        "imageSize": "1K",
+        "gptSize": "1024x1536",
+        "gptQuality": "auto",
+        "gptFormat": "jpeg",
+        "referenceImages": [
+          {
+            "id": "rnuiux5",
+            "data": "https://zhurui.oss-cn-hangzhou.aliyuncs.com/luosheji/history/38/upl_1783320176951_vm8_image.png",
+            "mimeType": "image/png",
+            "type": "general",
+            "historyId": "upl_1783320176951_vm8"
+          }
+        ],
+        "model": "gemini-3.1-flash-image-preview",
+        "gridMode": "none",
+        "bananaAspectRatio": "3:4"
+      },
+      "isOptimized": false,
+      "timestamp": 1783320274208,
+      "position": {
+        "x": 2321,
+        "y": -252,
+        "customX": 2321,
+        "customY": -252,
+        "bento": {
+          "x": 2321,
+          "y": -252
+        },
+        "mindmap": {
+          "x": 2321,
+          "y": -252
+        }
+      },
+      "parentId": "upl_1783320176951_vm8",
+      "error": "请求过于频繁 (Rate Limit)。请稍等片刻再试，或检查您的相关服务配额。",
+      "canvasId": "canvas_1783319850032"
+    },
+    {
+      "id": "mr8uszvj7o6fs86",
+      "type": "image",
+      "status": "error",
+      "config": {
+        "prompt": "帮我生成一张白底的衣服平铺图",
+        "aspectRatio": "3:4",
+        "imageSize": "1K",
+        "gptSize": "1024x1536",
+        "gptQuality": "auto",
+        "gptFormat": "jpeg",
+        "referenceImages": [
+          {
+            "id": "hx6wn3z",
+            "data": "https://zhurui.oss-cn-hangzhou.aliyuncs.com/luosheji/history/38/upl_1783320176951_vm8_image.png",
+            "mimeType": "image/png",
+            "type": "general",
+            "historyId": "upl_1783320176951_vm8"
+          }
+        ],
+        "model": "gpt-image-2",
+        "gridMode": "none",
+        "bananaAspectRatio": "3:4"
+      },
+      "isOptimized": false,
+      "timestamp": 1783320816536,
+      "position": {
+        "x": 1537,
+        "y": -164,
+        "customX": 1537,
+        "customY": -164,
+        "bento": {
+          "x": 1929,
+          "y": -176
+        },
+        "mindmap": {
+          "x": 1537,
+          "y": -164
+        }
+      },
+      "parentId": "upl_1783320176951_vm8",
+      "error": "请求过于频繁 (Rate Limit)。请稍等片刻再试，或检查您的相关服务配额。",
+      "canvasId": "canvas_1783319850032"
+    },
+    {
+      "id": "upl_1783320176951_vm8",
+      "type": "image",
+      "status": "success",
+      "imageUrl": "https://zhurui.oss-cn-hangzhou.aliyuncs.com/luosheji/history/38/upl_1783320176951_vm8_image.png",
+      "config": {
+        "title": "图片_3",
+        "isUpload": true,
+        "originalName": "b29bb68bc8da2c70ad2f58cd685a6d98.jpg"
+      },
+      "timestamp": 1783320177238,
+      "position": {
+        "x": 1064,
+        "y": -168,
+        "customX": 1064,
+        "customY": -168,
+        "mindmap": {
+          "x": 1064,
+          "y": -168
+        }
+      },
+      "canvasId": "canvas_1783319850032",
+      "naturalAspectRatio": 0.75
+    },
+    {
+      "id": "upl_1783320171546_a0k",
+      "type": "image",
+      "status": "success",
+      "imageUrl": "https://zhurui.oss-cn-hangzhou.aliyuncs.com/luosheji/history/38/upl_1783320171546_a0k_image.png",
+      "config": {
+        "title": "图片_2",
+        "isUpload": true,
+        "originalName": "0bbac6e4544fc0c94e9cfe604fe4ede2.jpg"
+      },
+      "timestamp": 1783320171797,
+      "position": {
+        "x": 1058,
+        "y": 324,
+        "customX": 1058,
+        "customY": 324,
+        "mindmap": {
+          "x": 1058,
+          "y": 324
+        }
+      },
+      "canvasId": "canvas_1783319850032",
+      "naturalAspectRatio": 0.75
+    }
+  ],
+  "edges": [],
+  "path": "workflow.json",
+  "metadata": {
+    "source": "shared_canvas",
+    "ownerId": "38",
+    "sourceRecordId": "canvas_1783319850032",
+    "createdAt": 1784305791883
+  }
+};
+export default workflowPreset;

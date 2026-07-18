@@ -1,0 +1,116 @@
+{
+  "id": "user-model-videoseedancemini",
+  "name": "RH-SD2.0-mini",
+  "version": "1.0.0",
+  "description": "RH-SD2.0-mini user model interface package.",
+  "type": "model",
+  "author": "zhurui",
+  "category": "video",
+  "icon": "MODEL",
+  "permissions": [
+    "call_model",
+    "use_network"
+  ],
+  "sandbox": "server",
+  "runtime": {
+    "kind": "http",
+    "entry": "model.ts",
+    "baseUrl": "https://www.runninghub.cn/openapi/v2/rhart-video/sparkvideo-2.0-mini/multimodal-video"
+  },
+  "contributes": {
+    "models": [
+      {
+        "id": "videoSeedanceMini",
+        "name": "RH-SD2.0-mini",
+        "provider": "Seedance",
+        "protocol": "seedance",
+        "capabilityKinds": [
+          "video"
+        ],
+        "modelType": "video",
+        "endpoint": "https://www.runninghub.cn/openapi/v2/rhart-video/sparkvideo-2.0-mini/multimodal-video",
+        "model": "seedance-mini",
+        "apiKeyRef": "user:1:api_config:videoSeedanceMini",
+        "defaultGenerationSettings": {
+          "video": {
+            "videoMode": "all-around",
+            "duration": "5",
+            "aspectRatio": "16:9",
+            "resolution": "720p"
+          }
+        },
+        "config": {
+          "path": "",
+          "defaultGenerationSettings": {
+            "video": {
+              "videoMode": "all-around",
+              "duration": "5",
+              "aspectRatio": "16:9",
+              "resolution": "720p"
+            }
+          }
+        },
+        "metadata": {
+          "userConnection": {
+            "id": "videoSeedanceMini",
+            "name": "RH-SD2.0-mini",
+            "displayName": "RH-SD2.0-mini",
+            "provider": "Seedance",
+            "protocol": "seedance",
+            "endpoint": "https://www.runninghub.cn/openapi/v2/rhart-video/sparkvideo-2.0-mini/multimodal-video",
+            "path": "",
+            "model": "seedance-mini",
+            "apiKeyRef": "user:1:api_config:videoSeedanceMini",
+            "capabilityKinds": [
+              "video"
+            ],
+            "modelType": "video",
+            "enabled": true,
+            "isCustom": false,
+            "defaultGenerationSettings": {
+              "video": {
+                "videoMode": "all-around",
+                "duration": "5",
+                "aspectRatio": "16:9",
+                "resolution": "720p"
+              }
+            },
+            "metadata": {
+              "secretStoredIn": "user_preferences.api_config",
+              "sourceConfigKey": "videoSeedanceMini",
+              "defaultGenerationSettings": {
+                "video": {
+                  "videoMode": "all-around",
+                  "duration": "5",
+                  "aspectRatio": "16:9",
+                  "resolution": "720p"
+                }
+              }
+            }
+          },
+          "source": "user_model_connection",
+          "sourceConfigKey": "videoSeedanceMini",
+          "secretStoredIn": "user_preferences.api_config",
+          "defaultGenerationSettings": {
+            "video": {
+              "videoMode": "all-around",
+              "duration": "5",
+              "aspectRatio": "16:9",
+              "resolution": "720p"
+            }
+          }
+        }
+      }
+    ]
+  },
+  "metadata": {
+    "source": "user_model_connection",
+    "sourceConfigKey": "videoSeedanceMini",
+    "apiKeyStoredSeparately": true,
+    "ownerId": "1",
+    "packageKind": "model",
+    "packagePath": "extensions/models/user-models/1/user-model-videoseedancemini",
+    "physicalPackage": true,
+    "updatedAt": 1784352437396
+  }
+}

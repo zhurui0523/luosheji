@@ -8,3 +8,5 @@ export * from '../../kernel/protocol/artifact';
 export * from '../../kernel/protocol/model-provider';
 export * from '../../kernel/protocol/agent';
 export * from '../../kernel/protocol/plugin';
+export * from './package/types';
+export * from './package/validatePackageManifest';

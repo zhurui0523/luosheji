@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { 
   Search, 
   Check, 
@@ -44,12 +44,170 @@ const getPluginCategory = (id: string, fallback?: 'text' | 'image' | 'video' | '
   return 'image';
 };
 
+const normalizePluginCategory = (value: any): 'text' | 'image' | 'video' | 'all' => {
+  if (value === 'text' || value === 'image' || value === 'video' || value === 'all') {
+    return value;
+  }
+  if (value === 'ui' || value === 'tool' || value === 'data') {
+    return 'all';
+  }
+  return 'all';
+};
+
+const readPreferenceJson = <T,>(value: any, fallback: T): T => {
+  if (value === undefined || value === null || value === '') return fallback;
+  if (typeof value !== 'string') return value as T;
+  try {
+    return JSON.parse(value) as T;
+  } catch {
+    return fallback;
+  }
+};
+
+const saveUserPreference = async (prefKey: string, prefValue: any) => {
+  if (typeof window === 'undefined') return;
+  const token = localStorage.getItem('token');
+  if (!token || token === 'guest') return;
+
+  try {
+    await fetch('/api/user/preferences', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`
+      },
+      body: JSON.stringify({
+        pref_key: prefKey,
+        pref_value: typeof prefValue === 'string' ? prefValue : JSON.stringify(prefValue)
+      })
+    });
+  } catch (err) {
+    console.warn(`[PluginPage] Failed to save preference "${prefKey}":`, err);
+  }
+};
+
+const loadUserPreferences = async () => {
+  if (typeof window === 'undefined') return new Map<string, any>();
+  const token = localStorage.getItem('token');
+  if (!token || token === 'guest') return new Map<string, any>();
+
+  try {
+    const res = await fetch('/api/user/preferences', {
+      headers: { 'Authorization': `Bearer ${token}` }
+    });
+    if (!res.ok) return new Map<string, any>();
+    const data = await safeJson(res);
+    const map = new Map<string, any>();
+    if (Array.isArray(data?.preferences)) {
+      data.preferences.forEach((pref: any) => map.set(pref.pref_key, pref.pref_value));
+    }
+    return map;
+  } catch (err) {
+    console.warn('[PluginPage] Failed to load cloud preferences:', err);
+    return new Map<string, any>();
+  }
+};
+
+const CODE_REFERENCE_TOKEN = 'Please use the following code as reference: ';
+
+const extractCodeFromInstruction = (instruction?: string) => {
+  const raw = instruction || '';
+  const tokenIdx = raw.indexOf(CODE_REFERENCE_TOKEN);
+  return tokenIdx !== -1 ? raw.substring(tokenIdx + CODE_REFERENCE_TOKEN.length) : raw;
+};
+
+const toNumberIfNumeric = (value: any) => {
+  if (value === undefined || value === null || value === '') return undefined;
+  const text = String(value);
+  return /^\d+$/.test(text) ? Number(text) : undefined;
+};
+
+const normalizePluginPackageToSkill = (pkg: any): AiSkill | null => {
+  const manifest = pkg?.manifest || {};
+  const contributedSkill = Array.isArray(manifest.contributes?.skills)
+    ? manifest.contributes.skills[0]
+    : null;
+  const sourceRecordId =
+    manifest.metadata?.sourceRecordId ||
+    contributedSkill?.metadata?.sourceRecordId ||
+    contributedSkill?.metadata?.userPluginId;
+  const id = String(sourceRecordId || manifest.id || contributedSkill?.id || '').trim();
+
+  if (!id || !manifest.name) return null;
+
+  const category = normalizePluginCategory(
+    contributedSkill?.category || manifest.category || manifest.metadata?.category
+  );
+  const instruction =
+    contributedSkill?.instruction ||
+    (manifest.runtime?.entry ? `[Generative UI Plugin: ${manifest.name}] ${manifest.description || ''}` : '');
+
+  return {
+    id,
+    name: String(contributedSkill?.name || manifest.name || id),
+    desc: String(contributedSkill?.description || manifest.description || ''),
+    icon: String(contributedSkill?.icon || manifest.icon || '🧩'),
+    instruction,
+    isPublic: true,
+    isSystem: false,
+    isInstalled: true,
+    status: 'approved',
+    category,
+    customOptions: contributedSkill?.customOptions || null,
+    enableUpload: contributedSkill?.enableUpload,
+    uploadType: contributedSkill?.uploadType,
+    promptLabel: contributedSkill?.promptLabel,
+    promptPlaceholder: contributedSkill?.promptPlaceholder,
+    code: extractCodeFromInstruction(instruction),
+    creatorId: toNumberIfNumeric(manifest.metadata?.ownerId),
+    creatorName: manifest.author || '团队自制',
+    ...(pkg.packagePath ? { packagePath: pkg.packagePath } : {}),
+    ...(manifest.id ? { packageId: manifest.id } : {}),
+    source: 'extension_package',
+  } as AiSkill & Record<string, any>;
+};
+
+const pluginSkillToRegistryDefinition = (plugin: AiSkill & Record<string, any>) => ({
+  id: plugin.id,
+  name: plugin.name,
+  version: '1.0.0',
+  description: plugin.desc || '',
+  icon: plugin.icon || '🧩',
+  category: plugin.category || 'all',
+  enabled: true,
+  permissions: ['call_model', 'read_canvas', 'write_canvas'],
+  metadata: {
+    source: 'extension_package',
+    packagePath: plugin.packagePath,
+    packageId: plugin.packageId,
+  },
+  contributes: {
+    skills: [{
+      id: plugin.id,
+      name: plugin.name,
+      description: plugin.desc || '',
+      instruction: plugin.instruction || '',
+      category: plugin.category || 'all',
+      icon: plugin.icon || '🧩',
+      isSystem: false,
+      isInstalled: true,
+      isPublic: true,
+      customOptions: plugin.customOptions,
+      enableUpload: plugin.enableUpload,
+      uploadType: plugin.uploadType,
+      promptLabel: plugin.promptLabel,
+      promptPlaceholder: plugin.promptPlaceholder,
+    }],
+  },
+});
+
 interface PluginPageProps {
   user: any;
 }
 
 export const PluginPage: React.FC<PluginPageProps> = ({ user }) => {
   const [customSkills, setCustomSkills] = useState<AiSkill[]>([]);
+  const [packagePlugins, setPackagePlugins] = useState<AiSkill[]>([]);
   const [tick, setTick] = useState(0);
   const forceUpdate = () => setTick(t => t + 1);
 
@@ -137,7 +295,7 @@ export const PluginPage: React.FC<PluginPageProps> = ({ user }) => {
 
       try {
         const token = localStorage.getItem('token');
-        await fetch('/api/extensions/packages/import', {
+        const syncRes = await fetch('/api/extensions/packages/import', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -145,6 +303,10 @@ export const PluginPage: React.FC<PluginPageProps> = ({ user }) => {
           },
           body: JSON.stringify({ manifest })
         });
+        if (!syncRes.ok) {
+          throw new Error(`Package import failed with status ${syncRes.status}`);
+        }
+        await loadPluginPackages();
       } catch (syncErr) {
         console.warn('[PluginPage] Manifest imported locally but package sync failed:', syncErr);
       }
@@ -175,10 +337,20 @@ export const PluginPage: React.FC<PluginPageProps> = ({ user }) => {
     return { state: record.state, error: record.error };
   };
 
-  const handleUninstallExtension = (id: string) => {
+  const handleUninstallExtension = async (id: string) => {
     if (window.confirm('确认要卸载并彻底移除此清单插件及所有贡献项吗？')) {
       const result = ExtensionHub.uninstall(id, user?.id);
       setManifests(result.manifests);
+      try {
+        const token = localStorage.getItem('token');
+        await fetch(`/api/extensions/packages/plugin/${encodeURIComponent(id)}`, {
+          method: 'DELETE',
+          headers: token ? { 'Authorization': `Bearer ${token}` } : {}
+        });
+        await loadPluginPackages();
+      } catch (syncErr) {
+        console.warn('[PluginPage] Manifest uninstalled locally but package delete failed:', syncErr);
+      }
       
       forceUpdate();
       window.dispatchEvent(new CustomEvent('skills-changed'));
@@ -294,16 +466,45 @@ root.render(<App />);`);
         return JSON.parse(saved);
       } catch (e) {}
     }
-    const oldActive = localStorage.getItem('selected_ai_skill');
-    if (oldActive && oldActive !== 'general') {
-      return [oldActive];
-    }
     return PLUGINS.map(p => p.id);
   });
   const [activeSkillId, setActiveSkillId] = useState<string>(() => {
     return localStorage.getItem('selected_ai_skill') || 'general';
   });
   const [searchQuery, setSearchQuery] = useState('');
+
+  const syncPluginPreferencesFromServer = useCallback(async () => {
+    const prefs = await loadUserPreferences();
+    if (prefs.size === 0) return;
+
+    const selectedIds = readPreferenceJson<string[]>(prefs.get('selected_plugin_ids'), []);
+    if (Array.isArray(selectedIds) && selectedIds.length > 0) {
+      localStorage.setItem('selected_plugin_ids', JSON.stringify(selectedIds));
+      setSelectedPluginIds(selectedIds);
+    }
+
+    const activeSkill = prefs.get('selected_ai_skill');
+    if (typeof activeSkill === 'string' && activeSkill) {
+      localStorage.setItem('selected_ai_skill', activeSkill);
+      setActiveSkillId(activeSkill);
+    }
+
+    const deletedSystemPlugins = readPreferenceJson<string[]>(prefs.get('deleted_system_plugins'), []);
+    if (Array.isArray(deletedSystemPlugins)) {
+      localStorage.setItem('deleted_system_plugins', JSON.stringify(deletedSystemPlugins));
+    }
+
+    const editedSystemPlugins = readPreferenceJson<Record<string, any>>(prefs.get('edited_system_plugins'), {});
+    if (editedSystemPlugins && typeof editedSystemPlugins === 'object') {
+      localStorage.setItem('edited_system_plugins', JSON.stringify(editedSystemPlugins));
+    }
+
+    prefs.forEach((value, key) => {
+      if (key.startsWith('plugin_category_') && typeof value === 'string') {
+        localStorage.setItem(key, value);
+      }
+    });
+  }, []);
 
   // Admin Controls State
   const [editingPlugin, setEditingPlugin] = useState<AiSkill | null>(null);
@@ -318,8 +519,7 @@ root.render(<App />);`);
   const canModifyPlugin = (skill: AiSkill) => {
     if (user?.role === 'admin') return true;
     const systemIds = SYSTEM_PLUGINS.map(sp => sp.id);
-    if (systemIds.includes(skill.id)) return true;
-    if (skill.isSystem) return false;
+    if (systemIds.includes(skill.id) || skill.isSystem) return false;
     if (skill.creatorId && user?.id && String(skill.creatorId) === String(user?.id)) {
       return true;
     }
@@ -330,14 +530,16 @@ root.render(<App />);`);
     if (workshopSelectedId === 'new') return true;
     if (user?.role === 'admin') return true;
     const systemIds = SYSTEM_PLUGINS.map(sp => sp.id);
-    if (systemIds.includes(workshopSelectedId)) return true;
-    const userPlugins = JSON.parse(localStorage.getItem('user_plugins') || '[]');
+    if (systemIds.includes(workshopSelectedId)) return false;
+    const userPlugins = packagePlugins.length > 0
+      ? packagePlugins
+      : JSON.parse(localStorage.getItem('user_plugins') || '[]');
     const plugin = userPlugins.find((p: any) => p.id === workshopSelectedId);
     if (plugin && plugin.creatorId && user?.id && String(plugin.creatorId) === String(user?.id)) {
       return true;
     }
     return false;
-  }, [workshopSelectedId, user]);
+  }, [workshopSelectedId, user, packagePlugins]);
 
   const fetchSkills = async () => {
     const token = localStorage.getItem('token');
@@ -356,6 +558,56 @@ root.render(<App />);`);
       console.error('Failed to fetch custom skills in PluginPage:', e);
     }
   };
+
+  const syncPackagePluginsToRuntime = useCallback((plugins: AiSkill[]) => {
+    const serializablePlugins = plugins.map(plugin => ({ ...plugin }));
+    localStorage.setItem('user_plugins', JSON.stringify(serializablePlugins));
+    localStorage.setItem(
+      'user_plugins_v2',
+      JSON.stringify(serializablePlugins.map(plugin => pluginSkillToRegistryDefinition(plugin as any)))
+    );
+  }, []);
+
+  const loadPluginPackages = useCallback(async () => {
+    const token = localStorage.getItem('token');
+    if (!token) {
+      return [];
+    }
+
+    try {
+      const res = await fetch('/api/extensions/packages?kind=plugin', {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (!res.ok) {
+        throw new Error(`插件包发现失败: ${res.status}`);
+      }
+      const data = await safeJson(res);
+      const packages = Array.isArray(data?.packages) ? data.packages : [];
+      const discovered = packages
+        .map(normalizePluginPackageToSkill)
+        .filter(Boolean) as AiSkill[];
+
+      const unique = Array.from(
+        new Map(discovered.map(plugin => [plugin.id, plugin])).values()
+      );
+
+      setPackagePlugins(unique);
+      syncPackagePluginsToRuntime(unique);
+
+      if (!localStorage.getItem('selected_plugin_ids')) {
+        const allIds = [...SYSTEM_PLUGINS.map(plugin => plugin.id), ...unique.map(plugin => plugin.id)];
+        localStorage.setItem('selected_plugin_ids', JSON.stringify(allIds));
+        void saveUserPreference('selected_plugin_ids', allIds);
+        setSelectedPluginIds(allIds);
+      }
+
+      forceUpdate();
+      return unique;
+    } catch (e) {
+      console.error('Failed to load plugin packages:', e);
+      return [];
+    }
+  }, [syncPackagePluginsToRuntime]);
 
   const handleApprovePlugin = (id: string) => {
     try {
@@ -378,12 +630,20 @@ root.render(<App />);`);
   };
 
   useEffect(() => {
-    fetchSkills();
+    syncPluginPreferencesFromServer()
+      .finally(() => {
+        fetchSkills();
+        loadPluginPackages().then(() => {
+          window.dispatchEvent(new CustomEvent('skills-changed'));
+        });
+      });
     
     // Sync active skill id changes
     const handleSkillChange = (e: any) => {
       if (e.detail && e.detail.skillId) {
         setActiveSkillId(e.detail.skillId);
+        localStorage.setItem('selected_ai_skill', e.detail.skillId);
+        void saveUserPreference('selected_ai_skill', e.detail.skillId);
       }
     };
     const handlePluginsChange = (e: any) => {
@@ -392,6 +652,7 @@ root.render(<App />);`);
       }
     };
     const handleSkillsRefresh = () => {
+      loadPluginPackages();
       forceUpdate();
     };
     window.addEventListener('selected-skill-changed', handleSkillChange);
@@ -402,7 +663,7 @@ root.render(<App />);`);
       window.removeEventListener('selected-plugins-changed', handlePluginsChange);
       window.removeEventListener('skills-changed', handleSkillsRefresh);
     };
-  }, []);
+  }, [loadPluginPackages, syncPluginPreferencesFromServer]);
 
   const handleSelectSkill = (id: string) => {
     setSelectedPluginIds(prev => {
@@ -414,6 +675,7 @@ root.render(<App />);`);
         next = [...prev, id];
       }
       localStorage.setItem('selected_plugin_ids', JSON.stringify(next));
+      void saveUserPreference('selected_plugin_ids', next);
       window.dispatchEvent(new CustomEvent('selected-plugins-changed', { detail: { pluginIds: next } }));
       return next;
     });
@@ -427,10 +689,14 @@ root.render(<App />);`);
     setEditCategory(getPluginCategory(plugin.id, plugin.category));
   };
 
-  const handleSaveEdit = () => {
+  const handleSaveEdit = async () => {
     if (!editingPlugin) return;
     try {
       if (editingPlugin.isSystem) {
+        if (user?.role !== 'admin') {
+          alert('官方内置插件受保护，普通用户不能修改系统插件包。');
+          return;
+        }
         const editedPlugins = JSON.parse(localStorage.getItem('edited_system_plugins') || '{}');
         editedPlugins[editingPlugin.id] = {
           ...editedPlugins[editingPlugin.id],
@@ -439,12 +705,15 @@ root.render(<App />);`);
           icon: editIcon,
         };
         localStorage.setItem('edited_system_plugins', JSON.stringify(editedPlugins));
+        void saveUserPreference('edited_system_plugins', editedPlugins);
       } else {
         // Edit custom plugin in user_plugins
-        const userPluginsStr = localStorage.getItem('user_plugins');
-        if (userPluginsStr) {
-          const userPlugins = JSON.parse(userPluginsStr);
-          const updated = userPlugins.map((p: any) => {
+        const userPlugins = packagePlugins.length > 0
+          ? packagePlugins
+          : JSON.parse(localStorage.getItem('user_plugins') || '[]');
+        const existingPlugin = userPlugins.find((p: any) => p.id === editingPlugin.id) as any;
+        const existingCode = existingPlugin?.code || extractCodeFromInstruction(existingPlugin?.instruction || editingPlugin.instruction);
+        const updated = userPlugins.map((p: any) => {
             if (p.id === editingPlugin.id) {
               return {
                 ...p,
@@ -456,46 +725,75 @@ root.render(<App />);`);
             }
             return p;
           });
-          localStorage.setItem('user_plugins', JSON.stringify(updated));
+        syncPackagePluginsToRuntime(updated);
+        const token = localStorage.getItem('token');
+        const syncRes = await fetch('/api/plugins/packages/sync', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+          },
+          body: JSON.stringify({
+            id: editingPlugin.id,
+            name: editName,
+            desc: editDesc,
+            icon: editIcon,
+            category: editCategory,
+            code: existingCode || `export default function Plugin() { return null; }`
+          })
+        });
+        if (!syncRes.ok) {
+          const err = await syncRes.json().catch(() => ({}));
+          throw new Error(err.error || `插件包保存失败: ${syncRes.status}`);
         }
+        await loadPluginPackages();
       }
       localStorage.setItem(`plugin_category_${editingPlugin.id}`, editCategory);
+      void saveUserPreference(`plugin_category_${editingPlugin.id}`, editCategory);
       setEditingPlugin(null);
       window.dispatchEvent(new CustomEvent('skills-changed'));
       window.dispatchEvent(new CustomEvent('selected-skill-changed', { detail: { skillId: activeSkillId } }));
     } catch (e) {
       console.error('Failed to save edited plugin:', e);
+      alert(e instanceof Error ? e.message : '插件保存失败');
     }
   };
 
   const handleDeleteConfirm = async (id: string) => {
     try {
       // Check if it is a user plugin
-      const userPluginsStr = localStorage.getItem('user_plugins');
-      if (userPluginsStr) {
-        const userPlugins = JSON.parse(userPluginsStr);
-        const filtered = userPlugins.filter((p: any) => p.id !== id);
-        if (filtered.length !== userPlugins.length) {
-          localStorage.setItem('user_plugins', JSON.stringify(filtered));
-          try {
-            const token = localStorage.getItem('token');
-            await fetch(`/api/plugins/packages/${encodeURIComponent(id)}`, {
-              method: 'DELETE',
-              headers: token ? { 'Authorization': `Bearer ${token}` } : {}
-            });
-          } catch (syncErr) {
-            console.warn('[PluginPage] Plugin deleted locally but package delete failed:', syncErr);
-          }
-          setDeletingPluginId(null);
-          window.dispatchEvent(new CustomEvent('skills-changed'));
-          return;
+      const userPlugins = packagePlugins.length > 0
+        ? packagePlugins
+        : JSON.parse(localStorage.getItem('user_plugins') || '[]');
+      const filtered = userPlugins.filter((p: any) => p.id !== id);
+      if (filtered.length !== userPlugins.length) {
+        const token = localStorage.getItem('token');
+        const syncRes = await fetch(`/api/plugins/packages/${encodeURIComponent(id)}`, {
+          method: 'DELETE',
+          headers: token ? { 'Authorization': `Bearer ${token}` } : {}
+        });
+        if (!syncRes.ok) {
+          const err = await syncRes.json().catch(() => ({}));
+          throw new Error(err.error || `插件包删除失败: ${syncRes.status}`);
         }
+        syncPackagePluginsToRuntime(filtered);
+        await loadPluginPackages();
+        setDeletingPluginId(null);
+        window.dispatchEvent(new CustomEvent('skills-changed'));
+        return;
+      }
+
+      if (user?.role !== 'admin') {
+        alert('官方内置插件受保护，普通用户不能删除系统插件包。');
+        setDeletingPluginId(null);
+        return;
       }
 
       const deletedIds = JSON.parse(localStorage.getItem('deleted_system_plugins') || '[]');
       if (!deletedIds.includes(id)) {
         deletedIds.push(id);
         localStorage.setItem('deleted_system_plugins', JSON.stringify(deletedIds));
+        void saveUserPreference('deleted_system_plugins', deletedIds);
       }
       setDeletingPluginId(null);
       if (activeSkillId === id) {
@@ -505,6 +803,7 @@ root.render(<App />);`);
       window.dispatchEvent(new CustomEvent('selected-skill-changed', { detail: { skillId: 'general' } }));
     } catch (e) {
       console.error('Failed to delete plugin:', e);
+      alert(e instanceof Error ? e.message : '插件删除失败');
     }
   };
 
@@ -522,11 +821,26 @@ root.render(<App />);`);
     }
   };
 
-  const handleResetAllPlugins = () => {
+  const handleResetAllPlugins = async () => {
     if (window.confirm('确认要恢复所有官方插件并删除所有自建插件吗？')) {
+      const token = localStorage.getItem('token');
+      if (token && token !== 'guest') {
+        for (const plugin of packagePlugins) {
+          try {
+            await fetch(`/api/plugins/packages/${encodeURIComponent(plugin.id)}`, {
+              method: 'DELETE',
+              headers: { 'Authorization': `Bearer ${token}` }
+            });
+          } catch (err) {
+            console.warn(`[PluginPage] Failed to delete cloud plugin package "${plugin.id}":`, err);
+          }
+        }
+      }
       localStorage.removeItem('deleted_system_plugins');
       localStorage.removeItem('edited_system_plugins');
       localStorage.removeItem('user_plugins');
+      void saveUserPreference('deleted_system_plugins', []);
+      void saveUserPreference('edited_system_plugins', {});
       window.dispatchEvent(new CustomEvent('skills-changed'));
       window.dispatchEvent(new CustomEvent('selected-skill-changed', { detail: { skillId: activeSkillId } }));
       window.location.reload();
@@ -568,7 +882,9 @@ root.render(<App />);`);
       setSaveFormIcon('✨');
       setSaveFormCategory('all');
     } else {
-      const userPlugins = JSON.parse(localStorage.getItem('user_plugins') || '[]');
+      const userPlugins = packagePlugins.length > 0
+        ? packagePlugins
+        : JSON.parse(localStorage.getItem('user_plugins') || '[]');
       let matched = userPlugins.find((p: any) => p.id === id);
       
       // If not in user_plugins, check if it is an edited system plugin in edited_system_plugins
@@ -595,15 +911,7 @@ root.render(<App />);`);
 
       if (matched) {
         // Extract code from instruction
-        let savedCode = '';
-        const matchToken = 'Please use the following code as reference: ';
-        const instruction = matched.instruction || '';
-        const tokenIdx = instruction.indexOf(matchToken);
-        if (tokenIdx !== -1) {
-          savedCode = instruction.substring(tokenIdx + matchToken.length);
-        } else {
-          savedCode = instruction;
-        }
+        const savedCode = matched.code || extractCodeFromInstruction(matched.instruction);
         setWorkshopCode(savedCode);
         setSaveFormName(matched.name);
         setSaveFormDesc(matched.desc || matched.description || '');
@@ -685,72 +993,55 @@ root.render(<App />);`);
       return;
     }
 
-    const userPlugins = JSON.parse(localStorage.getItem('user_plugins') || '[]');
-    const isNew = workshopSelectedId === 'new' || !canModifySelectedWorkshopPlugin;
-    const pluginId = isNew ? 'custom_' + Date.now().toString() : workshopSelectedId;
+    try {
+      const userPlugins = packagePlugins.length > 0
+        ? packagePlugins
+        : JSON.parse(localStorage.getItem('user_plugins') || '[]');
+      const isNew = workshopSelectedId === 'new' || !canModifySelectedWorkshopPlugin;
+      const pluginId = isNew ? 'custom_' + Date.now().toString() : workshopSelectedId;
 
-    const systemIds = SYSTEM_PLUGINS.map(sp => sp.id);
-    if (systemIds.includes(pluginId)) {
-      // Save to edited system plugins
-      const editedPlugins = JSON.parse(localStorage.getItem('edited_system_plugins') || '{}');
-      editedPlugins[pluginId] = {
-        ...editedPlugins[pluginId],
-        id: pluginId,
-        name: saveFormName,
-        desc: saveFormDesc,
-        icon: saveFormIcon,
-        instruction: `[Generative UI Plugin: ${saveFormName}] Please use the following code as reference: ${workshopCode}`,
-        category: saveFormCategory,
-        isSystem: true,
-        isInstalled: true,
-        isPublic: true
-      };
-      localStorage.setItem('edited_system_plugins', JSON.stringify(editedPlugins));
-      localStorage.setItem(`plugin_category_${pluginId}`, saveFormCategory);
-    } else {
-      const savedPayload = {
-        id: pluginId,
-        name: saveFormName + (isNew && workshopSelectedId !== 'new' ? ' (副本)' : ''),
-        desc: saveFormDesc,
-        icon: saveFormIcon,
-        instruction: `[Generative UI Plugin: ${saveFormName}] Please use the following code as reference: ${workshopCode}`,
-        isPublic: true,
-        isSystem: false,
-        isInstalled: true,
-        category: saveFormCategory,
-        status: 'approved',
-        creatorId: isNew ? user?.id : (userPlugins.find((p: any) => p.id === pluginId)?.creatorId || user?.id),
-        creatorName: isNew ? (user?.username || '团队自制') : (userPlugins.find((p: any) => p.id === pluginId)?.creatorName || user?.username || '团队自制')
-      };
-
-      if (isNew) {
-        userPlugins.push(savedPayload);
-        // Migrate chat history
-        setWorkshopChatHistory(prev => {
-          const updated = { ...prev };
-          if (updated[workshopSelectedId]) {
-            updated[pluginId] = updated[workshopSelectedId];
-            if (workshopSelectedId === 'new') {
-              delete updated['new'];
-            }
-          }
-          localStorage.setItem('workshop_chat_history', JSON.stringify(updated));
-          return updated;
-        });
-      } else {
-        const idx = userPlugins.findIndex((p: any) => p.id === pluginId);
-        if (idx !== -1) {
-          userPlugins[idx] = savedPayload;
-        } else {
-          userPlugins.push(savedPayload);
+      const systemIds = SYSTEM_PLUGINS.map(sp => sp.id);
+      if (systemIds.includes(pluginId)) {
+        if (user?.role !== 'admin') {
+          alert('官方内置插件受保护。普通用户修改官方插件时，会保存为新的自定义插件。');
+          return;
         }
-      }
+        const editedPlugins = JSON.parse(localStorage.getItem('edited_system_plugins') || '{}');
+        editedPlugins[pluginId] = {
+          ...editedPlugins[pluginId],
+          id: pluginId,
+          name: saveFormName,
+          desc: saveFormDesc,
+          icon: saveFormIcon,
+          instruction: `[Generative UI Plugin: ${saveFormName}] Please use the following code as reference: ${workshopCode}`,
+          category: saveFormCategory,
+          isSystem: true,
+          isInstalled: true,
+          isPublic: true
+        };
+        localStorage.setItem('edited_system_plugins', JSON.stringify(editedPlugins));
+        void saveUserPreference('edited_system_plugins', editedPlugins);
+        localStorage.setItem(`plugin_category_${pluginId}`, saveFormCategory);
+        void saveUserPreference(`plugin_category_${pluginId}`, saveFormCategory);
+      } else {
+        const savedPayload = {
+          id: pluginId,
+          name: saveFormName + (isNew && workshopSelectedId !== 'new' ? ' (副本)' : ''),
+          desc: saveFormDesc,
+          icon: saveFormIcon,
+          instruction: `[Generative UI Plugin: ${saveFormName}] Please use the following code as reference: ${workshopCode}`,
+          isPublic: true,
+          isSystem: false,
+          isInstalled: true,
+          category: saveFormCategory,
+          status: 'approved',
+          code: workshopCode,
+          creatorId: isNew ? user?.id : ((userPlugins as any[]).find((p: any) => p.id === pluginId)?.creatorId || user?.id),
+          creatorName: isNew ? (user?.username || '团队自制') : ((userPlugins as any[]).find((p: any) => p.id === pluginId)?.creatorName || user?.username || '团队自制')
+        };
 
-      localStorage.setItem('user_plugins', JSON.stringify(userPlugins));
-      localStorage.setItem(`plugin_category_${pluginId}`, saveFormCategory);
-      try {
         const token = localStorage.getItem('token');
-        await fetch('/api/plugins/packages/sync', {
+        const syncRes = await fetch('/api/plugins/packages/sync', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -765,38 +1056,85 @@ root.render(<App />);`);
             code: workshopCode
           })
         });
-      } catch (syncErr) {
-        console.warn('[PluginPage] Plugin saved locally but package sync failed:', syncErr);
-      }
-    }
+        if (!syncRes.ok) {
+          const err = await syncRes.json().catch(() => ({}));
+          throw new Error(err.error || `插件包写入失败: ${syncRes.status}`);
+        }
 
-    // Sync selecting new plugin
-    if (isNew) {
-      setWorkshopSelectedId(pluginId);
-    }
-    
-    window.dispatchEvent(new CustomEvent('skills-changed'));
-    if (isNew && workshopSelectedId !== 'new') {
-      alert('🎉 由于您对原插件无修改权限，已自动将您的修改另存为新插件！');
-    } else {
-      alert('🎉 插件已成功保存并立即启用！');
-    }
-    if (closeModalAfter === true) {
-      setShowSavePluginModal(false);
+        let nextUserPlugins: any[] = [...(userPlugins as any[])];
+        if (isNew) {
+          nextUserPlugins.push(savedPayload);
+          setWorkshopChatHistory(prev => {
+            const updated = { ...prev };
+            if (updated[workshopSelectedId]) {
+              updated[pluginId] = updated[workshopSelectedId];
+              if (workshopSelectedId === 'new') {
+                delete updated['new'];
+              }
+            }
+            localStorage.setItem('workshop_chat_history', JSON.stringify(updated));
+            return updated;
+          });
+        } else {
+          const idx = nextUserPlugins.findIndex((p: any) => p.id === pluginId);
+          if (idx !== -1) {
+            nextUserPlugins[idx] = savedPayload;
+          } else {
+            nextUserPlugins.push(savedPayload);
+          }
+        }
+
+        syncPackagePluginsToRuntime(nextUserPlugins);
+        localStorage.setItem(`plugin_category_${pluginId}`, saveFormCategory);
+        void saveUserPreference(`plugin_category_${pluginId}`, saveFormCategory);
+        await loadPluginPackages();
+        if (isNew) {
+          setWorkshopSelectedId(pluginId);
+          setSelectedPluginIds(prev => {
+            if (prev.includes(pluginId)) return prev;
+            const next = [...prev, pluginId];
+            localStorage.setItem('selected_plugin_ids', JSON.stringify(next));
+            void saveUserPreference('selected_plugin_ids', next);
+            return next;
+          });
+        }
+      }
+
+      window.dispatchEvent(new CustomEvent('skills-changed'));
+      if (isNew && workshopSelectedId !== 'new') {
+        alert('🎉 由于您对原插件无修改权限，已自动将您的修改另存为新插件！');
+      } else {
+        alert('🎉 插件已成功保存为独立插件包并立即启用！');
+      }
+      if (closeModalAfter === true) {
+        setShowSavePluginModal(false);
+      }
+    } catch (err: any) {
+      console.error('[PluginPage] Failed to save plugin package:', err);
+      alert(err?.message || '插件保存失败，请检查服务端插件包写入接口。');
     }
   };
 
-  const aiStudioList = PLUGINS.filter(skill => {
+  const allPluginList = useMemo(() => {
+    const merged = new Map<string, AiSkill>();
+    PLUGINS.forEach(plugin => merged.set(plugin.id, plugin));
+    packagePlugins.forEach(plugin => merged.set(plugin.id, plugin));
+    return Array.from(merged.values());
+  }, [packagePlugins, tick]);
+
+  const aiStudioList = allPluginList.filter(skill => {
     const q = searchQuery.toLowerCase();
     return skill.name.toLowerCase().includes(q) || skill.desc.toLowerCase().includes(q);
   });
 
-  const installedPluginsCount = PLUGINS.filter(p => selectedPluginIds.includes(p.id)).length;
+  const installedPluginsCount = allPluginList.filter(p => selectedPluginIds.includes(p.id)).length;
   const displayedList = activeTab === 'browse'
     ? aiStudioList.filter(skill => selectedPluginIds.includes(skill.id))
     : aiStudioList;
 
-  const customSavedPluginsList = JSON.parse(localStorage.getItem('user_plugins') || '[]');
+  const customSavedPluginsList = packagePlugins.length > 0
+    ? packagePlugins
+    : JSON.parse(localStorage.getItem('user_plugins') || '[]');
 
   return (
     <div className="flex flex-col h-full overflow-hidden bg-[#fcfcfd]">
@@ -824,7 +1162,7 @@ root.render(<App />);`);
                   : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100/60 border border-transparent'
               }`}
             >
-              📦 全部插件 ({PLUGINS.length})
+              📦 全部插件 ({allPluginList.length})
             </button>
             <button
               onClick={() => setActiveTab('workshop')}
@@ -861,17 +1199,6 @@ root.render(<App />);`);
                 className="w-full text-xs pl-9 pr-3.5 py-2.5 bg-slate-50 hover:bg-slate-100/70 focus:bg-white border border-slate-200/40 focus:border-indigo-500/50 focus:ring-1 focus:ring-indigo-500/30 focus:outline-none rounded-xl transition-all shadow-2xs"
               />
             </div>
-            <button
-              onClick={() => {
-                setActiveTab('workshop');
-                handleWorkshopLoadPlugin('new');
-              }}
-              className="flex items-center space-x-1.5 px-3.5 py-2 rounded-xl text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-700 active:scale-95 transition-all cursor-pointer shrink-0 shadow-sm border-0"
-              title="前往 AI 插件工坊新建插件"
-            >
-              <Sparkles className="w-3.5 h-3.5" />
-              <span>制作新插件</span>
-            </button>
           </div>
         ) : activeTab === 'workshop' ? (
           <div className="flex items-center space-x-3 flex-1 justify-end">
@@ -933,6 +1260,11 @@ root.render(<App />);`);
                             官方默认
                           </span>
                         )}
+                        {(skill as any).packagePath && (
+                          <span className="text-[9px] font-black px-1.5 py-0.5 bg-emerald-50 text-emerald-700 border border-emerald-100/60 rounded-md shrink-0">
+                            独立插件包
+                          </span>
+                        )}
                       </h3>
                       <p className="text-[10px] text-gray-400 mt-1 flex items-center">
                         <UserIcon className="w-3 h-3 mr-1 text-gray-300" />
@@ -969,6 +1301,11 @@ root.render(<App />);`);
                   <p className="text-[12px] text-gray-600 mt-4 leading-relaxed bg-gray-50/50 p-3.5 rounded-2xl border border-gray-100/40 min-h-[64px] block">
                     {skill.desc || '暂无描述。'}
                   </p>
+                  {(skill as any).packagePath && (
+                    <div className="mt-3 text-[10px] font-mono text-slate-500 bg-slate-50 border border-slate-100 rounded-xl px-3 py-2 truncate" title={(skill as any).packagePath}>
+                      {(skill as any).packagePath}
+                    </div>
+                  )}
 
                   {skill.customOptions && skill.customOptions.length > 0 ? (
                     <div className="mt-3 p-3 bg-indigo-50/30 rounded-2xl border border-indigo-100/30 space-y-1.5">
@@ -1446,7 +1783,7 @@ root.render(<App />);`);
           <div className="bg-white rounded-2xl max-w-sm w-full p-6 shadow-xl border border-slate-100 mx-4 animate-in zoom-in-95 duration-200">
             <h3 className="text-base font-bold text-slate-900">确认删除插件</h3>
             <p className="text-xs text-slate-500 mt-2 leading-relaxed">
-              您确定要删除该插件吗？删除后此插件将不再显示在插件列表和控制台中。此操作可随时重置恢复。
+              您确定要删除该插件吗？自定义插件会从独立插件包目录中移除；官方插件仅管理员可维护。
             </p>
             <div className="flex items-center justify-end space-x-2 mt-5">
               <button

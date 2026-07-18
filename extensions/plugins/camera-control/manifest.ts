@@ -17,7 +17,7 @@ export const cameraControlPluginManifest: ExtensionManifest = {
     entry: './skill.ts'
   },
   contributes: {
-    skills: [cameraControlSkill]
+    skills: [{ ...cameraControlSkill, description: cameraControlSkill.desc, category: cameraControlSkill.category || 'image' }]
   },
   metadata: {
     builtin: true,

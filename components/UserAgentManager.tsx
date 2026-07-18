@@ -1,79 +1,118 @@
-import React, { useState, useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { 
-  User, 
-  Plus, 
-  Trash2, 
-  Edit2, 
-  Check, 
-  X, 
-  Zap, 
-  AlertCircle, 
-  Play, 
-  Sparkles, 
-  Bot, 
-  Settings, 
-  Layers, 
-  Cpu, 
+import {
+  AlertCircle,
+  Bot,
   CheckCircle2,
-  ChevronRight,
-  Info
+  Cpu,
+  Edit2,
+  FileJson,
+  LockKeyhole,
+  Plus,
+  Power,
+  Shield,
+  Sparkles,
+  Trash2,
+  User,
+  X,
 } from 'lucide-react';
 import { AgentRegistry } from '../lib/os/registries/AgentRegistry';
 import { UserAgentStore } from '../lib/os/agents/UserAgentStore';
 import { SYSTEM_SKILLS } from '../skills/definitions';
-import { UserAgentDefinition, CapabilityKind } from '../lib/os/types';
+import { PLUGINS } from '../plugin';
+import { UserAgentDefinition, CapabilityKind, AgentDefinition } from '../lib/os/types';
+import { Config } from '../types';
+import { getModelOptions, ModelKind, ModelOption } from '../lib/modelOptions';
+import { safeJson } from '../lib/fetch';
+import { BRAIN_AGENT_SYSTEM_INSTRUCTION } from './agents/brainAgent';
 
-// Preset Agents for Quick Creation
-const PRESET_AGENTS = [
+const AGENT_PRESETS = [
   {
-    name: '短视频爆款策划 Expert',
-    role: '营销策划总监',
-    systemInstruction: '你是一位精通流量密码、善于制造戏剧冲突与黄金3秒钩子（Hook）的短视频爆款策划大师。请对用户输入的段落进行爆款化改编：加入前置戏剧性钩子、规划节奏感强的快剪运镜，并输出高互动的口播脚本。',
+    name: '短视频爆款策划专家',
+    role: '营销脚本策划',
+    description: '擅长短视频开头钩子、节奏设计、口播脚本和高转化内容结构。',
+    systemInstruction: '你是短视频爆款策划专家。请围绕用户目标，输出具有强钩子、强节奏、强转化的脚本方案，并明确分镜、口播、字幕和行动号召。',
     capabilityKinds: ['text'] as CapabilityKind[],
     skillIds: ['office-ad-script', 'office-brief-proposal'],
-    textModel: 'gemini-3.5-flash',
-    description: '专注于抖音、小红书等社交平台的爆款短视频文案策划。'
   },
   {
-    name: '儿童绘本分镜 Creator',
-    role: '绘本插画导演',
-    systemInstruction: '你是一位资深儿童绘本分镜导演。善于站在儿童视角，以童真、温暖、色彩斑斓的视觉语言进行叙事。请为用户提供绘本的分镜脚本方案：包含角色丰富微表情、环境光影氛围，并附带用于生图的华丽英文提示词（采用马卡龙、童话插画风格，背景纯净）。',
+    name: '儿童绘本分镜导演',
+    role: '绘本视觉导演',
+    description: '擅长儿童故事结构、温暖画面、绘本分镜和插画提示词。',
+    systemInstruction: '你是儿童绘本分镜导演。请用儿童可理解的叙事方式，把故事拆成清晰分镜，并给出温暖、稳定、适合绘本生成的视觉提示词。',
     capabilityKinds: ['text', 'image'] as CapabilityKind[],
     skillIds: ['grid-storyboard', 'scene-plan'],
-    textModel: 'gemini-3.5-flash',
-    imageModel: 'gemini-3.1-flash-image-preview',
-    description: '设计富有童真与故事情感张力的绘本连环画分镜与插画。'
   },
   {
     name: '品牌视觉创意总监',
-    role: '创意美术总监 (Art Director)',
-    systemInstruction: '你是一位顶级的品牌视觉DNA及创意美术总监。你拥有极高的美学品位，精通色彩心理学与光影构图。请协助用户：对故事大纲或品牌理念进行视觉DNA提取，生成核心主视觉（Key Visual）、配色方案、以及多场景、多模态的原画分镜绘图大纲。',
+    role: 'Art Director',
+    description: '擅长品牌视觉 DNA、主视觉、色彩体系、原画分镜和动态视觉方向。',
+    systemInstruction: '你是品牌视觉创意总监。请帮助用户提炼品牌视觉 DNA，形成主视觉方向、色彩系统、关键画面和适合生成图片/视频的执行提示词。',
     capabilityKinds: ['text', 'image', 'video'] as CapabilityKind[],
-    skillIds: ['dna-design', 'camera-control', 'asset-library'],
-    textModel: 'gemini-3.5-flash',
-    imageModel: 'gemini-3.1-flash-image-preview',
-    videoModel: 'seedance2.0',
-    description: '打造世界级美学的品牌主视觉、配色体系和动态宣传大片。'
+    skillIds: ['dna-design', 'asset-library'],
   },
-  {
-    name: '游戏角色概念设定师',
-    role: '高级原画概念设计师',
-    systemInstruction: '你是一位资深游戏概念设计师。擅长创造个性鲜明、装备细节扎实、富有幻想感的游戏角色。请根据用户的需求，深度设计角色背景，提取种族与职业DNA，并生成极其专业的立绘及三视图绘制指令（Turnaround Character Sheet，含多重视角、面部特征还原，灰色纯净背景）。',
-    capabilityKinds: ['text', 'image'] as CapabilityKind[],
-    skillIds: ['six-view', 'asset-prompt'],
-    textModel: 'gemini-3.5-flash',
-    imageModel: 'gpt-image-2',
-    description: '创作高还原度、转面细节丰富、幻想感拉满的游戏角色设定图。'
-  }
 ];
+
+const CAPABILITY_LABELS: Record<string, string> = {
+  text: '文本',
+  image: '图片',
+  video: '视频',
+  workflow: '工作流',
+  vision: '视觉',
+  audio: '音频',
+  code: '代码',
+  tools: '工具',
+};
+
+function makeAgentId(name: string) {
+  const slug = name
+    .trim()
+    .toLowerCase()
+    .replace(/[_\s]+/g, '-')
+    .replace(/[^a-z0-9-]/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '');
+  return `user-agent-${Date.now().toString().slice(-6)}-${slug || 'agent'}`;
+}
+
+function makeSystemAgentOverrideId(systemAgentId: string) {
+  const slug = systemAgentId
+    .trim()
+    .toLowerCase()
+    .replace(/[_\s]+/g, '-')
+    .replace(/[^a-z0-9-]/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '');
+  return `system-agent-override-${slug || 'agent'}`;
+}
+
+function cleanSkillName(skill: any) {
+  const rawName = String(skill?.name || skill?.id || '').trim();
+  const icon = String(skill?.icon || '').trim();
+  if (icon && rawName.startsWith(icon)) return rawName.slice(icon.length).trim() || rawName;
+  return rawName.replace(/^[^\p{L}\p{N}]+/u, '').trim() || rawName;
+}
+
+function ensureOption(options: ModelOption[], currentValue: string) {
+  if (!currentValue || options.some(option => option.value === currentValue)) return options;
+  return [{ label: currentValue, value: currentValue }, ...options];
+}
+
+const FIELD_INPUT_CLASS = 'w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-semibold text-slate-800 outline-none transition focus:border-indigo-300 focus:ring-4 focus:ring-indigo-100 placeholder:text-slate-400';
 
 export const UserAgentManager: React.FC<{ user?: any }> = ({ user }) => {
   const [agents, setAgents] = useState<UserAgentDefinition[]>([]);
-  const [isEditing, setIsEditing] = useState<string | null>(null); // Agent ID if editing
+  const [systemAgents, setSystemAgents] = useState<AgentDefinition[]>(() => AgentRegistry.listSystemAgents());
+  const [isEditing, setIsEditing] = useState<string | null>(null);
+  const [editingKind, setEditingKind] = useState<'user' | 'system' | null>(null);
+  const [editingSystemAgentId, setEditingSystemAgentId] = useState<string | null>(null);
   const [showForm, setShowForm] = useState(false);
+  const [apiConfig, setApiConfig] = useState<Config | null>(null);
+  const [availableSkills, setAvailableSkills] = useState<any[]>(() =>
+    SYSTEM_SKILLS.filter(skill => !PLUGINS.some(plugin => plugin.id === skill.id))
+  );
+  const [toast, setToast] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
 
-  // Form Fields State
   const [formName, setFormName] = useState('');
   const [formRole, setFormRole] = useState('');
   const [formInstruction, setFormInstruction] = useState('');
@@ -84,243 +123,429 @@ export const UserAgentManager: React.FC<{ user?: any }> = ({ user }) => {
   const [formImageModel, setFormImageModel] = useState('gemini-3.1-flash-image-preview');
   const [formVideoModel, setFormVideoModel] = useState('seedance2.0');
 
-  const [errorMess, setErrorMess] = useState<string | null>(null);
-  const [successMess, setSuccessMess] = useState<string | null>(null);
+  const isAdmin = user?.role === 'admin';
+  const textModelOptions = getModelOptions(apiConfig, [], 'text');
+  const imageModelOptions = getModelOptions(apiConfig, [], 'image');
+  const videoModelOptions = getModelOptions(apiConfig, [], 'video');
 
-  // Load user custom agents
-  const refreshAgents = async () => {
-    const userAgents = await UserAgentStore.listUserAgents(user?.id);
-    AgentRegistry.loadUserAgents({ userAgents });
-    const list = AgentRegistry.listUserAgents();
-    setAgents(list);
+  const getDefaultModel = (kind: ModelKind) => {
+    const options = kind === 'text' ? textModelOptions : kind === 'image' ? imageModelOptions : videoModelOptions;
+    if (options[0]?.value) return options[0].value;
+    if (kind === 'image') return 'gemini-3.1-flash-image-preview';
+    if (kind === 'video') return 'seedance2.0';
+    return 'gemini-3.5-flash';
   };
 
-  useEffect(() => {
-    refreshAgents();
-  }, [user?.id]);
-
-  // Show Toast / Banner message
-  const triggerToast = (msg: string, type: 'success' | 'error') => {
-    if (type === 'success') {
-      setSuccessMess(msg);
-      setTimeout(() => setSuccessMess(null), 3000);
-    } else {
-      setErrorMess(msg);
-      setTimeout(() => setErrorMess(null), 3500);
-    }
+  const getModelLabel = (kind: ModelKind, value?: string) => {
+    if (!value) return '';
+    const options = kind === 'text' ? textModelOptions : kind === 'image' ? imageModelOptions : videoModelOptions;
+    return options.find(option => option.value === value)?.label || value;
   };
 
-  const handleToggleEnable = async (agent: UserAgentDefinition) => {
-    const nextEnabled = agent.enabled === false ? true : false;
-    const list = AgentRegistry.listUserAgents();
-    const updatedList = list.map(a => {
-      if (a.id === agent.id) {
-        return { ...a, enabled: nextEnabled };
-      }
-      return a;
-    });
-
-    await UserAgentStore.saveAllUserAgents(updatedList, user?.id);
-    await refreshAgents();
-    triggerToast(`【${agent.name}】已${nextEnabled ? '上岗/启用' : '下岗/禁用'}`, 'success');
+  const showToast = (message: string, type: 'success' | 'error') => {
+    setToast({ message, type });
+    window.setTimeout(() => setToast(null), type === 'success' ? 2600 : 4200);
   };
 
-  const handleDelete = async (id: string, name: string) => {
-    if (!window.confirm(`确定要永久删除/注销专业智能体【${name}】吗？`)) {
-      return;
-    }
-    await UserAgentStore.deleteUserAgent(id, user?.id);
-    await refreshAgents();
-    triggerToast(`【${name}】已成功删除并注销`, 'success');
-  };
-
-  const applyPreset = (preset: typeof PRESET_AGENTS[0]) => {
-    setFormName(preset.name);
-    setFormRole(preset.role);
-    setFormInstruction(preset.systemInstruction);
-    setFormDescription(preset.description);
-    setFormCapabilities(preset.capabilityKinds);
-    setFormSkillIds(preset.skillIds);
-    if (preset.textModel) setFormTextModel(preset.textModel);
-    if (preset.imageModel) setFormImageModel(preset.imageModel);
-    if (preset.videoModel) setFormVideoModel(preset.videoModel);
-    triggerToast(`已成功载入【${preset.name}】预设模板！可按需微调。`, 'success');
-  };
-
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!formName.trim()) {
-      triggerToast('请输入专业智能体名称', 'error');
-      return;
-    }
-    if (!formRole.trim()) {
-      triggerToast('请输入该智能体的专业角色/岗位', 'error');
-      return;
-    }
-    if (!formInstruction.trim()) {
-      triggerToast('请输入给智能体的系统提示词/核心设定', 'error');
-      return;
-    }
-    if (formCapabilities.length === 0) {
-      triggerToast('请至少选择一种能力范围（文案、生图、视频）', 'error');
-      return;
-    }
-
-    // Generate Kebab-case stable ID
-    const agentId = isEditing || `user-agent-${Date.now().toString().slice(-6)}-${formName.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`;
-
-    const newAgent: UserAgentDefinition = {
-      id: agentId,
-      name: formName.trim(),
-      role: formRole.trim(),
-      systemInstruction: formInstruction.trim(),
-      description: formDescription.trim(),
-      capabilityKinds: formCapabilities,
-      skillIds: formSkillIds,
-      modelPreferences: {
-        text: formTextModel,
-        image: formImageModel,
-        video: formVideoModel
-      },
-      enabled: true,
-      isCustom: true,
-      createdAt: isEditing ? (agents.find(a => a.id === isEditing)?.createdAt || Date.now()) : Date.now(),
-      updatedAt: Date.now()
-    };
-
-    const currentList = AgentRegistry.listUserAgents();
-    let updatedList: UserAgentDefinition[] = [];
-    if (isEditing) {
-      updatedList = currentList.map(a => a.id === isEditing ? newAgent : a);
-    } else {
-      updatedList = [...currentList, newAgent];
-    }
-
-    // Save & Reload
-    await UserAgentStore.saveAllUserAgents(updatedList, user?.id);
-    await refreshAgents();
-
-    triggerToast(isEditing ? `【${formName}】信息修改成功` : `专业智能体【${formName}】已正式上岗！`, 'success');
-
-    // Reset Form
+  const resetForm = () => {
     setIsEditing(null);
-    setShowForm(false);
+    setEditingKind(null);
+    setEditingSystemAgentId(null);
     setFormName('');
     setFormRole('');
     setFormInstruction('');
     setFormDescription('');
     setFormCapabilities(['text']);
     setFormSkillIds([]);
-    setFormTextModel('gemini-3.5-flash');
-    setFormImageModel('gemini-3.1-flash-image-preview');
-    setFormVideoModel('seedance2.0');
+    setFormTextModel(getDefaultModel('text'));
+    setFormImageModel(getDefaultModel('image'));
+    setFormVideoModel(getDefaultModel('video'));
+  };
+
+  const refreshAgents = async (notify = false) => {
+    const userAgents = await UserAgentStore.listUserAgents(user?.id);
+    AgentRegistry.loadUserAgents({ userAgents });
+    const nextAgents = AgentRegistry.listUserAgents();
+    setAgents(nextAgents);
+    setSystemAgents(AgentRegistry.listSystemAgents());
+    if (notify && typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('agents-changed', { detail: { agents: nextAgents } }));
+    }
+  };
+
+  useEffect(() => {
+    refreshAgents();
+  }, [user?.id]);
+
+  useEffect(() => {
+    const loadPluggableSources = async () => {
+      const token = localStorage.getItem('token');
+      if (!token) return;
+
+      try {
+        const res = await fetch('/api/user/settings/api-config', {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        const data = await safeJson(res);
+        if (res.ok && data && Object.keys(data).length > 0) setApiConfig(data);
+      } catch (error) {
+        console.error('Failed to load agent model options:', error);
+      }
+
+      try {
+        const res = await fetch('/api/skills', {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        const data = await safeJson(res);
+        if (res.ok && data?.success && Array.isArray(data.skills)) {
+          const pluginIds = new Set(PLUGINS.map(plugin => plugin.id));
+          const nextSkills = data.skills
+            .filter((skill: any) => !pluginIds.has(skill.id))
+            .filter((skill: any) => skill.isInstalled || skill.isSystem || String(skill.creatorId) === String(user?.id));
+          setAvailableSkills(nextSkills);
+        }
+      } catch (error) {
+        console.error('Failed to load agent skill options:', error);
+      }
+    };
+
+    loadPluggableSources();
+    window.addEventListener('skills-changed', loadPluggableSources);
+    window.addEventListener('api-config-changed', loadPluggableSources as any);
+    return () => {
+      window.removeEventListener('skills-changed', loadPluggableSources);
+      window.removeEventListener('api-config-changed', loadPluggableSources as any);
+    };
+  }, [user?.id]);
+
+  useEffect(() => {
+    setFormTextModel(prev => textModelOptions.some(option => option.value === prev) ? prev : getDefaultModel('text'));
+    setFormImageModel(prev => imageModelOptions.some(option => option.value === prev) ? prev : getDefaultModel('image'));
+    setFormVideoModel(prev => videoModelOptions.some(option => option.value === prev) ? prev : getDefaultModel('video'));
+  }, [apiConfig]);
+
+  const applyPreset = (preset: typeof AGENT_PRESETS[0]) => {
+    setFormName(preset.name);
+    setFormRole(preset.role);
+    setFormDescription(preset.description);
+    setFormInstruction(preset.systemInstruction);
+    setFormCapabilities(preset.capabilityKinds);
+    setFormSkillIds(preset.skillIds);
   };
 
   const startEdit = (agent: UserAgentDefinition) => {
     setIsEditing(agent.id);
+    setEditingKind('user');
+    setEditingSystemAgentId(null);
     setFormName(agent.name);
     setFormRole(agent.role);
     setFormInstruction(agent.systemInstruction);
     setFormDescription(agent.description || '');
     setFormCapabilities(agent.capabilityKinds || ['text']);
     setFormSkillIds(agent.skillIds || []);
-    setFormTextModel(agent.modelPreferences?.text || 'gemini-3.5-flash');
-    setFormImageModel(agent.modelPreferences?.image || 'gemini-3.1-flash-image-preview');
-    setFormVideoModel(agent.modelPreferences?.video || 'seedance2.0');
+    setFormTextModel(agent.modelPreferences?.text || getDefaultModel('text'));
+    setFormImageModel(agent.modelPreferences?.image || getDefaultModel('image'));
+    setFormVideoModel(agent.modelPreferences?.video || getDefaultModel('video'));
     setShowForm(true);
   };
 
+  const startEditSystem = (agent: AgentDefinition) => {
+    if (!isAdmin) return;
+
+    const override = AgentRegistry.getSystemAgentOverride(agent.id);
+    setIsEditing(override?.id || makeSystemAgentOverrideId(agent.id));
+    setEditingKind('system');
+    setEditingSystemAgentId(agent.id);
+    setFormName(agent.name);
+    setFormRole(agent.role);
+    setFormInstruction(agent.systemInstruction || (agent.id === 'brainAgent' ? BRAIN_AGENT_SYSTEM_INSTRUCTION : ''));
+    setFormDescription(agent.description || '');
+    setFormCapabilities(agent.capabilityKinds?.length ? agent.capabilityKinds : ['workflow']);
+    setFormSkillIds(agent.skillIds || agent.skills || []);
+    setFormTextModel(agent.modelPreferences?.text || agent.modelPreference || getDefaultModel('text'));
+    setFormImageModel(agent.modelPreferences?.image || getDefaultModel('image'));
+    setFormVideoModel(agent.modelPreferences?.video || getDefaultModel('video'));
+    setShowForm(true);
+  };
+
+  const handleToggleEnable = async (agent: UserAgentDefinition) => {
+    try {
+      const nextEnabled = agent.enabled === false;
+      const storedAgents = await UserAgentStore.listUserAgents(user?.id);
+      const updatedList = storedAgents.map(item => item.id === agent.id ? { ...item, enabled: nextEnabled, updatedAt: Date.now() } : item);
+      await UserAgentStore.saveAllUserAgents(updatedList, user?.id);
+      await refreshAgents(true);
+      showToast(`「${agent.name}」已${nextEnabled ? '启用' : '禁用'}。`, 'success');
+    } catch (error: any) {
+      showToast(error?.message || 'Agent 状态保存失败。', 'error');
+    }
+  };
+
+  const handleDelete = async (id: string, name: string) => {
+    if (!window.confirm(`确定删除「${name}」吗？删除后会移除它的独立 Agent 包。`)) return;
+    try {
+      await UserAgentStore.deleteUserAgent(id, user?.id);
+      await refreshAgents(true);
+      showToast(`「${name}」已删除。`, 'success');
+    } catch (error: any) {
+      showToast(error?.message || 'Agent 删除失败。', 'error');
+    }
+  };
+
+  const handleSubmit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    const name = formName.trim();
+    const role = formRole.trim();
+    const instruction = formInstruction.trim();
+    const isSystemEditing = editingKind === 'system';
+
+    if (!name) return showToast('请输入 Agent 名称。', 'error');
+    if (!role) return showToast('请输入 Agent 专业角色。', 'error');
+    if (!instruction) return showToast('请输入 Agent 系统提示词。', 'error');
+    if (formCapabilities.length === 0) return showToast('至少选择一种能力类型。', 'error');
+
+    if (isSystemEditing) {
+      if (!isAdmin) return showToast('只有管理员可以维护系统 Agent。', 'error');
+      if (!editingSystemAgentId) return showToast('系统 Agent 目标丢失，请重新打开编辑。', 'error');
+
+      try {
+        const storedAgents = await UserAgentStore.listUserAgents(user?.id);
+        const systemBase = systemAgents.find(agent => agent.id === editingSystemAgentId);
+        const isSameSystemOverride = (agent: UserAgentDefinition) =>
+          agent.metadata?.source === 'system-agent-override' &&
+          agent.metadata?.systemAgentId === editingSystemAgentId;
+        const current = storedAgents.find(isSameSystemOverride);
+        const nextAgent: UserAgentDefinition = {
+          id: isEditing || makeSystemAgentOverrideId(editingSystemAgentId),
+          name,
+          role,
+          description: formDescription.trim(),
+          icon: 'Bot',
+          systemInstruction: instruction,
+          capabilityKinds: formCapabilities,
+          skillIds: formSkillIds,
+          modelPreferences: {
+            text: formTextModel,
+            image: formImageModel,
+            video: formVideoModel,
+          },
+          enabled: true,
+          isCustom: true,
+          createdAt: current?.createdAt || Date.now(),
+          updatedAt: Date.now(),
+          metadata: {
+            ...(current?.metadata || {}),
+            source: 'system-agent-override',
+            systemAgentId: editingSystemAgentId,
+            protected: true,
+            packagePath: systemBase?.metadata?.packagePath,
+          },
+        };
+
+        const nextList = storedAgents.some(isSameSystemOverride)
+          ? storedAgents.map(agent => isSameSystemOverride(agent) ? nextAgent : agent)
+          : [...storedAgents, nextAgent];
+
+        await UserAgentStore.saveAllUserAgents(nextList, user?.id);
+        await refreshAgents(true);
+        showToast(`系统 Agent「${name}」已保存覆盖配置。`, 'success');
+        resetForm();
+        setShowForm(false);
+      } catch (error: any) {
+        showToast(error?.message || 'Agent 保存失败。', 'error');
+      }
+      return;
+    }
+
+    const duplicatedName = agents.some(agent =>
+      agent.id !== isEditing && agent.name.trim().toLowerCase() === name.toLowerCase()
+    );
+    if (duplicatedName) return showToast('Agent 名称不能重复，否则用户会误认为它们是同一个。', 'error');
+
+    const agentId = isEditing || makeAgentId(name);
+    const current = agents.find(agent => agent.id === isEditing);
+    const nextAgent: UserAgentDefinition = {
+      id: agentId,
+      name,
+      role,
+      description: formDescription.trim(),
+      icon: 'Bot',
+      systemInstruction: instruction,
+      capabilityKinds: formCapabilities,
+      skillIds: formSkillIds,
+      modelPreferences: {
+        text: formTextModel,
+        image: formImageModel,
+        video: formVideoModel,
+      },
+      enabled: current?.enabled ?? true,
+      isCustom: true,
+      createdAt: current?.createdAt || Date.now(),
+      updatedAt: Date.now(),
+      metadata: {
+        source: 'user-agent',
+      },
+    };
+
+    const nextList = isEditing
+      ? agents.map(agent => agent.id === isEditing ? nextAgent : agent)
+      : [...agents, nextAgent];
+
+    try {
+      const storedAgents = await UserAgentStore.listUserAgents(user?.id);
+      const preservedSystemOverrides = storedAgents.filter(agent => agent.metadata?.source === 'system-agent-override');
+      await UserAgentStore.saveAllUserAgents([...preservedSystemOverrides, ...nextList], user?.id);
+      await refreshAgents(true);
+      showToast(isEditing ? `「${name}」已保存。` : `「${name}」已创建并写入独立 Agent 包。`, 'success');
+      resetForm();
+      setShowForm(false);
+    } catch (error: any) {
+      showToast(error?.message || 'Agent 保存失败。', 'error');
+    }
+  };
+
+  const getSkillInfo = (id: string) => {
+    return availableSkills.find(skill => skill.id === id) || SYSTEM_SKILLS.find(skill => skill.id === id);
+  };
+
   return (
-    <div className="flex-1 overflow-y-auto p-8 custom-scrollbar bg-slate-50/40 h-full">
-      {/* Toast notifications */}
+    <div className="flex-1 h-full overflow-y-auto bg-slate-50/40 p-8 custom-scrollbar">
       <AnimatePresence>
-        {successMess && (
-          <motion.div 
-            initial={{ opacity: 0, y: -20 }}
+        {toast && (
+          <motion.div
+            initial={{ opacity: 0, y: -12 }}
             animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -20 }}
-            className="fixed top-6 right-6 bg-emerald-500 text-white text-xs font-black px-5 py-3.5 rounded-2xl shadow-xl border border-emerald-400/25 flex items-center gap-2 z-[9999]"
+            exit={{ opacity: 0, y: -12 }}
+            className={`fixed top-6 right-6 z-[9999] flex items-center gap-2 rounded-2xl px-5 py-3 text-xs font-black text-white shadow-xl ${
+              toast.type === 'success' ? 'bg-emerald-500' : 'bg-rose-500'
+            }`}
           >
-            <CheckCircle2 className="w-4 h-4 shrink-0" />
-            <span>{successMess}</span>
-          </motion.div>
-        )}
-        {errorMess && (
-          <motion.div 
-            initial={{ opacity: 0, y: -20 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -20 }}
-            className="fixed top-6 right-6 bg-rose-500 text-white text-xs font-black px-5 py-3.5 rounded-2xl shadow-xl border border-rose-400/25 flex items-center gap-2 z-[9999]"
-          >
-            <AlertCircle className="w-4 h-4 shrink-0" />
-            <span>{errorMess}</span>
+            {toast.type === 'success' ? <CheckCircle2 className="h-4 w-4" /> : <AlertCircle className="h-4 w-4" />}
+            <span className="whitespace-pre-line">{toast.message}</span>
           </motion.div>
         )}
       </AnimatePresence>
 
-      <div className="max-w-6xl mx-auto flex flex-col gap-6">
-        {/* Header Block */}
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 bg-white p-6 rounded-3xl border border-slate-100 shadow-xs">
+      <div className="mx-auto flex max-w-6xl flex-col gap-6">
+        <section className="flex flex-col gap-4 rounded-3xl border border-slate-100 bg-white p-6 shadow-xs sm:flex-row sm:items-center sm:justify-between">
           <div>
-            <h1 className="text-xl font-black text-slate-800 flex items-center gap-2">
-              <Bot className="w-6 h-6 text-indigo-500 animate-pulse" />
+            <h1 className="flex items-center gap-2 text-xl font-black text-slate-900">
+              <Bot className="h-6 w-6 text-indigo-500" />
               <span>用户自定义专业 Agent 系统</span>
             </h1>
-            <p className="text-xs text-slate-400 font-medium mt-1">
-              自己创建具有特定身份、核心能力、专属 Skill、默认模型和提示词设定的专业角色，供小逻大脑（BrainAgent）进行跨节点任务指派。
+            <p className="mt-1 text-xs font-medium leading-relaxed text-slate-500">
+              Agent 是小逻大脑可调度的专业角色。系统大脑负责统筹，用户 Agent 以独立文件包保存，可创建、启用、禁用、编辑和移除。
             </p>
           </div>
           {!showForm && (
             <button
               onClick={() => {
-                setIsEditing(null);
+                resetForm();
                 setShowForm(true);
               }}
-              className="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-black rounded-xl transition-all shadow-md shadow-indigo-100 flex items-center gap-1.5 self-start sm:self-auto cursor-pointer"
+              className="flex cursor-pointer items-center gap-1.5 self-start rounded-xl bg-indigo-600 px-5 py-2.5 text-xs font-black text-white shadow-md shadow-indigo-100 transition hover:bg-indigo-700 sm:self-auto"
             >
-              <Plus className="w-4 h-4" />
+              <Plus className="h-4 w-4" />
               <span>新建专业 Agent</span>
             </button>
           )}
-        </div>
+        </section>
 
-        {/* Form Overlay/Section */}
+        <section className="flex flex-col gap-3">
+          <div className="flex items-center justify-between border-b border-slate-200 pb-2">
+            <span className="text-xs font-black uppercase tracking-wider text-slate-500">系统 Agent 包 ({systemAgents.length})</span>
+            <span className="text-[10px] italic text-slate-400">系统包受保护，普通用户不能删除</span>
+          </div>
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+            {systemAgents.map(agent => (
+              <div key={agent.id} className="rounded-3xl border border-amber-200 bg-white p-6 shadow-xs">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="flex min-w-0 items-center gap-3">
+                    <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl border border-amber-200 bg-amber-50 text-amber-600">
+                      <Shield className="h-5 w-5" />
+                    </div>
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2">
+                        <h2 className="truncate text-sm font-black text-slate-900">{agent.name}</h2>
+                        <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[9px] font-black text-amber-700">SYSTEM</span>
+                      </div>
+                      <p className="mt-0.5 text-[11px] font-bold text-slate-500">{agent.role}</p>
+                    </div>
+                  </div>
+                  <LockKeyhole className="h-4 w-4 text-amber-500" />
+                </div>
+                <p className="mt-4 text-xs leading-relaxed text-slate-600">{agent.description}</p>
+                <div className="mt-4 rounded-2xl border border-slate-100 bg-slate-50 px-3 py-2 text-[11px] font-mono text-slate-500">
+                  {agent.metadata?.packagePath || 'components/agents/brainAgent.ts'}
+                </div>
+                <div className="mt-4 flex items-center justify-between rounded-2xl border border-amber-100 bg-amber-50/70 px-3 py-2">
+                  <span className="text-[11px] font-black text-amber-700">
+                    {isAdmin ? '管理员可维护系统 Agent 包' : '系统内置 Agent，仅管理员可维护'}
+                  </span>
+                  {isAdmin ? (
+                    <button
+                      type="button"
+                      onClick={() => startEditSystem(agent)}
+                      title="管理员可修改系统 Agent 的覆盖配置。"
+                      className="flex items-center gap-1 rounded-xl border border-amber-200 bg-white px-3 py-1.5 text-[11px] font-black text-amber-600 transition hover:border-amber-300 hover:bg-amber-100"
+                    >
+                      <Edit2 className="h-3.5 w-3.5" />
+                      <span>修改</span>
+                    </button>
+                  ) : (
+                    <button
+                      disabled
+                      title="系统 Agent 受保护，仅管理员可维护。"
+                      className="flex items-center gap-1 rounded-xl border border-amber-200 bg-white px-3 py-1.5 text-[11px] font-black text-amber-600 opacity-70"
+                    >
+                      <Edit2 className="h-3.5 w-3.5" />
+                      <span>受保护</span>
+                    </button>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
+
         {showForm && (
-          <motion.div 
-            initial={{ opacity: 0, y: 15 }}
+          <motion.section
+            initial={{ opacity: 0, y: 12 }}
             animate={{ opacity: 1, y: 0 }}
-            className="bg-white p-8 rounded-3xl border border-indigo-100 shadow-md flex flex-col gap-6"
+            className="rounded-3xl border border-indigo-100 bg-white p-6 shadow-md"
           >
-            <div className="flex items-center justify-between border-b border-slate-100 pb-4">
-              <h2 className="text-sm font-black text-slate-800 flex items-center gap-2">
-                <Sparkles className="w-4 h-4 text-indigo-500" />
-                <span>{isEditing ? '编辑专业智能体' : '设定新的专业角色智能体'}</span>
+            <div className="mb-5 flex items-center justify-between border-b border-slate-100 pb-4">
+              <h2 className="flex items-center gap-2 text-sm font-black text-slate-900">
+                <Sparkles className="h-4 w-4 text-indigo-500" />
+                <span>{editingKind === 'system' ? '编辑系统 Agent 包' : isEditing ? '编辑用户 Agent 包' : '创建用户 Agent 包'}</span>
               </h2>
-              <button 
-                onClick={() => setShowForm(false)}
-                className="p-1.5 text-slate-400 hover:text-slate-600 hover:bg-slate-50 rounded-lg transition-all"
+              <button
+                onClick={() => {
+                  resetForm();
+                  setShowForm(false);
+                }}
+                className="rounded-xl p-2 text-slate-400 transition hover:bg-slate-100 hover:text-slate-700"
               >
-                <X className="w-5 h-5" />
+                <X className="h-5 w-5" />
               </button>
             </div>
 
-            {/* Quick Presets Block (Only show on Create mode) */}
             {!isEditing && (
-              <div className="bg-slate-50/50 border border-slate-100 p-4 rounded-2xl flex flex-col gap-2.5">
-                <div className="flex items-center gap-1.5 px-1">
-                  <Layers className="w-3.5 h-3.5 text-indigo-500" />
-                  <span className="text-[10px] font-extrabold uppercase text-indigo-500 tracking-wider">快捷模板导入</span>
+              <div className="mb-5 rounded-2xl border border-slate-100 bg-slate-50/70 p-4">
+                <div className="mb-3 flex items-center gap-1.5 text-[11px] font-black uppercase tracking-wider text-indigo-500">
+                  <Sparkles className="h-3.5 w-3.5" />
+                  <span>快捷模板</span>
                 </div>
-                <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-2.5">
-                  {PRESET_AGENTS.map((preset, index) => (
+                <div className="grid grid-cols-1 gap-2 md:grid-cols-3">
+                  {AGENT_PRESETS.map(preset => (
                     <button
-                      key={index}
+                      key={preset.name}
                       type="button"
                       onClick={() => applyPreset(preset)}
-                      className="text-left p-3 rounded-xl border border-slate-200/60 bg-white hover:border-indigo-400 hover:bg-indigo-50/10 transition-all flex flex-col gap-1 cursor-pointer group"
+                      className="cursor-pointer rounded-xl border border-slate-200 bg-white p-3 text-left transition hover:border-indigo-300 hover:bg-indigo-50/40"
                     >
-                      <span className="text-[11px] font-black text-slate-700 group-hover:text-indigo-600 truncate">{preset.name}</span>
-                      <span className="text-[9.5px] text-slate-400 line-clamp-1">{preset.description}</span>
+                      <div className="text-xs font-black text-slate-800">{preset.name}</div>
+                      <p className="mt-1 line-clamp-2 text-[10px] leading-relaxed text-slate-500">{preset.description}</p>
                     </button>
                   ))}
                 </div>
@@ -328,340 +553,224 @@ export const UserAgentManager: React.FC<{ user?: any }> = ({ user }) => {
             )}
 
             <form onSubmit={handleSubmit} className="flex flex-col gap-5">
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-                {/* Name */}
-                <div className="flex flex-col gap-1.5">
-                  <label className="text-[11px] font-extrabold text-slate-500 uppercase tracking-wider">智能体角色名称</label>
-                  <input
-                    type="text"
-                    required
-                    placeholder="如：爆款视频爆款策划、儿童插画专家"
-                    value={formName}
-                    onChange={(e) => setFormName(e.target.value)}
-                    className="w-full text-xs h-10 bg-slate-50 border border-slate-200 focus:border-indigo-400 focus:bg-white rounded-xl px-3 outline-none transition-all text-slate-700 font-bold"
-                  />
-                </div>
-
-                {/* Role */}
-                <div className="flex flex-col gap-1.5">
-                  <label className="text-[11px] font-extrabold text-slate-500 uppercase tracking-wider">专业岗位标签 (Role)</label>
-                  <input
-                    type="text"
-                    required
-                    placeholder="如：营销文案总监、儿童视觉美术指导"
-                    value={formRole}
-                    onChange={(e) => setFormRole(e.target.value)}
-                    className="w-full text-xs h-10 bg-slate-50 border border-slate-200 focus:border-indigo-400 focus:bg-white rounded-xl px-3 outline-none transition-all text-slate-700 font-bold"
-                  />
-                </div>
+              <div className="grid grid-cols-1 gap-5 md:grid-cols-2">
+                <Field label="Agent 名称">
+                  <input value={formName} onChange={event => setFormName(event.target.value)} className={FIELD_INPUT_CLASS} placeholder="例如：商业短片导演" />
+                </Field>
+                <Field label="专业角色">
+                  <input value={formRole} onChange={event => setFormRole(event.target.value)} className={FIELD_INPUT_CLASS} placeholder="例如：广告创意导演" />
+                </Field>
               </div>
 
-              {/* Description */}
-              <div className="flex flex-col gap-1.5">
-                <label className="text-[11px] font-extrabold text-slate-500 uppercase tracking-wider">一句话定位描述</label>
-                <input
-                  type="text"
-                  placeholder="简单说明该专业智能体的定位（如：专注于高转化带货和微电影脚本）"
-                  value={formDescription}
-                  onChange={(e) => setFormDescription(e.target.value)}
-                  className="w-full text-xs h-10 bg-slate-50 border border-slate-200 focus:border-indigo-400 focus:bg-white rounded-xl px-3 outline-none transition-all text-slate-600"
-                />
-              </div>
+              <Field label="一句话描述">
+                <input value={formDescription} onChange={event => setFormDescription(event.target.value)} className={FIELD_INPUT_CLASS} placeholder="说明这个 Agent 适合处理什么任务" />
+              </Field>
 
-              {/* System Instruction */}
-              <div className="flex flex-col gap-1.5">
-                <label className="text-[11px] font-extrabold text-slate-500 uppercase tracking-wider">系统设定提示词 (System Instruction)</label>
+              <Field label="系统提示词">
                 <textarea
-                  required
-                  rows={4}
-                  placeholder="详细设定该智能体的具体执行人设、掌握的技能、分析框架和输出规范。该提示词将在步骤执行时，作为最高系统级指令约束 LLM 的创作风范..."
                   value={formInstruction}
-                  onChange={(e) => setFormInstruction(e.target.value)}
-                  className="w-full text-xs bg-slate-50 border border-slate-200 focus:border-indigo-400 focus:bg-white rounded-xl p-3 outline-none transition-all text-slate-700 font-medium leading-relaxed custom-scrollbar"
+                  onChange={event => setFormInstruction(event.target.value)}
+                  rows={5}
+                  className={`${FIELD_INPUT_CLASS} min-h-[140px] resize-y leading-relaxed`}
+                  placeholder="写清楚这个 Agent 的身份、能力边界、输出格式和执行规范。"
                 />
-              </div>
+              </Field>
 
-              {/* Capability Range & Skills Integration */}
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-                {/* Capabilities checkboxes */}
-                <div className="flex flex-col gap-2">
-                  <label className="text-[11px] font-extrabold text-slate-500 uppercase tracking-wider">能力适用范围 (Capability Kinds)</label>
-                  <p className="text-[10px] text-slate-400 leading-none">勾选此智能体在哪些媒介类型的规划或执行中会被调度</p>
-                  <div className="flex items-center gap-4 mt-1 bg-slate-50 p-3 rounded-xl border border-slate-150">
-                    {['text', 'image', 'video'].map(kind => {
-                      const isChecked = formCapabilities.includes(kind as any);
+              <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
+                <Field label="能力类型">
+                  <div className="flex flex-wrap gap-2 rounded-2xl border border-slate-200 bg-slate-50 p-3">
+                    {(['text', 'image', 'video', 'workflow'] as CapabilityKind[]).map(kind => {
+                      const checked = formCapabilities.includes(kind);
                       return (
-                        <label key={kind} className="flex items-center gap-1.5 text-xs font-bold text-slate-600 cursor-pointer select-none">
-                          <input
-                            type="checkbox"
-                            checked={isChecked}
-                            onChange={() => {
-                              if (isChecked) {
-                                setFormCapabilities(formCapabilities.filter(k => k !== kind));
-                              } else {
-                                setFormCapabilities([...formCapabilities, kind as any]);
-                              }
-                            }}
-                            className="w-3.5 h-3.5 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
-                          />
-                          <span className="capitalize">{kind === 'text' ? '📝 文本创作' : kind === 'image' ? '🎨 原画生图' : '🎥 视效视频'}</span>
-                        </label>
+                        <button
+                          key={kind}
+                          type="button"
+                          onClick={() => setFormCapabilities(checked ? formCapabilities.filter(item => item !== kind) : [...formCapabilities, kind])}
+                          className={`rounded-xl border px-3 py-2 text-xs font-black transition ${
+                            checked ? 'border-indigo-200 bg-indigo-50 text-indigo-700' : 'border-slate-200 bg-white text-slate-500 hover:border-slate-300'
+                          }`}
+                        >
+                          {CAPABILITY_LABELS[kind]}
+                        </button>
                       );
                     })}
                   </div>
-                </div>
+                </Field>
 
-                {/* Model Preferences */}
-                <div className="flex flex-col gap-2">
-                  <label className="text-[11px] font-extrabold text-slate-500 uppercase tracking-wider">核心模型偏好设定</label>
-                  <div className="grid grid-cols-3 gap-2 bg-slate-50 p-2.5 rounded-xl border border-slate-150">
-                    {/* Text Model */}
-                    <div className="flex flex-col gap-1">
-                      <span className="text-[9px] font-bold text-slate-400 text-center">文字模型</span>
-                      <select
-                        value={formTextModel}
-                        onChange={(e) => setFormTextModel(e.target.value)}
-                        className="text-[10px] font-bold bg-white border border-slate-200 rounded-lg p-1.5 outline-none"
-                      >
-                        <option value="gemini-3.5-flash">Gemini 3.5 Flash</option>
-                        <option value="gemini-1.5-pro">Gemini 1.5 Pro</option>
-                      </select>
-                    </div>
-
-                    {/* Image Model */}
-                    <div className="flex flex-col gap-1">
-                      <span className="text-[9px] font-bold text-slate-400 text-center">生图大模型</span>
-                      <select
-                        value={formImageModel}
-                        onChange={(e) => setFormImageModel(e.target.value)}
-                        className="text-[10px] font-bold bg-white border border-slate-200 rounded-lg p-1.5 outline-none"
-                      >
-                        <option value="gemini-3.1-flash-image-preview">nano banana 2</option>
-                        <option value="gpt-image-2">GPT-Image-2</option>
-                      </select>
-                    </div>
-
-                    {/* Video Model */}
-                    <div className="flex flex-col gap-1">
-                      <span className="text-[9px] font-bold text-slate-400 text-center">视效大模型</span>
-                      <select
-                        value={formVideoModel}
-                        onChange={(e) => setFormVideoModel(e.target.value)}
-                        className="text-[10px] font-bold bg-white border border-slate-200 rounded-lg p-1.5 outline-none"
-                      >
-                        <option value="seedance2.0">RH-SD2.0</option>
-                        <option value="seedance-mini">RH-SD2.0mini</option>
-                      </select>
-                    </div>
+                <Field label="默认模型">
+                  <div className="grid grid-cols-1 gap-2 md:grid-cols-3">
+                    <ModelSelect label="文本" value={formTextModel} onChange={setFormTextModel} options={ensureOption(textModelOptions, formTextModel)} />
+                    <ModelSelect label="图片" value={formImageModel} onChange={setFormImageModel} options={ensureOption(imageModelOptions, formImageModel)} />
+                    <ModelSelect label="视频" value={formVideoModel} onChange={setFormVideoModel} options={ensureOption(videoModelOptions, formVideoModel)} />
                   </div>
-                </div>
+                </Field>
               </div>
 
-              {/* Skills integration */}
-              <div className="flex flex-col gap-1.5">
-                <label className="text-[11px] font-extrabold text-slate-500 uppercase tracking-wider">智能体可调用的底层特长技能 (Skills)</label>
-                <div className="bg-slate-50/50 p-4 rounded-xl border border-slate-200/60 max-h-[160px] overflow-y-auto custom-scrollbar grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2">
-                  {SYSTEM_SKILLS.filter(s => s.id !== 'perspective-sim' && s.id !== 'point-and-shoot').map(skill => {
-                    const isChecked = formSkillIds.includes(skill.id);
+              <Field label="可调用的 Skill">
+                <div className="grid max-h-[180px] grid-cols-1 gap-2 overflow-y-auto rounded-2xl border border-slate-200 bg-slate-50 p-3 custom-scrollbar md:grid-cols-3 lg:grid-cols-4">
+                  {availableSkills.map(skill => {
+                    const checked = formSkillIds.includes(skill.id);
                     return (
-                      <label 
-                        key={skill.id} 
-                        className={`p-2.5 rounded-lg border text-[10.5px] font-bold flex items-center gap-2 cursor-pointer transition-all select-none ${
-                          isChecked 
-                            ? 'bg-indigo-50/80 border-indigo-200 text-indigo-700 shadow-2xs' 
-                            : 'bg-white border-slate-150 text-slate-600 hover:border-slate-300'
+                      <button
+                        key={skill.id}
+                        type="button"
+                        onClick={() => setFormSkillIds(checked ? formSkillIds.filter(id => id !== skill.id) : [...formSkillIds, skill.id])}
+                        className={`flex min-w-0 items-center gap-2 rounded-xl border px-3 py-2 text-left text-[11px] font-bold transition ${
+                          checked ? 'border-indigo-200 bg-indigo-50 text-indigo-700' : 'border-slate-200 bg-white text-slate-600 hover:border-slate-300'
                         }`}
                       >
-                        <input
-                          type="checkbox"
-                          checked={isChecked}
-                          onChange={() => {
-                            if (isChecked) {
-                              setFormSkillIds(formSkillIds.filter(id => id !== skill.id));
-                            } else {
-                              setFormSkillIds([...formSkillIds, skill.id]);
-                            }
-                          }}
-                          className="hidden"
-                        />
-                        <span className="text-sm">{skill.icon || '🧩'}</span>
-                        <span className="truncate">{skill.name}</span>
-                      </label>
+                        <span className="shrink-0">{skill.icon || <Cpu className="h-3.5 w-3.5" />}</span>
+                        <span className="truncate">{cleanSkillName(skill)}</span>
+                      </button>
                     );
                   })}
                 </div>
-              </div>
+              </Field>
 
-              {/* Submit Buttons */}
-              <div className="flex items-center justify-end gap-3 pt-4 border-t border-slate-100">
+              <div className="flex justify-end gap-3 border-t border-slate-100 pt-4">
                 <button
                   type="button"
-                  onClick={() => setShowForm(false)}
-                  className="px-5 py-2.5 text-xs font-bold text-slate-500 hover:bg-slate-100 rounded-xl transition-all cursor-pointer"
+                  onClick={() => {
+                    resetForm();
+                    setShowForm(false);
+                  }}
+                  className="rounded-xl px-5 py-2.5 text-xs font-black text-slate-500 transition hover:bg-slate-100"
                 >
                   取消
                 </button>
-                <button
-                  type="submit"
-                  className="px-6 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-black rounded-xl transition-all shadow-md shadow-indigo-100 flex items-center gap-1.5 cursor-pointer"
-                >
-                  <CheckCircle2 className="w-4 h-4" />
-                  <span>{isEditing ? '保存修改' : '确认上岗此 Agent'}</span>
+                <button type="submit" className="rounded-xl bg-indigo-600 px-6 py-2.5 text-xs font-black text-white shadow-md shadow-indigo-100 transition hover:bg-indigo-700">
+                  {isEditing ? '保存修改' : '确认创建'}
                 </button>
               </div>
             </form>
-          </motion.div>
+          </motion.section>
         )}
 
-        {/* Custom Agents List Area */}
-        <div className="flex flex-col gap-4">
-          <div className="flex items-center justify-between border-b border-slate-150 pb-2">
-            <span className="text-xs font-black uppercase text-slate-400 tracking-wider">当前在岗角色 ({agents.length})</span>
-            <span className="text-[10px] text-slate-400 italic">在岗 Agent 默认优先指派对应步骤节点</span>
+        <section className="flex flex-col gap-4">
+          <div className="flex items-center justify-between border-b border-slate-200 pb-2">
+            <span className="text-xs font-black uppercase tracking-wider text-slate-500">用户 Agent 包 ({agents.length})</span>
+            <span className="text-[10px] italic text-slate-400">来自 extensions/agents/user-agents 独立包</span>
           </div>
 
           {agents.length === 0 ? (
-            <div className="bg-white rounded-3xl p-12 border border-slate-150 shadow-2xs flex flex-col items-center justify-center text-center gap-3">
-              <div className="w-16 h-16 bg-slate-50 rounded-2xl flex items-center justify-center text-slate-300 border border-slate-100">
-                <Bot className="w-8 h-8" />
+            <div className="flex min-h-[260px] flex-col items-center justify-center gap-3 rounded-3xl border border-slate-200 bg-white p-12 text-center">
+              <div className="flex h-16 w-16 items-center justify-center rounded-2xl border border-slate-100 bg-slate-50 text-slate-300">
+                <Bot className="h-8 w-8" />
               </div>
-              <p className="text-sm font-bold text-slate-700">暂无自定义专业角色智能体</p>
-              <p className="text-xs text-slate-400 max-w-md">
-                点击上方【新建专业 Agent】或者导入快捷模板，让您最得心应手的专业角色在小逻操作系统的流程规划与自动化中发挥威力！
+              <p className="text-sm font-black text-slate-800">暂无自定义专业角色智能体</p>
+              <p className="max-w-md text-xs leading-relaxed text-slate-400">
+                点击上方“新建专业 Agent”，系统会为它生成独立 Agent 包，之后可被小逻大脑调度。
               </p>
             </div>
           ) : (
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {agents.map((agent) => (
-                <motion.div
-                  key={agent.id}
-                  layout
-                  className={`bg-white rounded-3xl p-6 border transition-all flex flex-col gap-4 shadow-2xs ${
-                    agent.enabled !== false 
-                      ? 'border-indigo-100/80 shadow-xs shadow-indigo-50/10 hover:border-indigo-200' 
-                      : 'border-slate-200 opacity-70 hover:opacity-100'
-                  }`}
-                >
-                  {/* Title and actions */}
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+              {agents.map(agent => (
+                <div key={agent.id} className={`flex flex-col gap-4 rounded-3xl border bg-white p-6 shadow-xs ${agent.enabled === false ? 'border-slate-200 opacity-70' : 'border-indigo-100'}`}>
                   <div className="flex items-start justify-between gap-3">
-                    <div className="flex items-center space-x-3 min-w-0">
-                      <div className={`w-11 h-11 rounded-2xl flex items-center justify-center border shrink-0 ${
-                        agent.enabled !== false 
-                          ? 'bg-indigo-50/60 border-indigo-100 text-indigo-600' 
-                          : 'bg-slate-100 border-slate-200 text-slate-400'
-                      }`}>
-                        <User className="w-5 h-5" />
+                    <div className="flex min-w-0 items-center gap-3">
+                      <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl border border-indigo-100 bg-indigo-50 text-indigo-600">
+                        <User className="h-5 w-5" />
                       </div>
-                      <div className="flex flex-col min-w-0">
-                        <div className="flex items-center gap-1.5">
-                          <span className="text-xs font-black text-slate-800 truncate">{agent.name}</span>
-                          <span className="text-[8.5px] px-1.5 py-0.5 rounded-full font-black bg-indigo-100/50 text-indigo-700 uppercase shrink-0">CUSTOM</span>
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2">
+                          <h3 className="truncate text-sm font-black text-slate-900">{agent.name}</h3>
+                          <span className="rounded-full bg-indigo-50 px-2 py-0.5 text-[9px] font-black text-indigo-600">USER</span>
                         </div>
-                        <span className="text-[10px] font-extrabold text-slate-400 mt-0.5">{agent.role}</span>
+                        <p className="mt-0.5 text-[11px] font-bold text-slate-500">{agent.role}</p>
                       </div>
                     </div>
-
-                    {/* Enable/Disable Toggle Switch */}
                     <button
                       onClick={() => handleToggleEnable(agent)}
-                      className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
-                        agent.enabled !== false ? 'bg-indigo-600' : 'bg-slate-200'
-                      }`}
+                      className={`flex h-8 w-8 items-center justify-center rounded-xl transition ${agent.enabled === false ? 'bg-slate-100 text-slate-400' : 'bg-emerald-50 text-emerald-600'}`}
+                      title={agent.enabled === false ? '启用 Agent' : '禁用 Agent'}
                     >
-                      <span
-                        className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${
-                          agent.enabled !== false ? 'translate-x-5' : 'translate-x-0'
-                        }`}
-                      />
+                      <Power className="h-4 w-4" />
                     </button>
                   </div>
 
-                  {/* Positioning Decription */}
-                  <p className="text-[10.5px] font-medium text-slate-500 leading-relaxed min-h-[32px] line-clamp-2">
-                    {agent.description || '自定义开发的专业执行者角色。'}
-                  </p>
+                  <p className="min-h-[40px] text-xs leading-relaxed text-slate-600">{agent.description || '用户创建的专业 Agent。'}</p>
 
-                  {/* Meta Capabilities and Models */}
-                  <div className="bg-slate-50/60 border border-slate-100/80 p-3 rounded-2xl flex flex-col gap-2">
-                    {/* Media Capabilities list */}
-                    <div className="flex flex-wrap items-center gap-1.5">
-                      <span className="text-[9px] font-extrabold text-slate-400 uppercase tracking-wider shrink-0">能力范畴:</span>
-                      {agent.capabilityKinds?.map(k => (
-                        <span key={k} className="text-[8.5px] px-1.5 py-0.5 rounded bg-slate-200/70 text-slate-600 font-extrabold capitalize shrink-0">
-                          {k === 'text' ? '📝 文本' : k === 'image' ? '🎨 原生' : '🎥 视效'}
+                  <div className="rounded-2xl border border-slate-100 bg-slate-50 p-3">
+                    <div className="mb-2 flex flex-wrap gap-1.5">
+                      {agent.capabilityKinds.map(kind => (
+                        <span key={kind} className="rounded-lg bg-white px-2 py-1 text-[10px] font-black text-slate-600 shadow-2xs">
+                          {CAPABILITY_LABELS[kind] || kind}
                         </span>
                       ))}
                     </div>
-
-                    {/* Model references */}
-                    {agent.modelPreferences && (
-                      <div className="flex flex-wrap items-center gap-2 border-t border-slate-100 pt-2 text-[9px] font-mono text-slate-400">
-                        {agent.capabilityKinds?.includes('text') && agent.modelPreferences.text && (
-                          <div className="flex items-center gap-0.5">
-                            <span className="font-bold">📝</span>
-                            <span className="font-extrabold text-slate-500">{agent.modelPreferences.text}</span>
-                          </div>
-                        )}
-                        {agent.capabilityKinds?.includes('image') && agent.modelPreferences.image && (
-                          <div className="flex items-center gap-0.5">
-                            <span className="font-bold">🎨</span>
-                            <span className="font-extrabold text-slate-500">
-                              {agent.modelPreferences.image === 'gemini-3.1-flash-image-preview' ? 'nano banana 2' : agent.modelPreferences.image}
-                            </span>
-                          </div>
-                        )}
-                        {agent.capabilityKinds?.includes('video') && agent.modelPreferences.video && (
-                          <div className="flex items-center gap-0.5">
-                            <span className="font-bold">🎥</span>
-                            <span className="font-extrabold text-slate-500">
-                              {agent.modelPreferences.video === 'seedance2.0' ? 'RH-SD2.0' : agent.modelPreferences.video}
-                            </span>
-                          </div>
-                        )}
-                      </div>
-                    )}
+                    <div className="flex flex-wrap gap-2 text-[10px] font-mono text-slate-500">
+                      {agent.modelPreferences?.text && <span>文本: {getModelLabel('text', agent.modelPreferences.text)}</span>}
+                      {agent.modelPreferences?.image && <span>图片: {getModelLabel('image', agent.modelPreferences.image)}</span>}
+                      {agent.modelPreferences?.video && <span>视频: {getModelLabel('video', agent.modelPreferences.video)}</span>}
+                    </div>
                   </div>
 
-                  {/* Skills tags */}
+                  <div className="flex items-center gap-2 rounded-2xl border border-slate-100 bg-slate-50 px-3 py-2 text-[11px] font-mono text-slate-500">
+                    <FileJson className="h-3.5 w-3.5 shrink-0" />
+                    <span className="truncate">{agent.metadata?.packagePath || `extensions/agents/user-agents/${user?.id || 'user'}/${agent.id}`}</span>
+                  </div>
+
                   {agent.skillIds && agent.skillIds.length > 0 && (
-                    <div className="flex flex-wrap gap-1 items-center">
-                      <span className="text-[9px] font-extrabold text-slate-400 uppercase tracking-wider mr-1">擅长特长:</span>
+                    <div className="flex flex-wrap gap-1.5">
                       {agent.skillIds.map(id => {
-                        const skillName = SYSTEM_SKILLS.find(s => s.id === id)?.name || id;
-                        const icon = SYSTEM_SKILLS.find(s => s.id === id)?.icon || '🧩';
+                        const skill = getSkillInfo(id);
                         return (
-                          <span key={id} className="text-[9.5px] font-bold text-indigo-700 bg-indigo-50 px-2 py-0.5 rounded-lg border border-indigo-100/30 flex items-center gap-1">
-                            <span className="text-xs">{icon}</span>
-                            <span>{skillName}</span>
+                          <span key={id} className="rounded-lg border border-indigo-100 bg-indigo-50 px-2 py-1 text-[10px] font-bold text-indigo-700">
+                            {cleanSkillName(skill || { id })}
                           </span>
                         );
                       })}
                     </div>
                   )}
 
-                  {/* Quick Card Footer Action */}
-                  <div className="flex items-center justify-end gap-2.5 pt-3 border-t border-slate-100 mt-auto">
-                    <button
-                      onClick={() => startEdit(agent)}
-                      className="p-2 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-xl transition-all flex items-center gap-1.5 text-xs font-bold cursor-pointer"
-                    >
-                      <Edit2 className="w-3.5 h-3.5" />
-                      <span>配置设定</span>
+                  <div className="mt-auto flex justify-end gap-2 border-t border-slate-100 pt-3">
+                    <button onClick={() => startEdit(agent)} className="flex items-center gap-1 rounded-xl px-3 py-2 text-xs font-black text-slate-500 transition hover:bg-indigo-50 hover:text-indigo-600">
+                      <Edit2 className="h-3.5 w-3.5" />
+                      <span>编辑</span>
                     </button>
-                    <button
-                      onClick={() => handleDelete(agent.id, agent.name)}
-                      className="p-2 text-slate-400 hover:text-rose-500 hover:bg-rose-50 rounded-xl transition-all flex items-center gap-1.5 text-xs font-bold cursor-pointer"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                      <span>注销下岗</span>
+                    <button onClick={() => handleDelete(agent.id, agent.name)} className="flex items-center gap-1 rounded-xl px-3 py-2 text-xs font-black text-slate-500 transition hover:bg-rose-50 hover:text-rose-600">
+                      <Trash2 className="h-3.5 w-3.5" />
+                      <span>删除</span>
                     </button>
                   </div>
-                </motion.div>
+                </div>
               ))}
             </div>
           )}
-        </div>
+        </section>
       </div>
     </div>
   );
 };
+
+function Field({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <label className="flex flex-col gap-1.5">
+      <span className="text-[11px] font-black uppercase tracking-wider text-slate-500">{label}</span>
+      {children}
+    </label>
+  );
+}
+
+function ModelSelect({
+  label,
+  value,
+  onChange,
+  options,
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  options: ModelOption[];
+}) {
+  return (
+    <label className="flex flex-col gap-1">
+      <span className="text-center text-[10px] font-black text-slate-400">{label}</span>
+      <select value={value} onChange={event => onChange(event.target.value)} className="rounded-xl border border-slate-200 bg-white px-2 py-2 text-[11px] font-bold text-slate-700 outline-none">
+        {options.map(option => (
+          <option key={option.value} value={option.value}>{option.label}</option>
+        ))}
+      </select>
+    </label>
+  );
+}

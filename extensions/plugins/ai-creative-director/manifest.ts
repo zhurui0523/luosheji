@@ -17,7 +17,7 @@ export const aiCreativeDirectorPluginManifest: ExtensionManifest = {
     entry: './skill.ts'
   },
   contributes: {
-    skills: [aiCreativeDirectorSkill]
+    skills: [{ ...aiCreativeDirectorSkill, description: aiCreativeDirectorSkill.desc, category: aiCreativeDirectorSkill.category || 'image' }]
   },
   metadata: {
     builtin: true,

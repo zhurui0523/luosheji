@@ -1,0 +1,76 @@
+{
+  "id": "user-model-claudesonnet",
+  "name": "claude-sonnet-5",
+  "version": "1.0.0",
+  "description": "claude-sonnet-5 user model interface package.",
+  "type": "model",
+  "author": "zhurui",
+  "category": "text",
+  "icon": "MODEL",
+  "permissions": [
+    "call_model",
+    "use_network"
+  ],
+  "sandbox": "server",
+  "runtime": {
+    "kind": "http",
+    "entry": "model.ts",
+    "baseUrl": "https://api.vectorengine.ai/v1/messages"
+  },
+  "contributes": {
+    "models": [
+      {
+        "id": "claudeSonnet",
+        "name": "claude-sonnet-5",
+        "provider": "Third Party",
+        "protocol": "claude",
+        "capabilityKinds": [
+          "text"
+        ],
+        "modelType": "text",
+        "endpoint": "https://api.vectorengine.ai/v1/messages",
+        "model": "claude-sonnet-5",
+        "apiKeyRef": "user:1:api_config:claudeSonnet",
+        "config": {
+          "path": ""
+        },
+        "metadata": {
+          "userConnection": {
+            "id": "claudeSonnet",
+            "name": "claude-sonnet-5",
+            "displayName": "claude-sonnet-5",
+            "provider": "Third Party",
+            "protocol": "claude",
+            "endpoint": "https://api.vectorengine.ai/v1/messages",
+            "path": "",
+            "model": "claude-sonnet-5",
+            "apiKeyRef": "user:1:api_config:claudeSonnet",
+            "capabilityKinds": [
+              "text"
+            ],
+            "modelType": "text",
+            "enabled": true,
+            "isCustom": false,
+            "metadata": {
+              "secretStoredIn": "user_preferences.api_config",
+              "sourceConfigKey": "claudeSonnet"
+            }
+          },
+          "source": "user_model_connection",
+          "sourceConfigKey": "claudeSonnet",
+          "secretStoredIn": "user_preferences.api_config"
+        }
+      }
+    ]
+  },
+  "metadata": {
+    "source": "user_model_connection",
+    "sourceConfigKey": "claudeSonnet",
+    "apiKeyStoredSeparately": true,
+    "ownerId": "1",
+    "packageKind": "model",
+    "packagePath": "extensions/models/user-models/1/user-model-claudesonnet",
+    "physicalPackage": true,
+    "updatedAt": 1784352437399
+  }
+}

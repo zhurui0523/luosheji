@@ -9,7 +9,8 @@
     "start": "node dist/server.cjs",
     "preview": "vite preview",
     "lint": "tsc --noEmit",
-    "os:self-check": "node scripts/os-self-check.mjs"
+    "os:self-check": "node scripts/os-self-check.mjs",
+    "encoding:scan": "node scripts/detect-mojibake.mjs"
   },
   "dependencies": {
     "@google/genai": "^1.44.0",

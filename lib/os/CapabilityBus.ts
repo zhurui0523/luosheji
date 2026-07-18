@@ -8,6 +8,7 @@ import { OpenSourceAdapterRegistry } from './registries/OpenSourceAdapterRegistr
 import { ExtensionAdapterRunner } from './extension/ExtensionAdapterRunner';
 import { ArtifactFactory } from './artifacts/ArtifactFactory';
 import { PermissionGuard } from './security/PermissionGuard';
+import { PackagePermissionGuard, PackageRuntimeManager } from './package';
 import { Task, RuntimeTask, RuntimeContext, CapabilityResult } from './types';
 
 export interface CapabilityPayload {
@@ -20,6 +21,12 @@ export interface CapabilityPayload {
   systemInstruction?: string;
   [key: string]: any;
 }
+
+const assertPackageBoundary = (packageId: string | undefined, context: RuntimeContext) => {
+  if (!packageId) return;
+  PackageRuntimeManager.assertPackageReady(packageId, context);
+  PackagePermissionGuard.assertPackageCanExecute(packageId, context);
+};
 
 class CapabilityBusService {
   constructor() {}
@@ -91,6 +98,7 @@ class CapabilityBusService {
         const skill = SkillRegistry.get(task.skillId);
         if (skill) {
           const extId = skill.metadata?.extensionId;
+          const packageId = skill.metadata?.packageId;
           let extensionPermissions: any[] = [];
           if (extId) {
             const extRecord = ExtensionRegistry.get(extId);
@@ -99,6 +107,7 @@ class CapabilityBusService {
             }
             extensionPermissions = extRecord?.manifest?.permissions || [];
           }
+          assertPackageBoundary(packageId, systemContext);
           PermissionGuard.assertCanExecute({
             id: skill.id,
             type: 'skill',
@@ -114,6 +123,7 @@ class CapabilityBusService {
               // skill has only instruction -> prompt skill. Run with the best text model
               const modelProvider = ModelRegistry.selectBest('text', systemContext);
               if (!modelProvider) throw new Error('No text model available in registry');
+              assertPackageBoundary(modelProvider.metadata?.packageId, systemContext);
               
               const systemInstruction = skill.instruction || '';
               const prompt = task.prompt || '';
@@ -144,6 +154,7 @@ class CapabilityBusService {
           throw new Error(`Agent "${task.agentId}" is not installed or is disabled.`);
         }
         const extId = agent.metadata?.extensionId;
+        const packageId = agent.metadata?.packageId;
         let extensionPermissions: any[] = [];
         if (extId) {
           const extRecord = ExtensionRegistry.get(extId);
@@ -152,6 +163,7 @@ class CapabilityBusService {
           }
           extensionPermissions = extRecord?.manifest?.permissions || [];
         }
+        assertPackageBoundary(packageId, systemContext);
         PermissionGuard.assertCanExecute({
           id: agent.id,
           type: 'agent',
@@ -178,6 +190,7 @@ class CapabilityBusService {
         }
 
         const extId = adapter.metadata?.extensionId;
+        const packageId = adapter.metadata?.packageId;
         if (extId) {
           const extRecord = ExtensionRegistry.get(extId);
           if (extRecord && extRecord.state !== 'enabled') {
@@ -185,6 +198,7 @@ class CapabilityBusService {
           }
         }
 
+        assertPackageBoundary(packageId, systemContext);
         PermissionGuard.assertCanExecute({
           id: adapter.id,
           type: 'adapter',
@@ -200,6 +214,7 @@ class CapabilityBusService {
         const bestAgent = AgentRegistry.findBestAgent(task, systemContext);
         if (bestAgent) {
           const extId = bestAgent.metadata?.extensionId;
+          const packageId = bestAgent.metadata?.packageId;
           let extensionPermissions: any[] = [];
           if (extId) {
             const extRecord = ExtensionRegistry.get(extId);
@@ -208,6 +223,7 @@ class CapabilityBusService {
             }
             extensionPermissions = extRecord?.manifest?.permissions || [];
           }
+          assertPackageBoundary(packageId, systemContext);
           PermissionGuard.assertCanExecute({
             id: bestAgent.id,
             type: 'agent',
@@ -232,6 +248,7 @@ class CapabilityBusService {
           }
           const modelProvider = ModelRegistry.selectBest(taskType, systemContext);
           if (modelProvider) {
+            assertPackageBoundary(modelProvider.metadata?.packageId, systemContext);
             resultOutput = await modelProvider.call('generateContent', {
               model: modelProvider.id,
               contents: [{ role: 'user', parts: [{ text: task.prompt || '' }] }]

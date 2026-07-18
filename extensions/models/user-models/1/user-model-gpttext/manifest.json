@@ -1,0 +1,76 @@
+{
+  "id": "user-model-gpttext",
+  "name": "gpt-5.6-sol",
+  "version": "1.0.0",
+  "description": "gpt-5.6-sol user model interface package.",
+  "type": "model",
+  "author": "zhurui",
+  "category": "text",
+  "icon": "MODEL",
+  "permissions": [
+    "call_model",
+    "use_network"
+  ],
+  "sandbox": "server",
+  "runtime": {
+    "kind": "http",
+    "entry": "model.ts",
+    "baseUrl": "https://api.openai.com/v1"
+  },
+  "contributes": {
+    "models": [
+      {
+        "id": "gptText",
+        "name": "gpt-5.6-sol",
+        "provider": "OpenAI",
+        "protocol": "openai",
+        "capabilityKinds": [
+          "text"
+        ],
+        "modelType": "text",
+        "endpoint": "https://api.openai.com/v1",
+        "model": "gpt-5.6-sol",
+        "apiKeyRef": "user:1:api_config:gptText",
+        "config": {
+          "path": ""
+        },
+        "metadata": {
+          "userConnection": {
+            "id": "gptText",
+            "name": "gpt-5.6-sol",
+            "displayName": "gpt-5.6-sol",
+            "provider": "OpenAI",
+            "protocol": "openai",
+            "endpoint": "https://api.openai.com/v1",
+            "path": "",
+            "model": "gpt-5.6-sol",
+            "apiKeyRef": "user:1:api_config:gptText",
+            "capabilityKinds": [
+              "text"
+            ],
+            "modelType": "text",
+            "enabled": true,
+            "isCustom": false,
+            "metadata": {
+              "secretStoredIn": "user_preferences.api_config",
+              "sourceConfigKey": "gptText"
+            }
+          },
+          "source": "user_model_connection",
+          "sourceConfigKey": "gptText",
+          "secretStoredIn": "user_preferences.api_config"
+        }
+      }
+    ]
+  },
+  "metadata": {
+    "source": "user_model_connection",
+    "sourceConfigKey": "gptText",
+    "apiKeyStoredSeparately": true,
+    "ownerId": "1",
+    "packageKind": "model",
+    "packagePath": "extensions/models/user-models/1/user-model-gpttext",
+    "physicalPackage": true,
+    "updatedAt": 1784352437401
+  }
+}

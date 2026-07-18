@@ -17,6 +17,7 @@ export interface RuntimeTask {
   pluginId?: string;
   adapterId?: string;
   toolId?: string;
+  config?: any;
   error?: string;
   createdAt?: number;
   updatedAt?: number;

@@ -1,7 +1,6 @@
 import React, { useState, useRef, useEffect } from "react";
 import { 
   Upload, 
-  Sparkles, 
   Send, 
   X, 
   Loader2, 
@@ -32,6 +31,7 @@ import { getAssetCategory, safeParseParentIds } from "./workflow-utils";
 import { getThumbnailUrl } from "../services/utils";
 import { PLUGINS } from "../plugin";
 import { Config } from "../types";
+import { getModelOptions, resolveApiConfigByModelValue } from "../lib/modelOptions";
 
 const INLINE_GRID_MODES_SKILLS = [
   {
@@ -212,6 +212,15 @@ export const InlineGenerationConsole: React.FC<InlineGenerationConsoleProps> = (
     if (id === 'camera-control') return 'video';
     return 'image';
   };
+
+  const getCleanSkillName = React.useCallback((skill: any) => {
+    const rawName = (skill?.name || "").trim();
+    const withoutIcon = skill?.icon && rawName.startsWith(skill.icon)
+      ? rawName.slice(String(skill.icon).length).trim()
+      : rawName;
+    return withoutIcon.replace(/^[^\p{L}\p{N}]+/u, "").trim() || rawName || skill?.id || "未命名 SKILL";
+  }, []);
+
   const [promptText, setPromptText] = useState("");
   const [selectedPluginIds, setSelectedPluginIds] = useState<string[]>(() => {
     if (typeof window !== "undefined") {
@@ -220,10 +229,6 @@ export const InlineGenerationConsole: React.FC<InlineGenerationConsoleProps> = (
         try {
           return JSON.parse(saved);
         } catch (e) {}
-      }
-      const oldActive = localStorage.getItem("selected_ai_skill");
-      if (oldActive && oldActive !== "general") {
-        return [oldActive];
       }
       return PLUGINS.map(p => p.id);
     }
@@ -564,22 +569,7 @@ export const InlineGenerationConsole: React.FC<InlineGenerationConsoleProps> = (
   };
 
   const resolveModelConfigByValue = (modelValue: string, modelType: "image" | "video") => {
-    if (!config) return null;
-    const keys: (keyof Config)[] = modelType === "image"
-      ? ["image", "gptImage"]
-      : ["video", "videoVeoFast", "videoSeedance", "videoSeedanceMini"];
-
-    for (const key of keys) {
-      const section = config[key] as any;
-      if (section && (modelValue === key || modelValue === section.model)) {
-        return section;
-      }
-    }
-
-    const customInterfaces = config.customInterfaces || {};
-    return (customInterfaces as any)[modelValue]
-      || Object.values(customInterfaces).find((section: any) => section?.model === modelValue && section?.modelType === modelType)
-      || null;
+    return resolveApiConfigByModelValue(config, modelValue, modelType);
   };
 
   const applyModelDefaultsToImageConfig = (modelValue: string, previous: any) => {
@@ -606,114 +596,19 @@ export const InlineGenerationConsole: React.FC<InlineGenerationConsoleProps> = (
 
   // Helper to resolve clean labels for model values
   const getModelLabel = () => {
-    // Dynamic image models from config
-    const dynamicImageModels: { label: string; value: string }[] = [];
-    if (config) {
-      const keys: (keyof Config)[] = ['script', 'image', 'video', 'videoSeedance', 'videoSeedanceMini', 'gptImage', 'claudeSonnet'];
-      keys.forEach(key => {
-        const section = config[key];
-        if (section && section.model) {
-          let isTypeMatch = section.modelType === 'image';
-          if (!section.modelType) {
-            isTypeMatch = (key === 'image' || key === 'gptImage');
-          }
-          if (isTypeMatch) {
-            const defaultLabel = key === 'image' ? 'nano banana 2' : (key === 'gptImage' ? 'GPT-Image-2' : section.model);
-            dynamicImageModels.push({
-              label: section.displayName || defaultLabel,
-              value: section.model
-            });
-          }
-        }
-      });
-
-      // Add custom interfaces of type 'image'
-      if (config.customInterfaces) {
-        Object.entries(config.customInterfaces).forEach(([key, section]) => {
-          if (section && section.model && section.modelType === 'image') {
-            dynamicImageModels.push({
-              label: section.displayName || section.title || section.model,
-              value: key // Use key as unique identifier
-            });
-          }
-        });
-      }
-    } else {
-      dynamicImageModels.push(
-        { label: "nano banana 2", value: "gemini-3.1-flash-image-preview" },
-        { label: "GPT-Image-2", value: "gpt-image-2" }
-      );
-    }
-
-    const customImageModels = (customModels || [])
-      .filter((m: any) => m.type === "image" || m.type === "all" || m.modelType === "image")
-      .map((m: any) => ({
-        label: m.name || m.model,
-        value: m.model,
-      }));
-
-    const allAvailableImageModels = [
-      ...dynamicImageModels,
-      ...customImageModels
-    ].filter((v, i, self) => self.findIndex(t => t.value === v.value) === i);
-
-    // Dynamic video models from config
-    const dynamicVideoModels: { label: string; value: string }[] = [];
-    if (config) {
-      const keys: (keyof Config)[] = ['videoSeedance', 'videoSeedanceMini'];
-      keys.forEach(key => {
-        const section = config[key];
-        if (section && section.model) {
-          const defaultLabel = key === 'videoSeedance' ? 'RH-SD2.0' :
-                               key === 'videoSeedanceMini' ? 'RH-SD2.0mini' : section.model;
-          dynamicVideoModels.push({
-            label: section.displayName || defaultLabel,
-            value: section.model
-          });
-        }
-      });
-
-      // Add custom interfaces of type 'video'
-      if (config.customInterfaces) {
-        Object.entries(config.customInterfaces).forEach(([key, section]) => {
-          if (section && section.model && section.modelType === 'video') {
-            dynamicVideoModels.push({
-              label: section.displayName || section.title || section.model,
-              value: key // Use key as unique identifier
-            });
-          }
-        });
-      }
-    } else {
-      dynamicVideoModels.push(
-        { label: "RH-SD2.0", value: "seedance2.0" },
-        { label: "RH-SD2.0mini", value: "seedance-mini" },
-        { label: "SD.25即将上线", value: "seedance2.5" }
-      );
-    }
-
-    const customVideoModels = (customModels || [])
-      .filter((m: any) => m.type === "video" || m.type === "all" || m.modelType === "video")
-      .map((m: any) => ({
-        label: m.name || m.model || "Unnamed Video Model",
-        value: m.model,
-      }));
-
-    const allVideoModels = [
-      ...dynamicVideoModels,
-      ...customVideoModels
-    ].filter((v, i, self) => self.findIndex(t => t.value === v.value) === i);
+    const modelType = isImage ? "image" : "video";
+    const options = getModelOptions(config, customModels, modelType);
 
     if (isImage) {
       const targetModelVal = (imageConfig.model === "gemini-3.1-flash-image-preview" || !imageConfig.model)
         ? (config?.image?.model || "gemini-3.1-flash-image-preview")
         : imageConfig.model;
-      const activeModel = allAvailableImageModels.find(m => m.value === targetModelVal);
+      const activeModel = options.find(m => m.value === targetModelVal);
       return activeModel ? activeModel.label : (config?.image?.displayName || imageConfig.model || "nano banana 2");
-    } else {
-      const activeModel = allVideoModels.find(m => m.value === (videoConfig.model || "seedance2.0"));
-      return activeModel ? activeModel.label : (videoConfig.model || "RH-SD2.0");
     }
+
+    const activeModel = options.find(m => m.value === (videoConfig.model || "seedance2.0"));
+    return activeModel ? activeModel.label : (videoConfig.model || "RH-SD2.0");
   };
 
   // File Upload Handling
@@ -837,8 +732,8 @@ export const InlineGenerationConsole: React.FC<InlineGenerationConsoleProps> = (
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
     >
-      {/* Header Row: Reference Picker & Option Badges */}
-      <div className="flex items-start justify-between w-full">
+      {/* Header Row: Reference Picker */}
+      <div className="flex items-start w-full">
         <div className="flex flex-col gap-1.5 flex-1">
           <span className="text-zinc-400 dark:text-zinc-500 font-bold text-[11px] uppercase tracking-wider">
             {isImage ? "图片参考" : "素材参考"}
@@ -885,11 +780,6 @@ export const InlineGenerationConsole: React.FC<InlineGenerationConsoleProps> = (
           />
         </div>
 
-        {/* AI Generate Pill Indicator */}
-        <div className="flex items-center gap-1.5 bg-zinc-100/80 dark:bg-zinc-800/80 border border-zinc-200/50 dark:border-zinc-700/50 text-zinc-500 dark:text-zinc-400 font-bold text-[10px] px-2.5 py-1 rounded-full shadow-sm">
-          <Sparkles className="w-3 h-3 text-indigo-500" />
-          <span>{isImage ? "AI绘画" : "AI影音"}</span>
-        </div>
       </div>
 
       {/* Prompt Label & Sparkles optimization */}
@@ -1177,105 +1067,7 @@ export const InlineGenerationConsole: React.FC<InlineGenerationConsoleProps> = (
                       <span className="text-[9px] font-normal text-zinc-400 dark:text-zinc-500">Models</span>
                     </div>
                     {(() => {
-                      // Dynamic image models from config
-                      const dynamicImageModels: { label: string; value: string }[] = [];
-                      if (config) {
-                        const keys: (keyof Config)[] = ['script', 'image', 'video', 'videoSeedance', 'videoSeedanceMini', 'gptImage', 'claudeSonnet'];
-                        keys.forEach(key => {
-                          const section = config[key];
-                          if (section && section.model) {
-                            let isTypeMatch = section.modelType === 'image';
-                            if (!section.modelType) {
-                              isTypeMatch = (key === 'image' || key === 'gptImage');
-                            }
-                            if (isTypeMatch) {
-                              const defaultLabel = key === 'image' ? 'nano banana 2' : (key === 'gptImage' ? 'GPT-Image-2' : section.model);
-                              dynamicImageModels.push({
-                                label: section.displayName || defaultLabel,
-                                value: section.model
-                              });
-                            }
-                          }
-                        });
-
-                        // Add custom interfaces of type 'image'
-                        if (config.customInterfaces) {
-                          Object.entries(config.customInterfaces).forEach(([key, section]) => {
-                            if (section && section.model && section.modelType === 'image') {
-                              dynamicImageModels.push({
-                                label: section.displayName || section.title || section.model,
-                                value: key // Use key as unique identifier
-                              });
-                            }
-                          });
-                        }
-                      } else {
-                        dynamicImageModels.push(
-                          { label: "nano banana 2", value: "gemini-3.1-flash-image-preview" },
-                          { label: "GPT-Image-2", value: "gpt-image-2" }
-                        );
-                      }
-
-                      const customImageModels = (customModels || [])
-                        .filter((m: any) => m.type === "image" || m.type === "all" || m.modelType === "image")
-                        .map((m: any) => ({
-                          label: m.name || m.model,
-                          value: m.model,
-                        }));
-
-                      const allAvailableImageModels = [
-                        ...dynamicImageModels,
-                        ...customImageModels
-                      ].filter((v, i, self) => self.findIndex(t => t.value === v.value) === i);
-
-                      // Dynamic video models from config
-                      const dynamicVideoModels: { label: string; value: string }[] = [];
-                      if (config) {
-                        const keys: (keyof Config)[] = ['videoSeedance', 'videoSeedanceMini'];
-                        keys.forEach(key => {
-                          const section = config[key];
-                          if (section && section.model) {
-                            const defaultLabel = key === 'videoSeedance' ? 'RH-SD2.0' :
-                                                 key === 'videoSeedanceMini' ? 'RH-SD2.0mini' : section.model;
-                            dynamicVideoModels.push({
-                              label: section.displayName || defaultLabel,
-                              value: section.model
-                            });
-                          }
-                        });
-
-                        // Add custom interfaces of type 'video'
-                        if (config.customInterfaces) {
-                          Object.entries(config.customInterfaces).forEach(([key, section]) => {
-                            if (section && section.model && section.modelType === 'video') {
-                              dynamicVideoModels.push({
-                                label: section.displayName || section.title || section.model,
-                                value: key // Use key as unique identifier
-                              });
-                            }
-                          });
-                        }
-                      } else {
-                        dynamicVideoModels.push(
-                          { label: "RH-SD2.0", value: "seedance2.0" },
-                          { label: "RH-SD2.0mini", value: "seedance-mini" },
-                          { label: "SD.25即将上线", value: "seedance2.5" }
-                        );
-                      }
-
-                      const customVideoModels = (customModels || [])
-                        .filter((m: any) => m.type === "video" || m.type === "all" || m.modelType === "video")
-                        .map((m: any) => ({
-                          label: m.name || m.model || "Unnamed Video Model",
-                          value: m.model,
-                        }));
-
-                      const allVideoModels = [
-                        ...dynamicVideoModels,
-                        ...customVideoModels
-                      ].filter((v, i, self) => self.findIndex(t => t.value === v.value) === i);
-
-                      return isImage ? allAvailableImageModels : allVideoModels;
+                      return getModelOptions(config, customModels, isImage ? "image" : "video");
                     })().map((m) => {
                       const isSelected = isImage 
                         ? (imageConfig.model === m.value ||
@@ -1688,7 +1480,7 @@ export const InlineGenerationConsole: React.FC<InlineGenerationConsoleProps> = (
                     setShowVideoModeMenu(false);
                   }}
                   className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold border transition-colors cursor-pointer whitespace-nowrap shrink-0 ${
-                    showSkillsDropdown || (imageConfig.gridMode && imageConfig.gridMode !== 'none')
+                    showSkillsDropdown || (imageConfig.gridMode && imageConfig.gridMode !== 'none') || cameraParams || activeCustomSkillIds.length > 0
                       ? "bg-indigo-50 dark:bg-indigo-950/40 text-indigo-600 dark:text-indigo-400 border-indigo-100 dark:border-indigo-900/60"
                       : "bg-zinc-50 dark:bg-zinc-850 hover:bg-zinc-100 dark:hover:bg-zinc-800 border-zinc-100 dark:border-zinc-800 text-zinc-600 dark:text-zinc-350"
                   }`}
@@ -1696,11 +1488,14 @@ export const InlineGenerationConsole: React.FC<InlineGenerationConsoleProps> = (
                   <Plus className="w-3.5 h-3.5 text-indigo-500" />
                   <span>
                     {(() => {
+                      if (cameraParams) return "相机调整";
                       if (imageConfig.gridMode && imageConfig.gridMode !== 'none') {
                         const allModes = [...INLINE_GRID_MODES_SKILLS, ...INLINE_GRID_MODES_PLUGINS];
                         const matched = allModes.find(m => m.value === imageConfig.gridMode);
                         if (matched) return matched.label;
                       }
+                      const activeCustom = workflowSkills.find(s => activeCustomSkillIds.includes(s.id));
+                      if (activeCustom) return getCleanSkillName(activeCustom);
                       return "无";
                     })()}
                   </span>
@@ -1728,12 +1523,14 @@ export const InlineGenerationConsole: React.FC<InlineGenerationConsoleProps> = (
                         <div className="flex flex-col gap-1 py-1">
                           {/* Standard Mode option */}
                           {(() => {
-                            const isSelected = (imageConfig.gridMode || 'none') === 'none';
+                            const isSelected = (imageConfig.gridMode || 'none') === 'none' && !cameraParams && activeCustomSkillIds.length === 0;
                             return (
                               <button
                                 key="inline-plugin-none"
                                 onClick={() => {
                                   setImageConfig((prev: any) => ({ ...prev, gridMode: 'none' }));
+                                  if (clearCameraParams) clearCameraParams();
+                                  if (setActiveCustomSkillIds) setActiveCustomSkillIds([]);
                                   setShowSkillsDropdown(false);
                                 }}
                                 className={`w-full px-3 py-2 rounded-xl text-left transition-colors flex items-center justify-between cursor-pointer ${
@@ -1747,8 +1544,8 @@ export const InlineGenerationConsole: React.FC<InlineGenerationConsoleProps> = (
                                     <ImageIcon className="w-3.5 h-3.5 text-orange-500" />
                                   </div>
                                   <div>
-                                    <p className="text-[11px] font-bold">标准模式</p>
-                                    <p className="text-[9px] text-zinc-400 dark:text-zinc-500">单图及多参模式</p>
+                                    <p className="text-[11px] font-bold">无</p>
+                                    <p className="text-[9px] text-zinc-400 dark:text-zinc-500">不启用任何图片模式及插件</p>
                                   </div>
                                 </div>
                                 {isSelected && <Check className="w-3.5 h-3.5 text-orange-500 shrink-0" />}
@@ -1972,36 +1769,6 @@ export const InlineGenerationConsole: React.FC<InlineGenerationConsoleProps> = (
                             <span className="text-[8px] font-normal text-purple-400 font-mono">SKILLS</span>
                           </div>
 
-                          {/* Camera adjustment option */}
-                          {getPluginCategory("camera-control") === "video" && (() => {
-                            const isSelected = !!cameraParams;
-                            return (
-                              <button
-                                key="inline-video-skill-camera-control"
-                                onClick={() => {
-                                  if (setShowCameraControl) setShowCameraControl(true);
-                                  setShowSkillsDropdown(false);
-                                }}
-                                className={`w-full px-3 py-2 rounded-xl text-left transition-colors flex items-center justify-between cursor-pointer ${
-                                  isSelected 
-                                    ? "bg-purple-50 dark:bg-purple-950/20 text-purple-700 dark:text-purple-400" 
-                                    : "hover:bg-zinc-50 dark:hover:bg-zinc-900 text-zinc-700 dark:text-zinc-300"
-                                }`}
-                              >
-                                <div className="flex items-center space-x-2.5">
-                                  <div className={`p-1.5 rounded-lg ${isSelected ? "bg-purple-100/60 dark:bg-purple-950/40" : "bg-zinc-100 dark:bg-zinc-800"}`}>
-                                    <Camera className="w-3.5 h-3.5 text-purple-500" />
-                                  </div>
-                                  <div>
-                                    <p className="text-[11px] font-bold">相机调整</p>
-                                    <p className="text-[9px] text-zinc-400 dark:text-zinc-500">配置专业拍摄与运镜参数</p>
-                                  </div>
-                                </div>
-                                {isSelected && <Check className="w-3.5 h-3.5 text-purple-500 shrink-0" />}
-                              </button>
-                            );
-                          })()}
-
                           {/* Custom workflow skills from workflowSkills */}
                           {workflowSkills
                             .filter(s => (s.category === "video" || s.category === "all") && s.id !== "camera-control")
@@ -2029,7 +1796,7 @@ export const InlineGenerationConsole: React.FC<InlineGenerationConsoleProps> = (
                                       {customSkill.icon || "⚡"}
                                     </div>
                                     <div>
-                                      <p className="text-[11px] font-bold">{customSkill.name}</p>
+                                      <p className="text-[11px] font-bold">{getCleanSkillName(customSkill)}</p>
                                       <p className="text-[9px] text-zinc-400 dark:text-zinc-500">{customSkill.desc || "自定义视频工作流辅助模式"}</p>
                                     </div>
                                   </div>
